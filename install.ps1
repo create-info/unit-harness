@@ -20,6 +20,24 @@ try {
     exit 1
 }
 
+# 校验和：install.sh 会验，Windows 侧以前没验——同一个仓库，别两套标准
+$Expected = $null
+try {
+    $SumText = (Invoke-WebRequest -Uri "${Url}.sha256" -UseBasicParsing).Content
+    $Expected = ($SumText -split '\s+')[0].Trim().ToLower()
+} catch {
+    Write-Host "-> no checksum published for this build, skipping verification"
+}
+if ($Expected) {
+    $Actual = (Get-FileHash -Path $Target -Algorithm SHA256).Hash.ToLower()
+    if ($Expected -ne $Actual) {
+        Remove-Item -Force $Target
+        Write-Error "checksum mismatch - refusing to install"
+        exit 1
+    }
+    Write-Host "-> checksum ok"
+}
+
 Write-Host "-> installed $Target"
 & $Target --version
 

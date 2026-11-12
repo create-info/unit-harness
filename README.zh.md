@@ -251,6 +251,22 @@ $ uh run "这张截图里左侧栏列出了什么？" --image shot.png
 base64 不落盘：`state.json` 只留路径和类型，续跑时重新读文件。否则一张截图就能让会话
 膨胀几十 MB。
 
+## 发版
+
+打一个 tag 就是全部流程——不需要 PAT，也不需要本地有 gh：
+
+```console
+$ git tag v0.1.0 && git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` 会去拿 `main` 上最近一次绿的 run 的产物，给每个二进制生成
+`.sha256`，建 release，然后**逐个验证资产能被匿名下载**——因为 `install.sh` 就是这么取的。
+本地试跑同样不需要 token：
+
+```console
+$ bash scripts/release.sh v0.1.0 --dry-run
+```
+
 ## 远端主机
 
 ```console

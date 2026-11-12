@@ -1,0 +1,47 @@
+name: release
+
+# 发布走 tag：SSH key 能 push tag，而 release 需要的 API 权限由 Actions 内置
+# GITHUB_TOKEN 提供——不必让任何人手工往里填 PAT。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'tag to publish'
+        required: true
+
+permissions:
+  contents: write   # 建 release、上传资产
+  actions: read     # 拉别的 run 的 artifacts
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: publish artifacts from the newest green main run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: bash scripts/release.sh "$TAG"
+
+      - name: verify the release is downloadable without auth
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          # 发出去的东西必须能被匿名下载——install.sh 就是这么装的
+          for name in uh-linux-x64 uh-linux-x64.sha256; do
+            url="https://github.com/create-info/unit-harness/releases/download/${TAG}/${name}"
+            code=$(curl -s -o /dev/null -w '%{http_code}' -L "$url")
+            echo "$name -> $code"
+            [ "$code" = "200" ] || { echo "::error::$name is not downloadable ($code)"; exit 1; }
+          done
+          echo "latest alias:"
+          curl -s -o /dev/null -w '  releases/latest/download/uh-linux-x64 -> %{http_code}\n' -L             "https://github.com/create-info/unit-harness/releases/latest/download/uh-linux-x64"
