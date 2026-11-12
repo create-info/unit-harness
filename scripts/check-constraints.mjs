@@ -4,9 +4,11 @@
  * 任一违反 -> 退出码 1。
  */
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { join, extname, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const ROOT = new URL('..', import.meta.url).pathname
+// 注意：不能用 URL.pathname —— Windows 上会得到 "/C:/..."，路径无效
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const SKIP = new Set(['node_modules', '.git', 'dist', 'build', 'spikes'])
 
 const errors = []
