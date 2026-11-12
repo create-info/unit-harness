@@ -19,6 +19,8 @@ import type { EventSource, SessionKind } from './evidence/kinds.ts'
 import { createHash } from 'node:crypto'
 import { buildLandlockArgv, findLandlockHelper } from './sandbox/landlock.ts'
 import type { LandlockHelper } from './sandbox/landlock.ts'
+import { buildSeatbeltProfile, findSeatbelt } from './sandbox/seatbelt.ts'
+import type { SeatbeltInfo } from './sandbox/seatbelt.ts'
 import { mkdirSync } from 'node:fs'
 import os from 'node:os'
 import { API_VERSION } from './types.ts'
@@ -73,6 +75,7 @@ export class Harness {
   private readonly hookRegistry: HookRegistration[] = []
   private readonly services = new Map<string, unknown>()
   private readonly helper: LandlockHelper | null
+  private readonly seatbelt: SeatbeltInfo
   private readonly workspace: string
   private readonly store: EventStore
   private session: SessionMeta | null = null
@@ -83,6 +86,7 @@ export class Harness {
     this.ctx = new Context()
     this.isolation = probeIsolation()
     this.helper = findLandlockHelper()
+    this.seatbelt = findSeatbelt()
     this.workspace = opts.workspace ?? os.homedir() + '/.uh/work'
     try { mkdirSync(this.workspace, { recursive: true }) } catch { /* best effort */ }
     this.store = new EventStore()
@@ -128,6 +132,11 @@ export class Harness {
       return `landlock-v${this.helper.abi} via ${this.helper.path}; writes limited to ${this.workspace}` +
         (this.opts.allowHome ? ' (+home readable)' : '; home unreadable') +
         (this.opts.denyNetwork ? '; tcp blocked' : '')
+    }
+    if (this.seatbelt.available) {
+      return `seatbelt via ${this.seatbelt.path}; writes limited to ${this.workspace}` +
+        (this.opts.allowHome ? ' (+home readable)' : '; home unreadable') +
+        (this.opts.denyNetwork ? '; network blocked' : '')
     }
     return this.isolation.enforced
   }
@@ -327,17 +336,32 @@ export class Harness {
     // 默认在工作区执行：工作区是唯一可写区域，cwd 必须与之一致
     const workdir = spec.cwd ?? this.workspace
 
-    // 有 helper 就整条命令经 landlock 施加后再 exec
+    // 按平台选择施加方式：Linux = landlock helper，macOS = sandbox-exec
     const useLandlock = this.helper !== null && spec.isolation !== 'none'
-    const cmd = useLandlock ? this.helper!.path : (spec.argv[0] as string)
-    const args = useLandlock
-      ? buildLandlockArgv(this.helper!, {
-          argv: [...spec.argv],
-          workspace: workdir,
-          allowHome: this.opts.allowHome,
-          denyNetwork: this.opts.denyNetwork,
-        })
-      : spec.argv.slice(1)
+    const useSeatbelt = !useLandlock && this.seatbelt.available && spec.isolation !== 'none'
+
+    let cmd: string
+    let args: string[]
+    if (useLandlock) {
+      cmd = this.helper!.path
+      args = buildLandlockArgv(this.helper!, {
+        argv: [...spec.argv],
+        workspace: workdir,
+        allowHome: this.opts.allowHome,
+        denyNetwork: this.opts.denyNetwork,
+      })
+    } else if (useSeatbelt) {
+      const profile = buildSeatbeltProfile({
+        workspace: workdir,
+        allowHome: this.opts.allowHome,
+        denyNetwork: this.opts.denyNetwork,
+      })
+      cmd = this.seatbelt.path
+      args = ['-p', profile, '--', ...spec.argv]
+    } else {
+      cmd = spec.argv[0] as string
+      args = spec.argv.slice(1)
+    }
 
     return await new Promise<ExecResult>((resolve, reject) => {
       const child = spawn(cmd, args, {
@@ -377,7 +401,9 @@ export class Harness {
           exitCode: code ?? -1,
           stdout, stderr, truncated,
           durationMs: Date.now() - started,
-          isolation: this.helper ? (`landlock-v${this.helper.abi}` as IsolationLevel) : level,
+          isolation: this.helper
+            ? (`landlock-v${this.helper.abi}` as IsolationLevel)
+            : (useSeatbelt ? 'seatbelt' : level),
         })
       })
     })

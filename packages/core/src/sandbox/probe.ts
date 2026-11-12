@@ -13,6 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { IsolationLevel, IsolationReport } from '../types.ts'
 import { findLandlockHelper } from './landlock.ts'
+import { findSeatbelt } from './seatbelt.ts'
 
 /** P0 的诚实声明：能探测到能力，但还没有施加隔离的代码 */
 const SANDBOX_ENFORCED_IN_P0: IsolationLevel = 'none'
@@ -113,11 +114,17 @@ export function probeIsolation(): IsolationReport {
     notes.push('path-guard: no kernel isolation available; exec will require --allow-unconfined')
   }
 
-  // 只有在 helper 真能施加时才声称 enforced；否则如实报 none。
+  // 只有在真能施加时才声称 enforced；否则如实报 none。
   let enforced: IsolationLevel = SANDBOX_ENFORCED_IN_P0
   if (process.platform === 'linux' && helper && helper.abi > 0) {
     enforced = `landlock-v${helper.abi}` as IsolationLevel
     notes.push('enforced by landlock-helper: filesystem writes limited to workspace, home unreadable')
+  } else if (process.platform === 'darwin') {
+    const sb = findSeatbelt()
+    if (sb.available) {
+      enforced = 'seatbelt'
+      notes.push('enforced by sandbox-exec: writes limited to workspace, home unreadable')
+    }
   }
 
   return {

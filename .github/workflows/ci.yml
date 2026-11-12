@@ -6,46 +6,80 @@ on:
   pull_request:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci || npm install
+
       - name: constraints (D2/D3/D6/D5)
         run: node scripts/check-constraints.mjs
+
       - name: typecheck
         run: npm run typecheck
-      - name: build native (landlock helper)
+
+      - name: build native helper (linux only)
+        if: runner.os == 'Linux'
         run: npm run build:native || echo "::warning::native build skipped"
+
       - name: build
         run: npm run build
+
       - name: doctor
         run: node dist/uh.cjs doctor
-      - name: sandbox actually blocks
-        run: |
-          abi=$(~/.uh/bin/landlock-helper --probe 2>/dev/null || echo 0)
-          if [ "$abi" -gt 0 ]; then
-            node dist/uh.cjs sandbox check
-          else
-            echo "::warning::landlock unavailable on this runner (abi=$abi); skipping enforcement proof"
-          fi
+
       - name: plugin loads
-        run: UH_PLUGIN_DIR="$PWD/examples" node dist/uh.cjs plugin list
+        run: node dist/uh.cjs plugin list
+        env:
+          UH_PLUGIN_DIR: ${{ github.workspace }}/examples
+
+      - name: sandbox actually blocks
+        if: runner.os != 'Windows'
+        run: node dist/uh.cjs sandbox check
+
       - name: session log + replay
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
-          UH_PLUGIN_DIR="$PWD/examples" node dist/uh.cjs sandbox check
+          node dist/uh.cjs sandbox check
           sid=$(node dist/uh.cjs session list | tail -1 | awk '{print $1}')
           echo "session: $sid"
           node dist/uh.cjs session show "$sid" | head -12
           node dist/uh.cjs session replay "$sid"
-      - name: exec fails closed without isolation
+
+      - name: windows reports path-guard and fails closed
+        if: runner.os == 'Windows'
+        shell: bash
         run: |
+          node dist/uh.cjs doctor | tee doctor.txt
+          grep -q "path-guard\|none" doctor.txt || { echo "expected no kernel isolation on Windows"; exit 1; }
           set +e
-          UH_PLUGIN_DIR="$PWD/examples" node dist/uh.cjs tool hello
+          node dist/uh.cjs tool hello
           code=$?
           set -e
-          if [ "$code" -eq 0 ]; then echo "expected fail-closed refusal, got success"; exit 1; fi
+          if [ "$code" -eq 0 ]; then echo "expected refusal, got success"; exit 1; fi
           echo "ok: refused (exit $code)"
+
+      - name: exec fails closed without any sandbox (linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          helper="$HOME/.uh/bin/landlock-helper"
+          [ -x "$helper" ] && mv "$helper" "$RUNNER_TEMP/llh.bak"
+          set +e
+          node dist/uh.cjs tool hello
+          code=$?
+          set -e
+          [ -f "$RUNNER_TEMP/llh.bak" ] && mv "$RUNNER_TEMP/llh.bak" "$helper"
+          if [ "$code" -eq 0 ]; then echo "expected refusal without helper, got success"; exit 1; fi
+          echo "ok: refused (exit $code)"
+        env:
+          UH_PLUGIN_DIR: ${{ github.workspace }}/examples
