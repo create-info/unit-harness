@@ -32,9 +32,22 @@ function fail(msg: string, code = 1): never {
   process.exit(code)
 }
 
+const VALUE_FLAGS = new Set(['--model', '--base-url', '--api-key', '--max-steps'])
+
+function flag(name: string): string | undefined {
+  const i = argv.indexOf(`--${name}`)
+  return i >= 0 ? argv[i + 1] : undefined
+}
+
+/** 该参数是不是上面某个 flag 的取值（而不是任务文本） */
+function isFlagValue(tok: string): boolean {
+  const i = argv.indexOf(tok)
+  return i > 0 && VALUE_FLAGS.has(argv[i - 1] as string)
+}
+
 async function withHarness<T>(
   fn: (h: Harness) => Promise<T>,
-  opts: { record?: boolean; label?: string } = {},
+  opts: { record?: boolean; label?: string; onEvent?: (kind: string, payload: Record<string, unknown>) => void } = {},
 ): Promise<T> {
   const h = new Harness({
     pluginDirs: pluginDirs(),
@@ -45,6 +58,7 @@ async function withHarness<T>(
     harnessVersion: VERSION,
     ...(opts.record === undefined ? {} : { record: opts.record }),
     ...(opts.label === undefined ? {} : { label: opts.label }),
+    ...(opts.onEvent === undefined ? {} : { onEvent: opts.onEvent }),
   })
   try {
     await h.start()
@@ -174,6 +188,69 @@ async function cmdTool(name?: string, rest: string[] = []): Promise<void> {
   })
 }
 
+function printEvent(kind: string, p: Record<string, unknown>): void {
+  switch (kind) {
+    case 'turn/start':
+      console.log('· turn start')
+      break
+    case 'step/start':
+      console.log(`· step ${p.step_index as number}`)
+      break
+    case 'llm/request':
+      console.log(`  → ${p.model as string}`)
+      break
+    case 'llm/response': {
+      const u = p.usage as { total_tokens?: number } | undefined
+      const tc = p.tool_calls as number
+      console.log(`  ← ${tc} tool call(s), ${u?.total_tokens ?? 0} tokens`)
+      break
+    }
+    case 'tool/call': {
+      // exec 的记录字段是 argv；插件工具的是 args
+      const argv = p.argv as string[] | undefined
+      const args = p.args as Record<string, unknown> | undefined
+      const cmd = argv ? argv.join(' ') : JSON.stringify(args ?? {})
+      console.log(`  ⚙ ${p.tool as string}: ${cmd.slice(0, 120)}`)
+      break
+    }
+    case 'tool/result':
+      console.log(`  ${p.status === 'ok' ? '✓' : '✗'} exit=${String(p.exit_code ?? '-')}`)
+      break
+    case 'turn/end':
+      console.log(`· turn end (${String(p.stop_reason)}, ${String(p.steps)} steps)`)
+      break
+    default:
+      break
+  }
+}
+
+async function cmdRun(task?: string): Promise<void> {
+  if (!task) {
+    fail('usage: uh run "<task>" [--model M] [--base-url U] [--api-key K] [--max-steps N]')
+  }
+  const maxStepsRaw = flag('max-steps')
+
+  await withHarness(async (h) => {
+    console.log(`workspace: ${h.workspaceDir}`)
+    console.log(`isolation: ${(h as unknown as { describeEnforcement: () => string }).describeEnforcement()}`)
+    console.log('')
+    const res = await h.runTask({
+      task: task!,
+      ...(flag('model') ? { model: flag('model')! } : {}),
+      ...(flag('base-url') ? { baseUrl: flag('base-url')! } : {}),
+      ...(flag('api-key') ? { apiKey: flag('api-key')! } : {}),
+      ...(maxStepsRaw ? { maxSteps: Number(maxStepsRaw) } : {}),
+    })
+    console.log('')
+    console.log('--- answer ---')
+    console.log(res.text || '(no text)')
+    console.log('')
+    console.log(`steps=${res.steps} tokens=${res.usage.total} stoppedBy=${res.stoppedBy}`)
+    console.log(`session: ${h.sessionId ?? '(not recorded)'}`)
+    if (res.stoppedBy === 'max-steps') process.exitCode = 2
+  }, { label: task!.slice(0, 60), onEvent: printEvent })
+}
+
 async function cmdSession(sub?: string, id?: string): Promise<void> {
   const store = new EventStore()
 
@@ -252,6 +329,7 @@ function cmdHelp(): void {
   console.log(`uh ${VERSION} — the agent that proves its work
 
 Usage:
+  uh run "<task>"           run a task with the model agent (sandboxed)
   uh doctor                 show platform, sandbox isolation, plugins
   uh plugin list            list plugins found on disk
   uh tool <name>            run a tool registered by a plugin
@@ -289,6 +367,8 @@ async function main(): Promise<void> {
       await cmdSandbox(argv[1]); return
     case 'session':
       await cmdSession(argv[1], argv[2]); return
+    case 'run':
+      await cmdRun(argv.slice(1).filter((a) => !a.startsWith('--') && !isFlagValue(a)).join(' ')); return
     case 'help': case '--help': case '-h':
       cmdHelp(); return
     default:

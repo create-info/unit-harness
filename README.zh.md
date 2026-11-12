@@ -68,6 +68,47 @@ $ node dist/uh.cjs tool hello
 E_SANDBOX_UNAVAILABLE: current isolation is "none". Refusing to execute (fail-closed).
 ```
 
+## 跑一个任务
+
+```console
+$ uh run "在工作区创建一个 hello.txt，内容写 hi from unit-harness，然后用 ls 确认"
+workspace: /home/you/.uh/work
+isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; home unreadable
+
+· turn start
+· step 1
+  → qwen3.8-27b
+  ← 1 tool call(s), 775 tokens
+  ⚙ run_command: sh -c printf 'hi from unit-harness\n' > hello.txt && ls -la
+  ✓ exit=0
+· step 2
+  → qwen3.8-27b
+  ← 1 tool call(s), 706 tokens
+  ⚙ run_command: cat hello.txt
+  ✓ exit=0
+· step 3
+  → qwen3.8-27b
+  ← 0 tool call(s), 837 tokens
+· turn end (model, 3 steps)
+
+--- answer ---
+完成 ✅
+- 已在工作区创建 hello.txt，内容为 hi from unit-harness
+- ls -la 确认文件存在
+```
+
+如果你开着 LM Studio（`:1234`）或 Ollama（`:11434`），**不需要任何 API key**——
+`uh` 会探测这两个默认端口并取第一个模型。否则指向任何 OpenAI 兼容服务：
+
+```bash
+export UH_BASE_URL=https://api.deepseek.com/v1
+export UH_MODEL=deepseek-chat
+export UH_API_KEY=sk-...
+uh run "看看工作区里有什么"
+```
+
+**步骤由模型决定，边界由沙箱决定。**
+
 ## 每次运行都是证据
 
 没有静默发生的事。每个会话写一份追加式 JSONL 日志：
@@ -174,7 +215,8 @@ DeepSeek Harness 使用的同一个插件框架。我们以普通 npm 依赖的�
 |---|---|---|
 | P0 | 内核、插件加载、沙箱探测、fail-closed exec、CLI | ✅ 完成 |
 | P1 | landlock 施加 + `sandbox check` | ✅ 完成 |
-| P1 | 事件日志（`session/*`）、断言、回放 | 下一步 |
+| P1 | 事件日志（`session/*`）、断言、回放 | ✅ 完成 |
+| P1 | agent loop + `uh run`（零配置探测本地模型） | ✅ 完成 |
 | P2 | macOS seatbelt / Windows 受限令牌、桌面壳 | — |
 | P2 | 桌面壳、数据包、巡检 | — |
 | P3 | 协议适配器（MCP / ACP / A2A） | — |

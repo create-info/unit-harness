@@ -33,6 +33,9 @@ jobs:
       - name: build
         run: npm run build
 
+      - name: agent loop test (mock provider)
+        run: npm test
+
       - name: doctor
         run: node dist/uh.cjs doctor
 
