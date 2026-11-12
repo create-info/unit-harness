@@ -82,6 +82,8 @@ export interface RunTaskOptions {
   verify?: boolean
   /** 是否给模型 update_plan 工具（默认 true） */
   plan?: boolean
+  /** 上下文窗口预算（默认 32000；到 70% 自动压缩，0 关闭） */
+  maxContextTokens?: number
 }
 
 export interface RunTaskOutcome extends RunResult {
@@ -539,6 +541,7 @@ export class Harness {
           try { fsSync.unlinkSync(this.safeJoin(rel)) } catch { /* already gone */ }
         },
         planEnabled: o.plan !== false,
+        maxContextTokens: o.maxContextTokens ?? Number(process.env.UH_MAX_CONTEXT ?? 32000),
         ev: (kind, payload) => this.ev(kind, payload, 'agent')?.id ?? null,
         log: (m) => this.log('info', m),
       },

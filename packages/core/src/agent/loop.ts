@@ -10,6 +10,7 @@ import type { CompletionResult, Message, ToolCall, ToolSpec } from '../llm/types
 import type { LlmGateway } from '../llm/gateway.ts'
 import type { ToolDefinition } from '../types.ts'
 import { parsePatch, planPatch } from './tools/apply-patch.ts'
+import { compactMessages, shouldCompact } from './compact.ts'
 
 export interface RunCommandArgs {
   argv: string[]
@@ -36,12 +37,14 @@ export interface AgentDeps {
   writeFile: (rel: string, content: string) => void
   deleteFile: (rel: string) => void
   ev: (
-    kind: 'turn/start' | 'turn/end' | 'step/start' | 'step/end' | 'plan/updated' | 'tool/call' | 'tool/result',
+    kind: 'turn/start' | 'turn/end' | 'step/start' | 'step/end' | 'plan/updated' | 'tool/call' | 'tool/result' | 'session/compacted',
     payload: Record<string, unknown>,
   ) => string | null
   log: (msg: string) => void
   /** 是否启用 update_plan（关闭时连工具都不给，学 Codex 的按需切除） */
   planEnabled?: boolean
+  /** 上下文预算：超过 budget*0.7 就压缩（0 = 关闭压缩） */
+  maxContextTokens?: number
 }
 
 export interface RunResult {
@@ -50,6 +53,7 @@ export interface RunResult {
   usage: { prompt: number; completion: number; total: number }
   stoppedBy: 'model' | 'max-steps' | 'timeout'
   plan: PlanStep[]
+  compactions: number
 }
 
 // ---------- 内置工具定义 ----------
@@ -168,6 +172,8 @@ export async function runAgent(
   const usage = { prompt: 0, completion: 0, total: 0 }
   let lastText = ''
   let plan: PlanStep[] = []
+  let compactions = 0
+  const budget = deps.maxContextTokens ?? 0
 
   const execOne = async (call: ToolCall): Promise<string> => {
     const name = call.function.name
@@ -256,9 +262,30 @@ export async function runAgent(
     usage.total += res.usage.total_tokens
     if (res.content) lastText = res.content
 
+
     if (res.toolCalls.length === 0) {
       deps.ev('step/end', { step_index: steps, status: 'ok', kind: 'assistant' })
       break
+    }
+
+    // 只有"还要继续干"的时候才值得压缩：最后一步之后再压缩纯属浪费一次调用
+    if (budget > 0 && shouldCompact(res.usage.prompt_tokens, budget)) {
+      const before = messages.length
+      const c = await compactMessages(deps.gateway, messages, { keepRecent: 6 })
+      if (c.dropped > 0) {
+        messages.length = 0
+        messages.push(...c.messages)
+        compactions++
+        deps.ev('session/compacted', {
+          dropped_messages: c.dropped,
+          kept_messages: before - c.dropped,
+          before_chars: c.beforeChars,
+          summary_chars: c.afterChars,
+          prompt_tokens_before: res.usage.prompt_tokens,
+          budget,
+          strategy: 'local-summary',
+        })
+      }
     }
 
     messages.push({ role: 'assistant', content: res.content, tool_calls: res.toolCalls })
@@ -284,5 +311,5 @@ export async function runAgent(
   }
 
   deps.ev('turn/end', { turn_index: 1, stop_reason: stoppedBy, steps })
-  return { text: lastText, steps, usage, stoppedBy, plan }
+  return { text: lastText, steps, usage, stoppedBy, plan, compactions }
 }
