@@ -71,10 +71,24 @@ export async function runAssertion(a: Assertion, deps: AssertDeps): Promise<Asse
       }
       case 'command-exit': {
         const r = await deps.exec(a.argv as [string, ...string[]])
+        if (r.exitCode === a.expectExit) {
+          return { assertion: a, result: 'pass', detail: { why: a.why } }
+        }
+        // 126/127 = 命令本身跑不起来；这类结果说明"无法验证"，不是"验证不通过"。
+        // 把它报成 fail 会让用户以为交付物坏了，而实际是环境里没有这个解释器。
+        const unrunnable =
+          r.exitCode === 126 || r.exitCode === 127 ||
+          /Failed to import the site module|command not found|No such file or directory/.test(r.stderr)
         return {
           assertion: a,
-          result: r.exitCode === a.expectExit ? 'pass' : 'fail',
-          detail: { why: a.why, expect: a.expectExit, got: r.exitCode, stderr: r.stderr.slice(0, 300) },
+          result: unrunnable ? 'error' : 'fail',
+          detail: {
+            why: a.why,
+            expect: a.expectExit,
+            got: r.exitCode,
+            stderr: r.stderr.slice(0, 300),
+            ...(unrunnable ? { note: 'the checker itself could not run in this sandbox' } : {}),
+          },
         }
       }
       default:

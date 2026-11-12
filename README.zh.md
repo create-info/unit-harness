@@ -187,6 +187,28 @@ export UH_API_KEY=sk-...
 uh run "看看工作区里有什么"
 ```
 
+## 它是怎么想事情的
+
+系统提示词不是一句写死的话，而是分段拼装的（和 Codex 同构）：
+
+| 段 | 内容 |
+|---|---|
+| base | 身份、行为准则、汇报方式（不接受"看起来对"，只接受"我跑过了"） |
+| `environment_context` | 工作区、平台、**真实**的沙箱强度、网络、日期 |
+| `tool_guidance` | 每个工具什么时候用、什么时候别用 |
+| `project_instructions` | 从工作区向上找的 `AGENTS.md` / `CLAUDE.md`，越近越优先 |
+
+内置工具刻意很少，每个都有契约：
+
+- **`apply_patch`** —— 用 `*** Begin Patch` 补丁增删改文件，**原子执行**：任一 hunk
+  匹配失败，一个字节都不落盘。上下文匹配宽容（忽略空白），因为模型给的上下文行
+  经常不精确。
+- **`run_command`** —— argv 数组而不是 shell 字符串；真需要 shell 语法就写
+  `["sh","-c","..."]`。每一次调用都过沙箱。
+- **`update_plan`** —— 模型的计划唯一可见的地方，同一时刻只有一个 in_progress。
+
+`uh exec -- <命令>` 在沙箱里跑单条命令，排查"到底为什么失败"时很好用。
+
 **步骤由模型决定，边界由沙箱决定。**
 
 ## 每次运行都是证据
@@ -272,6 +294,12 @@ Linux 上 landlock 实际给了什么：
 - 系统路径（`/usr`、`/lib`、`/etc`、`/proc`…）需要可读，否则 shell 和运行时起不来
 
 全部不可用时 **fail-closed**。我们绝不静默降级。
+
+**一个刻意的例外**：解释器与包管理器目录是**可读**的（`~/.nvm/versions`、
+`~/.pyenv/versions`、`~/.cargo/bin`，以及你实际调用的那个 venv 根）。一个
+`python3` 都起不来的沙箱不是安全，是没用——第一次读 `pyvenv.cfg` 就会失败，所有脚本
+跟着死。凭据路径（`~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.cargo/credentials*`、
+`~/.netrc`、`~/.git-credentials`）仍然不可读，`uh sandbox check` 会证明这一点。
 
 macOS 上保证同构：用 sbpl profile 实现 `(deny file-write*)` 后只放行工作区与 `~/.uh`，
 对 `$HOME` 加 `(deny file-read* …)`，`--no-net` 时 `(deny network*)`。

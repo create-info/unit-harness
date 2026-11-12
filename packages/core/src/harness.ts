@@ -24,7 +24,7 @@ import type { AssertionOutcome } from './verify/assertions.ts'
 import fsSync from 'node:fs'
 import { workspaceDir } from './paths.ts'
 import nodePath from 'node:path'
-import { systemPrompt } from './agent/prompt.ts'
+import { buildSystemPrompt } from './agent/prompt.ts'
 import type { RunResult } from './agent/loop.ts'
 import type { SessionEvent, SessionMeta } from './evidence/store.ts'
 import type { EventSource, SessionKind } from './evidence/kinds.ts'
@@ -32,6 +32,7 @@ import { createHash } from 'node:crypto'
 import { buildLandlockArgv, findLandlockHelper } from './sandbox/landlock.ts'
 import type { LandlockHelper } from './sandbox/landlock.ts'
 import { buildSeatbeltProfile, findSeatbelt } from './sandbox/seatbelt.ts'
+import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/toolchains.ts'
 import type { SeatbeltInfo } from './sandbox/seatbelt.ts'
 import { mkdirSync } from 'node:fs'
 import os from 'node:os'
@@ -79,6 +80,8 @@ export interface RunTaskOptions {
   maxSeconds?: number
   /** 结束时对工作区变更做自动验证（默认 true） */
   verify?: boolean
+  /** 是否给模型 update_plan 工具（默认 true） */
+  plan?: boolean
 }
 
 export interface RunTaskOutcome extends RunResult {
@@ -398,12 +401,21 @@ export class Harness {
         workspace: workdir,
         allowHome: this.opts.allowHome,
         denyNetwork: this.opts.denyNetwork,
+        // 只读放行解释器/包管理器目录：否则 venv、nvm 在沙箱里全部失效
+        extraReadOnly: [
+          ...toolchainPaths().readOnly,
+          ...this.sandboxRoots(spec.argv, workdir),
+        ],
       })
     } else if (useSeatbelt) {
       const profile = buildSeatbeltProfile({
         workspace: workdir,
         allowHome: this.opts.allowHome,
         denyNetwork: this.opts.denyNetwork,
+        extraReadOnly: [
+          ...toolchainPaths().readOnly,
+          ...this.sandboxRoots(spec.argv, workdir),
+        ],
       })
       cmd = this.seatbelt.path
       args = ['-p', profile, '--', ...spec.argv]
@@ -480,14 +492,12 @@ export class Harness {
       emit: (kind, payload, parentId) => this.ev(kind, payload, 'agent', parentId ?? null)?.id ?? null,
     })
 
-    const sys = systemPrompt({
+    const sys = buildSystemPrompt({
       workspace: this.workspace,
       isolation: this.isolation.enforced,
       networkBlocked: this.opts.denyNetwork === true,
-      tools: [
-        { name: 'run_command', description: 'run a program in the sandbox' },
-        ...this.tools.map((t) => ({ name: t.name, description: t.description })),
-      ],
+      planEnabled: o.plan !== false,
+      tools: this.tools.map((t) => ({ name: t.name, description: t.description })),
     })
 
     // system 提示不写进事件（体积大且含环境细节），只记摘要
@@ -513,7 +523,23 @@ export class Harness {
           return { content: `exit=${r.exitCode} isolation=${r.isolation}\n${body}`.trim() }
         },
         callTool: (name, args) => this.callTool(name, args),
-        ev: (kind, payload) => { this.ev(kind, payload, 'agent') },
+        readFile: (rel) => {
+          try {
+            return fsSync.readFileSync(this.safeJoin(rel), 'utf8')
+          } catch {
+            return null
+          }
+        },
+        writeFile: (rel, content) => {
+          const abs = this.safeJoin(rel)
+          fsSync.mkdirSync(nodePath.dirname(abs), { recursive: true })
+          fsSync.writeFileSync(abs, content)
+        },
+        deleteFile: (rel) => {
+          try { fsSync.unlinkSync(this.safeJoin(rel)) } catch { /* already gone */ }
+        },
+        planEnabled: o.plan !== false,
+        ev: (kind, payload) => this.ev(kind, payload, 'agent')?.id ?? null,
         log: (m) => this.log('info', m),
       },
       {
@@ -566,6 +592,17 @@ export class Harness {
     }
 
     return { ...result, artifacts, verifications }
+  }
+
+  /** 沙箱内需要只读放行的目录：静态工具链 + 本次实际执行的程序所在树 */
+  private sandboxRoots(argv: string[], workdir: string): string[] {
+    const progs = [String(argv[0] ?? ''), ...shellInnerPrograms(argv)]
+    const out: string[] = []
+    for (const p of progs) {
+      if (!p) continue
+      out.push(...executableRoots(p, workdir))
+    }
+    return [...new Set(out)]
   }
 
   /** 把相对路径限制在工作区内（挡住 ../ 逃逸） */

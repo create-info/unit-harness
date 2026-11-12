@@ -244,12 +244,35 @@ function printEvent(kind: string, p: Record<string, unknown>): void {
     case 'tool/result':
       console.log(`  ${p.status === 'ok' ? '✓' : '✗'} exit=${String(p.exit_code ?? '-')}`)
       break
+    case 'plan/updated': {
+      const steps = p.steps as Array<{ step: string; status: string }> | undefined
+      if (steps) {
+        console.log('  plan:')
+        for (const s of steps) {
+          const mark = s.status === 'completed' ? '✓' : s.status === 'in_progress' ? '▸' : ' '
+          console.log(`    ${mark} ${s.step}`)
+        }
+      }
+      break
+    }
     case 'turn/end':
       console.log(`· turn end (${String(p.stop_reason)}, ${String(p.steps)} steps)`)
       break
     default:
       break
   }
+}
+
+async function cmdExec(rest: string[]): Promise<void> {
+  const argv = rest.filter((a) => a !== '--')
+  if (argv.length === 0) fail('usage: uh exec -- <program> [args...]   (runs inside the sandbox)')
+
+  await withHarness(async (h) => {
+    const r = await h.exec({ argv: [argv[0] as string, ...argv.slice(1)] })
+    if (r.stdout) process.stdout.write(r.stdout)
+    if (r.stderr) process.stderr.write(r.stderr)
+    process.exitCode = r.exitCode
+  }, { label: `exec ${argv.join(' ')}`.slice(0, 60), record: false })
 }
 
 async function cmdRun(task?: string): Promise<void> {
@@ -269,6 +292,7 @@ async function cmdRun(task?: string): Promise<void> {
       ...(flag('base-url') ? { baseUrl: flag('base-url')! } : {}),
       ...(flag('api-key') ? { apiKey: flag('api-key')! } : {}),
       ...(maxStepsRaw ? { maxSteps: Number(maxStepsRaw) } : {}),
+      ...(argv.includes('--no-plan') ? { plan: false } : {}),
     })
     console.log('')
     console.log('--- answer ---')
@@ -530,6 +554,7 @@ function cmdHelp(): void {
 
 Usage:
   uh run "<task>"           run a task with the model agent (sandboxed)
+  uh exec -- <cmd>          run one command inside the sandbox (debugging)
   uh provider list          supported providers, keys, live models
   uh config set <id>        store an API key (hidden input); .model / .baseUrl
   uh config use <id>        set the default provider
@@ -575,6 +600,8 @@ async function main(): Promise<void> {
       await cmdProvider(argv[1]); return
     case 'config':
       await cmdConfig(argv[1], argv[2], argv[3]); return
+    case 'exec':
+      await cmdExec(argv.slice(1)); return
     case 'run':
       await cmdRun(argv.slice(1).filter((a) => !a.startsWith('--') && !isFlagValue(a)).join(' ')); return
     case 'help': case '--help': case '-h':
