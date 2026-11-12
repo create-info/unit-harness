@@ -33,8 +33,19 @@ jobs:
       - name: build
         run: npm run build
 
+      # 失败时把具体断言塞进 annotation：job log 匿名读不到，annotation 可以
+      # （/commits/{sha}/check-runs），这台机器上看不了 Windows/macOS 的真机日志
       - name: agent loop test (mock provider)
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! npm test 2>&1 | tee test.log; then
+            echo "--- failing tests ---"
+            grep -E "^not ok|^# (pass|fail)" test.log || true
+            DETAIL=$(grep -A 14 "^not ok" test.log | head -80 | tr '\n' ' ' | tr -s ' ')
+            echo "::error title=test failure on ${{ runner.os }}::${DETAIL:0:800}"
+            exit 1
+          fi
 
       - name: doctor
         run: node dist/uh.cjs doctor
