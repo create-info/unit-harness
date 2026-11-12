@@ -8,3 +8,4 @@ spikes/**/node_modules/
 .DS_Store
 /core
 core.[0-9]*
+.idea
