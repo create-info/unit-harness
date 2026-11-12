@@ -49,11 +49,19 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          node dist/uh.cjs sandbox check
-          sid=$(node dist/uh.cjs session list | tail -1 | awk '{print $1}')
+          set +e
+          node dist/uh.cjs sandbox check; sc=$?
+          echo "sandbox check exit=$sc"
+          node dist/uh.cjs session list
+          sid=$(node dist/uh.cjs session list | awk 'NR==2{print $1}')
           echo "session: $sid"
-          node dist/uh.cjs session show "$sid" | head -12
-          node dist/uh.cjs session replay "$sid"
+          node dist/uh.cjs session show "$sid" | head -20
+          node dist/uh.cjs session replay "$sid"; rc=$?
+          echo "replay exit=$rc"
+          if [ "$sc" -ne 0 ] || [ "$rc" -ne 0 ]; then
+            node dist/uh.cjs session show "$sid" | head -40 | sed 's/^/::error::/'
+            exit 1
+          fi
 
       - name: windows reports path-guard and fails closed
         if: runner.os == 'Windows'
