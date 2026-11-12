@@ -1,5 +1,7 @@
 # UnitHarness
 
+[![ci](https://github.com/create-info/unit-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/create-info/unit-harness/actions/workflows/ci.yml)
+
 **The agent that proves its work.**
 
 Every deliverable it hands you has been executed and verified in a sandbox, and
@@ -147,11 +149,11 @@ Read the design records in [`docs/`](docs).
 
 ## Sandbox
 
-| Platform | Priority 1 | Priority 2 | Fallback | State |
-|---|---|---|---|---|
-| Linux | landlock (`native/landlock-helper`) | bwrap | path-guard + confirm | landlock **implemented** |
-| macOS | seatbelt | path-guard + confirm | — | pending |
-| Windows | restricted token + Job Object | path-guard + confirm | — | pending |
+| Platform | Mechanism | State |
+|---|---|---|
+| Linux | landlock via `native/landlock-helper` (C) | **implemented**, CI-verified |
+| macOS | seatbelt via `/usr/bin/sandbox-exec` (sbpl) | **implemented**, CI-verified on `macos-latest` |
+| Windows | restricted token + Job Object | **not implemented** — reports `path-guard`, refuses exec |
 
 What landlock actually gives you on Linux:
 
@@ -161,6 +163,15 @@ What landlock actually gives you on Linux:
 - read access to system paths (`/usr`, `/lib`, `/etc`, `/proc`, …) is required for shells and runtimes to work
 
 If nothing is available, `exec` **fails closed**. We never silently downgrade.
+
+On macOS the same guarantees hold, built from an sbpl profile: `(deny file-write*)`
+with the workspace and `~/.uh` re-allowed, `(deny file-read* …)` on `$HOME`, and
+`(deny network*)` under `--no-net`. `uh sandbox check` runs the identical four
+probes on both platforms, so the claim is the same claim.
+
+Windows has no kernel isolation yet, so it reports `path-guard` and refuses to
+execute unless you pass `--allow-unconfined`. We would rather ship a true "no"
+than a comfortable "probably yes".
 
 Note: bwrap is detected but not used as an enforcement path on kernels with
 `apparmor_restrict_unprivileged_userns=1` (Ubuntu 23.10+), where it cannot create

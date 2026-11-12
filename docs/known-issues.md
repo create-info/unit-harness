@@ -36,3 +36,26 @@ a version mismatch.
 
 Narrowing 1 vs 2 first is the cheapest step: if x86_64 musl works, the problem is
 aarch64-specific ELF handling, not musl per se.
+
+## KI-2 — Windows has no kernel isolation yet
+
+**Status:** open. Windows reports `path-guard` and fails closed.
+
+**Symptom.** On `win32`, `uh doctor` reports `isolation none … [available path-guard]`
+and `exec` refuses to run without `--allow-unconfined`.
+
+**Why.** Both real options need a native helper compiled with MSVC:
+
+- **Restricted token** (`CreateRestrictedToken` + `CreateProcessAsUser`): drops
+  privileges, but does not by itself confine file access.
+- **Job Object**: bounds memory/CPU/process count, but does not restrict paths.
+
+A meaningful Windows sandbox needs both, plus path ACLs for the workspace — that is
+a native module, and it must still be verified on a real runner before we claim it.
+
+**What CI enforces today.** The `windows-latest` job asserts the *honest* state:
+doctor reports `path-guard` and `uh tool hello` is refused. This prevents a future
+change from silently enabling unconfined execution on Windows.
+
+**Next step.** Write `native/token-run` (C, MSVC), have CI compile and run it, and
+only then flip `enforced` to `win-restricted-token`.

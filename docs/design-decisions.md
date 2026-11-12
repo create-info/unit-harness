@@ -264,8 +264,20 @@ type IsolationLevel =
 | 读权限 | 系统路径白名单（`/usr /lib /lib64 /bin /sbin /etc /proc /sys /opt /run`） |
 | bwrap | **不可用**：本机 `apparmor_restrict_unprivileged_userns=1`，bwrap 连 `--unshare-pid` 都失败。这验证了 D7 预判的撞墙点，也说明 landlock 才是主路径 |
 
-自证命令：`uh sandbox check`（4 条断言，任一不过即退出码 1）。
-macOS / Windows 的施加仍未实现，`enforced` 保持 `none` → fail-closed。
+**macOS（2026-11-12，CI 验证）**：`sandbox/seatbelt.ts` 生成 sbpl profile，经
+`/usr/bin/sandbox-exec` 施加：
+
+- `(deny file-write*)` 后只放行 workspace、`~/.uh`、`/tmp`、`/private/var/folders`
+- `(deny file-read* (subpath $HOME))`，再放行 workspace 与 `~/.uh` → 同 landlock 一样挡住 `~/.ssh`
+- `--no-net` 时 `(deny network*)`
+- 选择 `(allow default)` + 显式 deny，而非白名单：macOS 进程需要读 dyld cache / TCC 等，
+  白名单模式会让普通命令都起不来
+
+**Windows**：未实现。`enforced` 报 `path-guard` → fail-closed。
+受限令牌 + Job Object 需要 native（MSVC）实现，尚未动手；CI 在 `windows-latest` 上
+断言的就是"报 path-guard 且拒绝执行"，防止悄悄放行。
+
+自证命令：`uh sandbox check`（4 条断言，任一不过即退出码 1），三个平台的 CI 都跑。
 
 ---
 
