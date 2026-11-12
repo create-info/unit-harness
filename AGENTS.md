@@ -28,6 +28,7 @@ This repository is written with AI assistance. Follow these rules.
 npm run build:native          # landlock helper -> ~/.uh/bin
 npm run build && node dist/uh.cjs doctor
 node dist/uh.cjs sandbox check                                 # must pass 4/4 on Linux
+node dist/uh.cjs session list && node dist/uh.cjs session replay <id>   # must reproduce
 UH_PLUGIN_DIR=$PWD/examples node dist/uh.cjs tool hello        # expect fail-closed WITHOUT helper
 ```
 

@@ -77,6 +77,33 @@ E_SANDBOX_UNAVAILABLE: current isolation is "none". Refusing to execute (fail-cl
 Re-run with --allow-unconfined if you accept the risk.
 ```
 
+## Every run is evidence
+
+Nothing happens silently. Each session writes an append-only JSONL log:
+
+```console
+$ node dist/uh.cjs session show ses_01M77JP1...
+#  1  session/start          environment  {"workspace":"~/.uh/work","isolation":"landlock-v7",...}
+#  2  tool/call              agent        {"tool":"exec","argv":["sh","-c","echo ok > ./sb-check.txt"],...}
+#  3  tool/result            environment  {"tool":"exec","status":"ok","exit_code":0,"isolation":"landlock-v7",...}
+#  4  verification/asserted  environment  {"assertion":{"kind":"sandbox-probe","name":"write inside workspace",...}
+```
+
+And the assertions can be re-run later, from the log alone:
+
+```console
+$ node dist/uh.cjs session replay ses_01M77JP1...
+SAME  write inside workspace  recorded=ok now=ok
+SAME  write outside workspace  recorded=deny now=deny
+SAME  read $HOME/.gitconfig  recorded=deny now=deny
+SAME  write to /etc  recorded=deny now=deny
+
+4 reproduced, 0 diverged
+```
+
+`replay` never re-runs hooks (they may have side effects); their recorded
+decisions are read from the log instead. If a result diverges, it exits non-zero.
+
 ## Plugins
 
 Everything is a plugin, loaded from `~/.uh/plugins/<name>/index.js`:

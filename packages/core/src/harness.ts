@@ -13,6 +13,10 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { probeIsolation } from './sandbox/probe.ts'
+import { EventStore } from './evidence/store.ts'
+import type { SessionEvent, SessionMeta } from './evidence/store.ts'
+import type { EventSource, SessionKind } from './evidence/kinds.ts'
+import { createHash } from 'node:crypto'
 import { buildLandlockArgv, findLandlockHelper } from './sandbox/landlock.ts'
 import type { LandlockHelper } from './sandbox/landlock.ts'
 import { mkdirSync } from 'node:fs'
@@ -41,6 +45,12 @@ export interface HarnessOptions {
   allowHome?: boolean
   /** 禁止沙箱内 TCP 连接（landlock ABI >= 4） */
   denyNetwork?: boolean
+  /** 是否把事实写进会话日志（doctor 之类的只读命令设为 false） */
+  record?: boolean
+  /** 会话标签，便于 `uh session list` 辨认 */
+  label?: string
+  /** CLI 注入的版本号，写进 session/start */
+  harnessVersion?: string
 }
 
 export interface LoadedPlugin {
@@ -64,6 +74,8 @@ export class Harness {
   private readonly services = new Map<string, unknown>()
   private readonly helper: LandlockHelper | null
   private readonly workspace: string
+  private readonly store: EventStore
+  private session: SessionMeta | null = null
 
   constructor(opts: HarnessOptions = {}) {
     this.opts = opts
@@ -73,6 +85,41 @@ export class Harness {
     this.helper = findLandlockHelper()
     this.workspace = opts.workspace ?? os.homedir() + '/.uh/work'
     try { mkdirSync(this.workspace, { recursive: true }) } catch { /* best effort */ }
+    this.store = new EventStore()
+  }
+
+  /** 当前会话 id（未开启记录时为 null） */
+  get sessionId(): string | null {
+    return this.session?.id ?? null
+  }
+
+  /** 供 CLI 读取历史会话 */
+  get events(): EventStore {
+    return this.store
+  }
+
+  private ev(
+    kind: SessionKind,
+    payload: Record<string, unknown>,
+    source: EventSource = 'agent',
+    parentId: string | null = null,
+  ): SessionEvent | null {
+    if (!this.session) return null
+    try {
+      return this.store.append(this.session.id, kind, payload, { source, parentId })
+    } catch (err) {
+      this.log('warn', `event append failed (${kind}): ${err instanceof Error ? err.message : String(err)}`)
+      return null
+    }
+  }
+
+  /** 记录一条验证断言结果（“验证即断言”，见 docs/event-model.md §4.2） */
+  recordVerification(
+    assertion: Record<string, unknown>,
+    result: 'pass' | 'fail' | 'error' | 'skipped',
+    detail?: unknown,
+  ): void {
+    this.ev('verification/asserted', { assertion, result, detail: detail ?? null }, 'environment')
   }
 
   /** 当前生效的隔离方式说明，供 UI/日志展示 */
@@ -98,8 +145,24 @@ export class Harness {
     else console.log(line, ...rest)
   }
 
-  /** 扫描插件目录并 apply */
+  /** 扫描插件目录并 apply；record=true 时开启会话日志 */
   async start(): Promise<LoadedPlugin[]> {
+    if (this.opts.record !== false) {
+      this.session = this.store.create({
+        workspace: this.workspace,
+        harnessVersion: this.opts.harnessVersion ?? '0.0.0',
+        ...(this.opts.label ? { label: this.opts.label } : {}),
+      })
+      this.ev('session/start', {
+        workspace: this.workspace,
+        harness_version: this.opts.harnessVersion ?? '0.0.0',
+        isolation: this.isolation.enforced,
+        available: this.isolation.available,
+        platform: process.platform,
+        arch: process.arch,
+      }, 'environment')
+    }
+
     const dirs = this.opts.pluginDirs ?? []
     for (const dir of dirs) {
       let entries: Awaited<ReturnType<typeof readdir>> = [] as unknown as Awaited<ReturnType<typeof readdir>>
@@ -254,6 +317,12 @@ export class Harness {
 
     const started = Date.now()
     const timeoutMs = spec.timeoutMs ?? 60_000
+    const callEv = this.ev('tool/call', {
+      tool: 'exec',
+      argv: spec.argv,
+      cwd: spec.cwd ?? this.workspace,
+      timeout_ms: timeoutMs,
+    }, 'agent')
 
     // 默认在工作区执行：工作区是唯一可写区域，cwd 必须与之一致
     const workdir = spec.cwd ?? this.workspace
@@ -294,6 +363,16 @@ export class Harness {
       child.on('error', (e) => { clearTimeout(timer); reject(e) })
       child.on('close', (code) => {
         clearTimeout(timer)
+        const digest = createHash('sha256').update(stdout + stderr).digest('hex').slice(0, 16)
+        this.ev('tool/result', {
+          tool: 'exec',
+          status: code === 0 ? 'ok' : 'error',
+          exit_code: code ?? -1,
+          isolation: this.helper ? `landlock-v${this.helper.abi}` : level,
+          duration_ms: Date.now() - started,
+          output_digest: digest,
+          truncated,
+        }, 'environment', callEv?.id ?? null)
         resolve({
           exitCode: code ?? -1,
           stdout, stderr, truncated,
@@ -308,11 +387,38 @@ export class Harness {
   async callTool(name: string, args: Record<string, unknown>): Promise<{ content: string }> {
     const tool = this.toolRegistry.get(name)
     if (!tool) throw new Error(`tool not found: ${name}`)
-    return await tool.handler(args)
+
+    const callEv = this.ev('tool/call', { tool: name, args }, 'agent')
+    const started = Date.now()
+    try {
+      const res = await tool.handler(args)
+      const digest = createHash('sha256').update(res.content).digest('hex').slice(0, 16)
+      this.ev('tool/result', {
+        tool: name,
+        status: 'ok',
+        duration_ms: Date.now() - started,
+        output_digest: digest,
+        isolation: this.isolation.enforced,
+      }, 'environment', callEv?.id ?? null)
+      return res
+    } catch (err) {
+      this.ev('tool/result', {
+        tool: name,
+        status: 'error',
+        duration_ms: Date.now() - started,
+        error: err instanceof Error ? err.message : String(err),
+        isolation: this.isolation.enforced,
+      }, 'environment', callEv?.id ?? null)
+      throw err
+    }
   }
 
   /** 逆序释放所有注册（D3：可逆注册） */
-  dispose(): void {
+  dispose(reason = 'disposed'): void {
+    if (this.session) {
+      try { this.store.end(this.session.id, reason) } catch { /* already closed */ }
+      this.session = null
+    }
     for (const d of [...this.disposers].reverse()) {
       try { d() } catch { /* keep disposing */ }
     }
