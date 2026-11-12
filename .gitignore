@@ -6,4 +6,5 @@ spikes/**/build/
 spikes/**/node_modules/
 *.log
 .DS_Store
-core
+/core
+core.[0-9]*

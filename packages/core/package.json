@@ -1,0 +1,13 @@
+{
+  "name": "@unit-harness/core",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "license": "Apache-2.0",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.1"
+  }
+}
