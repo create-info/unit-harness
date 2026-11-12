@@ -30,7 +30,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: bash scripts/release.sh "$TAG"
+        run: |
+          set -o pipefail
+          if ! bash scripts/release.sh "$TAG" 2>&1 | tee out.log; then
+            # 匿名读不到 job log，所以把失败现场塞进 annotation
+            DETAIL=$(tail -45 out.log | tr '\n' ' ' | tr -s ' ')
+            echo "::error title=release failed::${DETAIL:0:900}"
+            exit 1
+          fi
+
+      - name: show what was published
+        if: always()
+        run: tail -40 out.log || true
 
       - name: verify the release is downloadable without auth
         env:
