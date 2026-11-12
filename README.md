@@ -287,6 +287,23 @@ Base64 never goes to disk: `state.json` keeps the path and the media type, and a
 resume re-reads the file. Otherwise one screenshot would inflate a session by tens
 of megabytes.
 
+## Releasing
+
+Pushing a tag is the whole procedure — no personal access token, no local gh:
+
+```console
+$ git tag v0.1.0 && git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` then picks up the newest green `main` run's
+artifacts, generates a `.sha256` next to every binary, creates the release, and
+verifies each asset is downloadable **without authentication** — because that is
+how `install.sh` fetches it. A local dry run needs no token either:
+
+```console
+$ bash scripts/release.sh v0.1.0 --dry-run
+```
+
 ## Remote hosts
 
 ```console
