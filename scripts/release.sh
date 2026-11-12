@@ -67,11 +67,10 @@ if [ "$DRY" = 1 ]; then
     printf 'placeholder %s\n' "$n" > "${FILES}/${n}"
   done
 else
-  echo "→ locating the newest successful run on main"
-  RUN_ID=$(api GET "${API}/actions/runs?per_page=20&branch=main&status=success" \
-    | json "import json,sys;d=json.load(sys.stdin);print(next((r['id'] for r in d.get('workflow_runs',[])),''))")
-  [ -n "$RUN_ID" ] || { echo "no successful run found on main" >&2; exit 1; }
-  echo "  run ${RUN_ID}"
+  echo "→ picking the run with the most complete artifacts"
+  RUN_ID=$(python3 "$(dirname "$0")/pick-run.py")
+  [ -n "$RUN_ID" ] || { echo "no usable run found on main" >&2; exit 1; }
+  echo "  using run ${RUN_ID}"
 
   echo "→ downloading artifacts"
   api GET "${API}/actions/runs/${RUN_ID}/artifacts" > "${WORK}/artifacts.json"
