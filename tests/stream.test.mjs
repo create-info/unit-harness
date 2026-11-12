@@ -74,8 +74,10 @@ test('streaming: split tool_call arguments are reassembled', async () => {
     // 1) 请求确实是流式的
     assert.equal(seen[0].stream, true, 'the client must ask for a stream')
 
-    // 2) 分片的 arguments 拼回合法 JSON，并且工具真的执行了
-    assert.match(out, /exit=0/, `the tool should have run; output was:\n${out}`)
+    // 2) 分片的 arguments 拼回了合法 JSON —— 判据是工具**被调用了**。
+    //    不能断言 exit=0：Windows 上沙箱是 path-guard，exec 会 fail-closed 拒绝，
+    //    那是沙箱该有的行为，不是流式解析的问题。
+    assert.match(out, /⚙ exec/, `the tool call must have parsed; output was:\n${out}`)
 
     // 3) 末尾 chunk 里的 usage 被记录下来
     const sid = readdirSync(join(home, 'sessions'))[0]
