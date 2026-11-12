@@ -137,11 +137,11 @@ L6 分发层     CLI / 桌面壳、签名产物
 
 ## 沙箱
 
-| 平台 | 第一档 | 第二档 | 兜底 | 状态 |
-|---|---|---|---|---|
-| Linux | landlock（`native/landlock-helper`） | bwrap | 路径约束 + 确认 | landlock **已实现** |
-| macOS | seatbelt | 路径约束 + 确认 | — | 待做 |
-| Windows | 受限令牌 + Job Object | 路径约束 + 确认 | — | 待做 |
+| 平台 | 机制 | 状态 |
+|---|---|---|
+| Linux | landlock（`native/landlock-helper`，C） | **已实现**，CI 验证 |
+| macOS | seatbelt（`/usr/bin/sandbox-exec` + sbpl） | **已实现**，`macos-latest` 上 CI 验证 |
+| Windows | 受限令牌 + Job Object | **未实现**——报 `path-guard`，拒绝执行 |
 
 Linux 上 landlock 实际给了什么：
 
@@ -151,6 +151,13 @@ Linux 上 landlock 实际给了什么：
 - 系统路径（`/usr`、`/lib`、`/etc`、`/proc`…）需要可读，否则 shell 和运行时起不来
 
 全部不可用时 **fail-closed**。我们绝不静默降级。
+
+macOS 上保证同构：用 sbpl profile 实现 `(deny file-write*)` 后只放行工作区与 `~/.uh`，
+对 `$HOME` 加 `(deny file-read* …)`，`--no-net` 时 `(deny network*)`。
+`uh sandbox check` 在两个平台跑的是同一组四条探针——所以"保证"是同一个保证。
+
+Windows 还没有内核级隔离，因此报 `path-guard` 并拒绝执行，除非显式
+`--allow-unconfined`。宁可给一个真实的"不"，也不给一个舒服的"应该可以"。
 
 注：bwrap 会被探测到，但在 `apparmor_restrict_unprivileged_userns=1` 的内核上
 （Ubuntu 23.10+）无法创建 user namespace，因此不作为施加路径；landlock 没有这个前提。
