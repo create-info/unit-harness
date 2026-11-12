@@ -12,7 +12,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-function startMock(seen) {
+function startMock(seen, command) {
   const server = http.createServer((req, res) => {
     let body = ''
     req.on('data', (c) => (body += c))
@@ -32,7 +32,7 @@ function startMock(seen) {
               message: {
                 role: 'assistant',
                 content: '',
-                tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'run_command', arguments: '{"argv":["echo","hello-from-mock"]}' } }],
+                tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ argv: command }) } }],
               },
               finish_reason: 'tool_calls',
             }],
@@ -60,7 +60,7 @@ function runCli(args, env) {
 
 test('agent loop emits the full turn/step/tool event chain', async () => {
   const seen = []
-  const server = startMock(seen)
+  const server = startMock(seen, ['echo', 'hello-from-mock'])
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   const port = server.address().port
   const home = mkdtempSync(join(tmpdir(), 'uh-test-'))
@@ -91,6 +91,36 @@ test('agent loop emits the full turn/step/tool event chain', async () => {
     // 第二次请求必须带 tool 消息，否则模型看不到工具结果
     const last = seen[seen.length - 1]
     assert.ok(last.messages.some((m) => m.role === 'tool'), 'tool result must be fed back')
+  } finally {
+    server.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('files created during a run are recorded and asserted', { skip: process.platform === 'win32' }, async () => {
+  const seen = []
+  const server = startMock(seen, ['sh', '-c', 'printf "#!/bin/sh\\necho deploying\\n" > deploy.sh'])
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const port = server.address().port
+  const home = mkdtempSync(join(tmpdir(), 'uh-test-'))
+
+  try {
+    const res = await runCli(
+      ['run', 'write a deploy script', '--base-url', `http://127.0.0.1:${port}/v1`, '--model', 'mock', '--max-steps', '3'],
+      { UH_HOME: home },
+    )
+
+    assert.match(res.out, /deliverables/, 'deliverables section should be printed')
+    assert.match(res.out, /deploy\.sh/, 'the created file should be listed')
+    assert.match(res.out, /4\/4/, 'exists + nonempty + sha256 + sh -n should all pass')
+
+    const sessions = join(home, 'sessions')
+    const ids = readdirSync(sessions)
+    const kinds = readFileSync(join(sessions, ids[0], 'events.jsonl'), 'utf8')
+      .trim().split('\n').map((l) => JSON.parse(l).kind)
+
+    assert.ok(kinds.includes('artifact/emitted'), 'artifact/emitted must be logged')
+    assert.ok(kinds.includes('verification/asserted'), 'verification/asserted must be logged')
   } finally {
     server.close()
     rmSync(home, { recursive: true, force: true })

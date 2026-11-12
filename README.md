@@ -106,7 +106,24 @@ isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/wo
 完成 ✅
 - 已在工作区创建 hello.txt，内容为 hi from unit-harness
 - ls -la 确认文件存在
+
+--- deliverables (1) ---
+  ✓ hello.txt                    21 B  3/3  sha256=3f2a1b2c9d8e
 ```
+
+The deliverables section is not self-assessment — it's computed by diffing the
+workspace before and after the run, hashing what changed, and executing
+assertions in the sandbox:
+
+| File type | Assertions run automatically |
+|---|---|
+| any | exists · non-empty · sha256 matches |
+| `.sh` | `sh -n` (syntax check) |
+| `.json` | parses |
+| `.py` | `python3 -m py_compile` |
+
+If an assertion fails, `uh run` exits non-zero. Files that were *removed* during
+the run are logged as an `error` event.
 
 No API key needed if you have LM Studio (`:1234`) or Ollama (`:11434`) running — `uh`
 probes both and picks the first model it finds. Otherwise point it anywhere
@@ -233,6 +250,7 @@ package and do not fork it. Thanks to the DeepSeek team for releasing it openly.
 | P1 | landlock enforcement + `sandbox check` | ✅ done |
 | P1 | event log (`session/*`), assertions, replay | ✅ done |
 | P1 | agent loop, `uh run`, zero-config local model discovery | ✅ done |
+| P1 | deliverable detection + automatic assertions | ✅ done |
 | P2 | macOS seatbelt / Windows restricted token, desktop shell | — |
 | P2 | desktop shell, data packs, monitors | — |
 | P3 | protocol adapters (MCP / ACP / A2A) | — |
