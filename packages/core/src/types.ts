@@ -8,7 +8,17 @@
  */
 
 /** 插件 API 版本。不匹配时加载失败并给出迁移指引（D4）。 */
-export const API_VERSION = 1 as const
+export const API_VERSION = 1
+
+/**
+ * 构建期注入的 landlock helper（base64）。
+ * 单文件发行版靠它在首次运行时自举出 ~/.uh/bin/landlock-helper；
+ * 普通构建里是空串，此时回落到仓库内的构建产物。
+ */
+declare global {
+  // eslint-disable-next-line no-var
+  var __UH_LANDLOCK_B64__: string | undefined
+}
 
 export type Disposer = () => void
 

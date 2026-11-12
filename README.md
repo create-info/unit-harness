@@ -7,10 +7,10 @@
 Every deliverable it hands you has been executed and verified in a sandbox, and
 every run is replayable. If it can't be verified, it isn't done.
 
-> Status: `v0.1.0` — landlock enforcement is live on Linux (via a small C helper).
-> Filesystem writes are confined to the workspace, `$HOME` is unreadable, and TCP
-> can be blocked. macOS/Windows enforcement is still pending and those platforms
-> fail closed. Verify it yourself with `uh sandbox check`.
+> Status: `v0.1.0` — isolation is enforced on Linux (landlock, via a small C helper
+> embedded in the binary) and on macOS (seatbelt). Writes are confined to the
+> workspace, `$HOME` is unreadable, TCP can be blocked. Windows has no kernel
+> isolation yet and fails closed. Verify it yourself with `uh sandbox check`.
 
 ---
 
@@ -29,18 +29,50 @@ UnitHarness treats **verification as a first-class citizen**:
 | Audit | none | append-only event log, replayable |
 | Costly actions | silent | approval-gated |
 
-## Quick start
+## Install
+
+```bash
+# macOS / Linux — one static binary, no Node required
+curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/main/install.sh | bash
+```
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/create-info/unit-harness/main/install.ps1 | iex
+```
+
+The Linux binary carries the landlock helper inside itself and unpacks it to
+`~/.uh/bin/` on first run — nothing else to install. From source instead:
 
 ```bash
 git clone https://github.com/create-info/unit-harness.git
 cd unit-harness
-npm install
-npm run build:native     # compiles the landlock helper -> ~/.uh/bin (needs cc)
-npm run build
-
-node dist/uh.cjs doctor
-node dist/uh.cjs sandbox check
+npm i -g .        # builds, then links `uh` into your PATH
+uh doctor
 ```
+
+## Quick start
+
+```console
+$ uh doctor
+UnitHarness 0.1.0  (node v22.22.3)
+platform    darwin/arm64  kernel=24.6.0
+isolation   seatbelt
+enforcement seatbelt via /usr/bin/sandbox-exec; writes limited to ~/.uh/work; home unreadable
+...
+model       qwen3.8-27b  @ http://127.0.0.1:1234/v1  (discovered:LM Studio)
+
+$ uh sandbox check
+PASS  write inside workspace  (expected ok, got ok)
+PASS  write outside workspace (expected deny, got deny)
+PASS  read $HOME/.gitconfig   (expected deny, got deny)
+PASS  write to /etc           (expected deny, got deny)
+
+4/4 checks passed
+```
+
+If `uh doctor` reports `model none`, start LM Studio or Ollama — or export
+`UH_BASE_URL` / `UH_MODEL` / `UH_API_KEY`.
 
 `build:native` is optional: without it `exec` reports no isolation and refuses to
 run (fail-closed).

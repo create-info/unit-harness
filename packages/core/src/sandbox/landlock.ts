@@ -19,6 +19,23 @@ export interface LandlockHelper {
 /** 默认只读的系统路径（各发行版布局不同，不存在的会被 helper 跳过） */
 export const SYSTEM_RO = ['/usr', '/lib', '/lib64', '/bin', '/sbin', '/etc', '/proc', '/sys', '/opt', '/run']
 
+/** SEA 单文件发行版：首次运行时把内嵌的 helper 释放到 ~/.uh/bin */
+function ensureEmbeddedHelper(): string | null {
+  const embedded = typeof __UH_LANDLOCK_B64__ === 'undefined' ? '' : __UH_LANDLOCK_B64__
+  if (!embedded) return null
+  if (process.platform !== 'linux') return null
+
+  const target = path.join(os.homedir(), '.uh', 'bin', 'landlock-helper')
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, Buffer.from(embedded, 'base64'))
+    fs.chmodSync(target, 0o755)
+    return target
+  } catch {
+    return null
+  }
+}
+
 function candidates(): string[] {
   // 显式指定时只认它：`UH_LANDLOCK_HELPER=/nonexistent` 可用来模拟「没有沙箱」，
   // 也避免测试时静默回落到仓库内的构建产物。
@@ -26,8 +43,11 @@ function candidates(): string[] {
   if (explicit !== undefined && explicit !== '') return [explicit]
 
   const home = os.homedir()
+  const installed = path.join(home, '.uh', 'bin', 'landlock-helper')
+  if (!fs.existsSync(installed)) ensureEmbeddedHelper()
+
   return [
-    path.join(home, '.uh', 'bin', 'landlock-helper'),
+    installed,
     path.join(process.cwd(), 'build', 'landlock-helper'),
     path.join(process.cwd(), 'native', 'landlock-helper', 'build', 'landlock-helper'),
   ]

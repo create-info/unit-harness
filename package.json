@@ -13,12 +13,13 @@
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
-    "build:sea": "bash scripts/build-sea.sh",
+    "build:sea": "node scripts/build-sea.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test tests/*.test.mjs",
     "check:constraints": "node scripts/check-constraints.mjs",
     "uh": "node packages/cli/src/main.ts",
-    "build:native": "bash scripts/build-native.sh"
+    "build:native": "bash scripts/build-native.sh",
+    "prepare": "node scripts/build.mjs"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.1"
@@ -27,5 +28,17 @@
     "@types/node": "^22.10.0",
     "esbuild": "^0.24.0",
     "typescript": "^5.7.0"
-  }
+  },
+  "bin": {
+    "uh": "dist/uh.cjs",
+    "unitai": "dist/uh.cjs"
+  },
+  "files": [
+    "dist/uh.cjs",
+    "dist/bin/",
+    "README.md",
+    "README.zh.md",
+    "LICENSE",
+    "NOTICE"
+  ]
 }
