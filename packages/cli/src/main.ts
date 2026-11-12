@@ -15,7 +15,9 @@ import {
   loadMcpServers, upsertMcpServer, removeMcpServer, McpRegistry,
   listRecipes, loadRecipe, resolveVars, renderTemplate, runRecipeChecks,
   loadHosts, upsertHost, removeHost, runRemote, classify, describeRisk,
+  latestResumable,
 } from '@unit-harness/core'
+import type { Message } from '@unit-harness/core'
 
 import { VERSION } from './version.ts'
 import { startServer, openBrowser } from './serve.ts'
@@ -81,6 +83,27 @@ function endStreamLine(): void {
   streamedThisStep = false
 }
 
+/** 当前正在跑的 harness，供 SIGINT 处理器拿到 */
+let activeHarness: Harness | null = null
+let sigintCount = 0
+
+/**
+ * Ctrl+C 的正确行为：**先收尾，再退出**。
+ *
+ * 直接杀进程的后果是事件日志停在「调用了工具但没有结果」、会话 meta 永远 active、
+ * 沙箱里的子进程变孤儿。所以第一次 Ctrl+C 只是请求中断（让当前步骤走完收尾），
+ * 第二次才真的强退——用户想立刻停的时候总得有办法。
+ */
+process.on('SIGINT', () => {
+  sigintCount++
+  if (!activeHarness || sigintCount > 1) {
+    process.stdout.write('\n')
+    process.exit(130)
+  }
+  process.stdout.write('\n· interrupted — finishing this step, Ctrl+C again to force quit\n')
+  activeHarness.abort()
+})
+
 async function withHarness<T>(
   fn: (h: Harness) => Promise<T>,
   opts: { record?: boolean; label?: string; onEvent?: (kind: string, payload: Record<string, unknown>) => void } = {},
@@ -98,10 +121,12 @@ async function withHarness<T>(
     onText: streamText,
     onReasoning: streamReasoning,
   })
+  activeHarness = h
   try {
     await h.start()
     return await fn(h)
   } finally {
+    activeHarness = null
     h.dispose()
   }
 }
@@ -620,8 +645,24 @@ async function cmdMcp(sub?: string, rest: string[] = []): Promise<void> {
 }
 
 async function cmdRun(task?: string): Promise<void> {
+  const cont = argv.includes('--continue')
+  let resumeFrom: Message[] | undefined
+
+  if (cont) {
+    const st = latestResumable()
+    if (!st) fail('no previous session to continue (run something first)')
+    resumeFrom = st.messages
+    const age = st.updatedAt.replace('T', ' ').slice(0, 19)
+    console.log(`resuming ${st.sessionId} — ${st.messages.length} messages, last stopped by ${st.stoppedBy}, ${age}`)
+    // 没给新指令时补一句，否则模型拿到一段历史不知道要干什么。
+    // 注意是「空或纯空白」都算没给——`task` 可能是空串而不是 undefined。
+    if (!task || !task.trim()) {
+      task = 'Continue where you left off. Finish what remains, then verify your own work.'
+    }
+  }
+
   if (!task) {
-    fail('usage: uh run "<task>" [--model M] [--base-url U] [--api-key K] [--max-steps N]')
+    fail('usage: uh run "<task>" [--continue] [--model M] [--base-url U] [--api-key K] [--max-steps N]')
   }
   const maxStepsRaw = flag('max-steps')
 
@@ -631,6 +672,7 @@ async function cmdRun(task?: string): Promise<void> {
     console.log('')
     const res = await h.runTask({
       task: task!,
+      ...(resumeFrom ? { resumeFrom } : {}),
       ...(flag('provider') ? { provider: flag('provider')! } : {}),
       ...(flag('model') ? { model: flag('model')! } : {}),
       ...(flag('base-url') ? { baseUrl: flag('base-url')! } : {}),
@@ -669,6 +711,12 @@ async function cmdRun(task?: string): Promise<void> {
     console.log(`steps=${res.steps} tokens=${res.usage.total} stoppedBy=${res.stoppedBy}${res.compactions ? ` compactions=${res.compactions}` : ''}`)
     console.log(`session: ${h.sessionId ?? '(not recorded)'}`)
     if (res.stoppedBy === 'max-steps') process.exitCode = 2
+    if (res.stoppedBy === 'interrupted') {
+      console.log('')
+      console.log('interrupted. the session is saved and replayable.')
+      console.log('pick it up with:  uh run --continue "what to do next"')
+      process.exitCode = 130
+    }
   }, { label: task!.slice(0, 60), onEvent: makePrinter() })
 }
 
@@ -900,6 +948,7 @@ function cmdHelp(): void {
 Usage:
   uh run "<task>"           run a task with the model agent (sandboxed)
   uh host [list|add|test]   manage remote hosts (ssh targets, key paths only)
+  uh run --continue [task]  resume the previous session instead of starting over
   uh do [name]              run a recipe: fixed task, then our own acceptance checks
   uh serve [--port N]       local web UI (default 127.0.0.1:7878)
   uh desktop                same, and open it in your browser

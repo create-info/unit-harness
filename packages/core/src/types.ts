@@ -64,6 +64,8 @@ export interface ExecSpec {
   timeoutMs?: number
   /** 期望的隔离级别；auto 表示按探测结果取当前可用最高档 */
   isolation?: 'auto' | IsolationLevel
+  /** 中断信号：abort 时杀掉子进程（Ctrl+C 不该让用户等到命令自己结束） */
+  signal?: AbortSignal
 }
 
 export interface ExecResult {
