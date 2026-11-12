@@ -118,8 +118,46 @@ export function shellInnerPrograms(argv: string[]): string[] {
   const ci = argv.indexOf('-c')
   if (ci < 0 || !argv[ci + 1]) return []
   const cmd = argv[ci + 1] as string
-  const word = cmd.trim().split(/\s+/)[0] ?? ''
-  const cleaned = word.replace(/^["']|["']$/g, '')
-  // 只接受"看起来像程序名"的，避免把 `for`、`if` 之类当路径
-  return /^[\w./~-]+$/.test(cleaned) ? [cleaned] : []
+
+  // 不能只看第一个词：`test "$(python3 cli.py add 2 3)" = "5"` 里的程序藏在命令替换里，
+  // 只看首词就把 python3 的目录树挡在外面，表现是「解释器起不来」而不是「命令被拒」。
+  // 按 shell 的断词符切分，把所有**真实存在**的可执行文件都收进来。
+  const tokens = cmd.split(/[\s;|&()<>`'"$]+/).filter(Boolean)
+  const found = new Set<string>()
+
+  for (const raw of tokens) {
+    const token = raw.replace(/^[\]\[]+|[\]\[]+$/g, '')
+    if (!token || token.startsWith('-')) continue
+    if (!/^[\w./~-]+$/.test(token)) continue
+
+    if (token.includes('/')) {
+      if (isExecutable(token)) found.add(token)
+      continue
+    }
+    const resolved = whichInPath(token)
+    if (resolved) found.add(resolved)
+  }
+
+  return [...found]
+}
+
+/** 在 PATH 里找可执行文件（只读判断，不执行） */
+function whichInPath(name: string): string | null {
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean)
+  for (const dir of dirs) {
+    const full = path.join(dir, name)
+    if (isExecutable(full)) return full
+  }
+  return null
+}
+
+function isExecutable(p: string): boolean {
+  try {
+    const st = fs.statSync(p)
+    if (!st.isFile()) return false
+    fs.accessSync(p, fs.constants.X_OK)
+    return true
+  } catch {
+    return false
+  }
 }

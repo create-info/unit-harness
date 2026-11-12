@@ -13,6 +13,7 @@ import {
   PROVIDERS, findProvider, maskKey, listModels,
   readConfig, setProviderEntry, unsetProvider, setDefaultProvider, configPath, apiKeyFor,
   loadMcpServers, upsertMcpServer, removeMcpServer, McpRegistry,
+  listRecipes, loadRecipe, resolveVars, renderTemplate, runRecipeChecks,
 } from '@unit-harness/core'
 
 import { VERSION } from './version.ts'
@@ -292,6 +293,86 @@ async function cmdExec(rest: string[]): Promise<void> {
     if (r.stderr) process.stderr.write(r.stderr)
     process.exitCode = r.exitCode
   }, { label: `exec ${argv.join(' ')}`.slice(0, 60), record: false })
+}
+
+/** 收集所有 --set k=v（也接受 --k=v 形式） */
+function collectVars(rest: string[]): Record<string, string> {
+  const vars: Record<string, string> = {}
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i] as string
+    if (a === '--set' || a === '-s') {
+      const kv = rest[i + 1] ?? ''
+      const eq = kv.indexOf('=')
+      if (eq > 0) { vars[kv.slice(0, eq)] = kv.slice(eq + 1); i++ }
+    } else if (a.startsWith('--set=')) {
+      const kv = a.slice(6)
+      const eq = kv.indexOf('=')
+      if (eq > 0) vars[kv.slice(0, eq)] = kv.slice(eq + 1)
+    }
+  }
+  return vars
+}
+
+async function cmdDo(name?: string, rest: string[] = []): Promise<void> {
+  const recipes = listRecipes()
+
+  if (!name) {
+    console.log('recipes:')
+    for (const e of recipes) {
+      const tag = e.source === 'user' ? '(user)' : ''
+      console.log(`  ${e.recipe.name.padEnd(16)} ${e.recipe.description} ${tag}`)
+    }
+    if (recipes.length === 0) console.log('  (none)')
+    console.log('')
+    console.log('run one:  uh do <name> [--set key=value]')
+    console.log('own it:   drop a .json into ~/.uh/recipes/ (same shape as the builtin ones)')
+    return
+  }
+
+  const entry = loadRecipe(name)
+  if (!entry) {
+    fail(`no such recipe: ${name}. Available: ${recipes.map((r) => r.recipe.name).join(', ') || '(none)'}`)
+  }
+
+  const recipe = entry.recipe
+  const vars = resolveVars(recipe, collectVars(rest))
+  const task = renderTemplate(recipe.task.join('\n'), vars)
+
+  console.log(`recipe: ${recipe.name}${entry.source === 'user' ? ' (user)' : ''}`)
+  if (Object.keys(vars).length > 0) {
+    console.log(`vars:   ${Object.entries(vars).map(([k, v]) => `${k}=${v}`).join(', ')}`)
+  }
+  console.log('')
+
+  let checkResults: Awaited<ReturnType<typeof runRecipeChecks>> = []
+
+  await withHarness(async (h) => {
+    const out = await h.runTask({ task })
+    console.log('')
+    console.log(`--- deliverables (${out.artifacts.length}) ---`)
+    for (const a of out.artifacts) {
+      const rel = out.verifications.filter((v) => v.path === a.path)
+      const ok = rel.length > 0 && rel.every((v) => v.result === 'pass')
+      console.log(`  ${ok ? '✓' : '·'} ${a.path}  ${a.bytes} B  ${ok ? `${rel.length}/${rel.length}` : ''}`)
+    }
+
+    if ((recipe.checks ?? []).length > 0) {
+      console.log('')
+      console.log('--- checks ---')
+      checkResults = await runRecipeChecks(h, recipe.checks ?? [], vars, h.workspace)
+      for (const c of checkResults) {
+        const mark = c.result === 'pass' ? '✓' : c.result === 'error' ? '!' : '✗'
+        console.log(`  ${mark} ${c.label}   ${c.detail}`)
+      }
+    }
+  })
+
+  const failed = checkResults.filter((c) => c.result !== 'pass')
+  if (failed.length > 0) {
+    console.log('')
+    console.log(`${failed.length} check(s) did not pass — the deliverable is not accepted.`)
+    process.exit(1)
+  }
 }
 
 async function cmdMcp(sub?: string, rest: string[] = []): Promise<void> {
@@ -693,6 +774,7 @@ function cmdHelp(): void {
 
 Usage:
   uh run "<task>"           run a task with the model agent (sandboxed)
+  uh do [name]              run a recipe: fixed task, then our own acceptance checks
   uh serve [--port N]       local web UI (default 127.0.0.1:7878)
   uh desktop                same, and open it in your browser
   uh mcp list               show MCP servers and the tools they expose
@@ -760,6 +842,8 @@ async function main(): Promise<void> {
       console.log('press Ctrl+C to stop')
       return
     }
+    case 'do':
+      await cmdDo(argv[1], argv.slice(2)); return
     case 'mcp':
       await cmdMcp(argv[1], argv.slice(2)); return
     case 'exec':
