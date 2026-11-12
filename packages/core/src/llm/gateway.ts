@@ -40,6 +40,9 @@ export class LlmGateway {
     role?: LlmRole
     temperature?: number
     maxTokens?: number
+    /** 流式回调：给了就开流，不给就一次性返回 */
+    onText?: (delta: string) => void
+    onReasoning?: (delta: string) => void
   }): Promise<CompletionResult> {
     const target = this.pick(req.role ?? 'plan')
     const requestEv = this.opts.emit('llm/request', {
@@ -64,6 +67,12 @@ export class LlmGateway {
             model: target.model,
           },
           req,
+          (req.onText || req.onReasoning)
+            ? {
+                ...(req.onText ? { onText: req.onText } : {}),
+                ...(req.onReasoning ? { onReasoning: req.onReasoning } : {}),
+              }
+            : undefined,
         )
         this.opts.emit('llm/response', {
           provider: target.def.id,

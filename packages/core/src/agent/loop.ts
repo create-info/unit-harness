@@ -11,6 +11,7 @@ import type { LlmGateway } from '../llm/gateway.ts'
 import type { ToolDefinition } from '../types.ts'
 import { parsePatch, planPatch } from './tools/apply-patch.ts'
 import { compactMessages, shouldCompact } from './compact.ts'
+import { prepareToolOutput } from './output.ts'
 import type { Skill } from '../skill/registry.ts'
 
 export interface RunCommandArgs {
@@ -42,6 +43,10 @@ export interface AgentDeps {
     payload: Record<string, unknown>,
   ) => string | null
   log: (msg: string) => void
+  /** 流式：模型正文增量（CLI 用来实时打印） */
+  onText?: (delta: string) => void
+  /** 流式：推理模型思考增量 */
+  onReasoning?: (delta: string) => void
   /** 是否启用 update_plan（关闭时连工具都不给，学 Codex 的按需切除） */
   planEnabled?: boolean
   /** 上下文预算：超过 budget*0.7 就压缩（0 = 关闭压缩） */
@@ -292,7 +297,13 @@ export async function runAgent(
 
     let res: CompletionResult
     try {
-      res = await deps.gateway.complete({ messages, tools, role: 'plan' })
+      res = await deps.gateway.complete({
+        messages,
+        tools,
+        role: 'plan',
+        ...(deps.onText ? { onText: deps.onText } : {}),
+        ...(deps.onReasoning ? { onReasoning: deps.onReasoning } : {}),
+      })
     } catch (err) {
       deps.ev('step/end', { step_index: steps, status: 'error', error: err instanceof Error ? err.message : String(err) })
       throw err

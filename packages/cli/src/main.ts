@@ -53,6 +53,34 @@ function isFlagValue(tok: string): boolean {
   return i > 0 && VALUE_FLAGS.has(argv[i - 1] as string)
 }
 
+/**
+ * 流式打印。
+ *
+ * 只在 TTY 上实时打：管道/CI 里打流会把输出搅乱（事件行和正文混在一起没法解析）。
+ * 非 TTY 时不打印，最终答案照样完整输出。
+ */
+let streamedThisStep = false
+const liveStream = Boolean(process.stdout.isTTY) && process.env.UH_NO_STREAM !== '1'
+
+function streamText(delta: string): void {
+  if (!liveStream) return
+  streamedThisStep = true
+  process.stdout.write(delta)
+}
+
+function streamReasoning(delta: string): void {
+  if (!liveStream || process.env.UH_VERBOSE !== '1') return
+  streamedThisStep = true
+  process.stderr.write(delta)
+}
+
+/** 事件行前若刚流式输出过，补一个换行，别让事件粘在正文尾巴上 */
+function endStreamLine(): void {
+  if (!streamedThisStep) return
+  process.stdout.write('\n')
+  streamedThisStep = false
+}
+
 async function withHarness<T>(
   fn: (h: Harness) => Promise<T>,
   opts: { record?: boolean; label?: string; onEvent?: (kind: string, payload: Record<string, unknown>) => void } = {},
@@ -67,6 +95,8 @@ async function withHarness<T>(
     ...(opts.record === undefined ? {} : { record: opts.record }),
     ...(opts.label === undefined ? {} : { label: opts.label }),
     ...(opts.onEvent === undefined ? {} : { onEvent: opts.onEvent }),
+    onText: streamText,
+    onReasoning: streamReasoning,
   })
   try {
     await h.start()
@@ -231,6 +261,7 @@ function makePrinter(): (kind: string, p: Record<string, unknown>) => void {
 }
 
 function printEvent(kind: string, p: Record<string, unknown>): void {
+  endStreamLine()
   switch (kind) {
     case 'turn/start':
       console.log('· turn start')

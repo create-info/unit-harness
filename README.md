@@ -255,6 +255,20 @@ you want to check *why* something failed without involving a model.
 
 The model decides the steps; the sandbox decides what it is allowed to touch.
 
+## What the loop does for you
+
+Borrowed deliberately from Codex and DeepSeek Harness, because these are the
+things that decide whether an agent finishes a real task:
+
+- **Streaming.** Tokens appear as they arrive (SSE). Reasoning models' thinking goes
+  to stderr under `UH_VERBOSE=1`, never mixed into the answer. A server that ignores
+  `stream: true` and returns whole JSON is parsed anyway instead of erroring.
+- **Middle truncation, not tail loss.** Long tool output keeps its head *and* its
+  tail — errors live at the end — with the full text saved to `.uh/output/` and the
+  path handed to the model so it can read the omitted part.
+- **Tool output budget.** 20k chars reach the model, the rest stays on disk.
+- **Compaction** at 70% of the context budget, only when there is still work to do.
+
 ## Remote hosts
 
 ```console

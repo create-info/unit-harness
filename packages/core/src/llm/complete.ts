@@ -1,5 +1,6 @@
 /** 协议分发：内核只认 CompletionResult，协议差异在适配器里吸收 */
 import { chatComplete } from './openai.ts'
+import type { StreamHandlers } from './openai.ts'
 import { anthropicComplete } from './anthropic.ts'
 import type { CompletionResult, Message, ToolSpec } from './types.ts'
 import type { ProviderDef } from './providers.ts'
@@ -15,6 +16,7 @@ export async function complete(
   def: ProviderDef,
   cfg: CallConfig,
   body: { messages: Message[]; tools?: ToolSpec[]; temperature?: number; maxTokens?: number },
+  handlers?: StreamHandlers,
 ): Promise<CompletionResult> {
   if (def.protocol === 'anthropic') {
     if (!cfg.apiKey) {
@@ -22,5 +24,5 @@ export async function complete(
     }
     return anthropicComplete({ baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, model: cfg.model, timeoutMs: cfg.timeoutMs }, body)
   }
-  return chatComplete(cfg, body)
+  return chatComplete(cfg, body, handlers)
 }
