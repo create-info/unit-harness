@@ -91,3 +91,59 @@ jobs:
           echo "ok: refused (exit $code)"
         env:
           UH_PLUGIN_DIR: ${{ github.workspace }}/examples
+
+  package:
+    name: release-${{ matrix.target }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+          - os: macos-13
+            target: darwin-x64
+          - os: macos-latest
+            target: darwin-arm64
+          - os: windows-latest
+            target: win32-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci || npm install
+
+      - name: build native helper
+        if: runner.os == 'Linux'
+        run: npm run build:native || echo "::warning::native build skipped"
+
+      - name: build single-file binary
+        run: npm run build:sea
+
+      - name: smoke test the binary
+        shell: bash
+        run: |
+          ls -la dist/bin/
+          cd dist/bin
+          BIN=$(ls | grep -E '^uh-(linux|darwin|win32)-' | head -1)
+          echo "testing $BIN"
+          ./"$BIN" --version
+
+      - name: isolation self-check on the binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd dist/bin
+          BIN=$(ls | grep -E '^uh-(linux|darwin)-' | head -1)
+          UH_HOME="$RUNNER_TEMP/uh-pkg" ./"$BIN" sandbox check
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uh-${{ matrix.target }}
+          path: |
+            dist/bin/uh-*
+          if-no-files-found: error

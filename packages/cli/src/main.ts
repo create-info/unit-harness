@@ -8,7 +8,7 @@
 import os from 'node:os'
 import { join } from 'node:path'
 
-import { Harness, EventStore, describeIsolation, describeAssertion } from '@unit-harness/core'
+import { Harness, EventStore, describeIsolation, describeAssertion, resolveProvider } from '@unit-harness/core'
 
 import { VERSION } from './version.ts'
 
@@ -93,6 +93,17 @@ async function cmdDoctor(): Promise<void> {
     for (const p of h.plugins) {
       console.log(`  ${p.status === 'loaded' ? 'ok  ' : 'FAIL'} ${p.name}${p.error ? ` — ${p.error}` : ''}`)
     }
+    // 模型可用性：装完第一件事就是跑 uh run，这里先告诉他能不能跑
+    console.log('')
+    try {
+      const prov = await resolveProvider()
+      console.log(`model       ${prov.model}  @ ${prov.baseUrl}  (${prov.source})`)
+    } catch {
+      console.log('model       none')
+      console.log('            → start LM Studio (http://127.0.0.1:1234) or Ollama (http://127.0.0.1:11434),')
+      console.log('              or export UH_BASE_URL / UH_MODEL / UH_API_KEY')
+    }
+
     if (r.enforced === 'none' || r.enforced === 'path-guard') {
       console.log('')
       console.log('WARNING: exec is NOT isolated in this build. It is refused unless --allow-unconfined.')
@@ -410,4 +421,13 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((e) => { console.error(e); process.exit(1) })
+main().catch((e: unknown) => {
+  // 打印错误本身，不甩堆栈：用户看到的应该是能照做的指引，不是我们的调用栈
+  const msg = e instanceof Error ? e.message : String(e)
+  console.error(msg)
+  if (process.env.UH_DEBUG === '1' && e instanceof Error && e.stack) {
+    console.error('')
+    console.error(e.stack)
+  }
+  process.exit(1)
+})

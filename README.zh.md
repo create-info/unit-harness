@@ -24,18 +24,50 @@ UnitHarness 把**验证**做成一等公民：
 | 审计 | 无 | 追加式事件日志，可回放 |
 | 花钱动作 | 静默执行 | 审批门禁 |
 
-## 快速开始
+## 安装
+
+```bash
+# macOS / Linux —— 单个静态二进制，不需要装 Node
+curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/main/install.sh | bash
+```
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/create-info/unit-harness/main/install.ps1 | iex
+```
+
+Linux 的二进制里**内嵌了 landlock helper**，首次运行时自动释放到 `~/.uh/bin/`，
+不需要再装任何东西。走源码也行：
 
 ```bash
 git clone https://github.com/create-info/unit-harness.git
 cd unit-harness
-npm install
-npm run build:native     # 编译 landlock helper -> ~/.uh/bin（需要 cc）
-npm run build
-
-node dist/uh.cjs doctor
-node dist/uh.cjs sandbox check
+npm i -g .        # 自动构建，并把 uh 链接进 PATH
+uh doctor
 ```
+
+## 快速开始
+
+```console
+$ uh doctor
+UnitHarness 0.1.0  (node v22.22.3)
+platform    darwin/arm64  kernel=24.6.0
+isolation   seatbelt
+enforcement seatbelt via /usr/bin/sandbox-exec; writes limited to ~/.uh/work; home unreadable
+...
+model       qwen3.8-27b  @ http://127.0.0.1:1234/v1  (discovered:LM Studio)
+
+$ uh sandbox check
+PASS  write inside workspace  (expected ok, got ok)
+PASS  write outside workspace (expected deny, got deny)
+PASS  read $HOME/.gitconfig   (expected deny, got deny)
+PASS  write to /etc           (expected deny, got deny)
+
+4/4 checks passed
+```
+
+`uh doctor` 显示 `model none` 的话，起一个 LM Studio 或 Ollama 就行，
+或者导出 `UH_BASE_URL` / `UH_MODEL` / `UH_API_KEY`。
 
 `build:native` 是可选的：不做的话 `exec` 报无隔离并拒绝执行（fail-closed）。
 
