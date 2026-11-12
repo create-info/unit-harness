@@ -35,6 +35,8 @@ import { buildSeatbeltProfile, findSeatbelt } from './sandbox/seatbelt.ts'
 import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/toolchains.ts'
 import { McpRegistry } from './mcp/bridge.ts'
 import { loadMcpServers } from './mcp/config.ts'
+import { discoverSkills, renderSkillIndex } from './skill/registry.ts'
+import type { Skill } from './skill/registry.ts'
 import type { SeatbeltInfo } from './sandbox/seatbelt.ts'
 import { mkdirSync } from 'node:fs'
 import os from 'node:os'
@@ -88,6 +90,8 @@ export interface RunTaskOptions {
   maxContextTokens?: number
   /** 是否启动 MCP server（默认 true） */
   mcp?: boolean
+  /** 是否加载 skills（默认 true） */
+  skills?: boolean
 }
 
 export interface RunTaskOutcome extends RunResult {
@@ -478,6 +482,11 @@ export class Harness {
     })
   }
 
+  /** 当前工作目录下可用的 skills（只读，供 CLI/UI 展示） */
+  get skills(): Skill[] {
+    return discoverSkills(process.cwd())
+  }
+
   /** 已注册工具列表（只读）：插件工具 + MCP 桥接工具 */
   get tools(): ReadonlyArray<ToolDefinition> {
     const base = [...this.toolRegistry.values()]
@@ -507,11 +516,13 @@ export class Harness {
       emit: (kind, payload, parentId) => this.ev(kind, payload, 'agent', parentId ?? null)?.id ?? null,
     })
 
+    const skills: Skill[] = o.skills === false ? [] : discoverSkills(process.cwd())
     const sys = buildSystemPrompt({
       workspace: this.workspace,
       isolation: this.isolation.enforced,
       networkBlocked: this.opts.denyNetwork === true,
       planEnabled: o.plan !== false,
+      skillIndex: renderSkillIndex(skills),
       tools: this.tools.map((t) => ({ name: t.name, description: t.description })),
     })
 
@@ -573,6 +584,7 @@ export class Harness {
           try { fsSync.unlinkSync(this.safeJoin(rel)) } catch { /* already gone */ }
         },
         planEnabled: o.plan !== false,
+        skills,
         maxContextTokens: o.maxContextTokens ?? Number(process.env.UH_MAX_CONTEXT ?? 32000),
         ev: (kind, payload) => this.ev(kind, payload, 'agent')?.id ?? null,
         log: (m) => this.log('info', m),

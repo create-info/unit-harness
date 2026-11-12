@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>UnitHarness</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161a21; --line:#242b36; --fg:#e6e9ef; --dim:#8b95a7;
+    --ok:#3ddc97; --bad:#ff6b6b; --warn:#ffb454; --accent:#7aa2f7;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;display:flex;height:100vh;overflow:hidden}
+  aside{width:240px;flex:0 0 240px;border-right:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column}
+  aside h1{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:16px 16px 8px}
+  #sessions{flex:1;overflow:auto;padding:0 8px 8px}
+  .sess{padding:8px 10px;border-radius:8px;cursor:pointer;font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sess:hover{background:#1d232c;color:var(--fg)}
+  .sess.active{background:#1d232c;color:var(--fg)}
+  .sess b{display:block;color:var(--fg);font-weight:500;font-size:12px}
+  main{flex:1;display:flex;flex-direction:column;min-width:0}
+  header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;font-size:12px;color:var(--dim)}
+  header .brand{color:var(--fg);font-weight:600;letter-spacing:.02em}
+  header .pill{background:#1d232c;border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-family:var(--mono);font-size:11px;white-space:nowrap}
+  #sid{max-width:200px;overflow:hidden;text-overflow:ellipsis}
+  header .pill.ok{color:var(--ok);border-color:#1f4a3a}
+  header .pill.bad{color:var(--bad);border-color:#4a2020}
+  #log{flex:1;overflow:auto;padding:16px 20px;font-family:var(--mono);font-size:12.5px}
+  .row{display:flex;gap:10px;padding:2px 0;white-space:pre-wrap;word-break:break-word}
+  .row .t{color:#4d5769;flex:0 0 46px;text-align:right}
+  .row .c{flex:1;min-width:0}
+  .step{color:var(--accent);margin-top:10px}
+  .tool{color:var(--fg)}
+  .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.dim{color:var(--dim)}
+  .answer{margin-top:14px;padding:12px;border-left:2px solid var(--accent);background:#141a24;color:var(--fg);font-family:-apple-system,system-ui,sans-serif;font-size:13.5px;white-space:pre-wrap;border-radius:0 6px 6px 0}
+  footer{border-top:1px solid var(--line);padding:12px 20px;background:var(--panel)}
+  form{display:flex;gap:10px}
+  textarea{flex:1;resize:none;height:56px;overflow:auto;background:#0c0f14;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:13px/1.5 var(--mono);outline:none}
+  textarea:focus{border-color:#35507a}
+  button{background:var(--accent);color:#0b0e13;border:0;border-radius:8px;padding:0 20px;font-weight:600;cursor:pointer}
+  button:disabled{opacity:.45;cursor:default}
+  #deliverables{padding:0 20px 12px;font-family:var(--mono);font-size:12.5px}
+  .art{display:flex;gap:10px;align-items:center;padding:4px 0;border-bottom:1px solid #1a2029}
+  .art .n{flex:1;color:var(--fg)}
+  .art .s{color:var(--dim)}
+  .badge{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line)}
+  .badge.g{color:var(--ok);border-color:#1f4a3a}
+  .badge.r{color:var(--bad);border-color:#4a2020}
+</style>
+</head>
+<body>
+<aside>
+  <h1>Sessions</h1>
+  <div id="sessions"></div>
+</aside>
+<main>
+  <header>
+    <span class="brand">UnitHarness</span>
+    <span id="iso" class="pill">isolation …</span>
+    <span id="model" class="pill">model …</span>
+    <span id="sid" class="pill dim" style="margin-left:auto">no session</span>
+  </header>
+  <div id="log"></div>
+  <div id="deliverables"></div>
+  <footer>
+    <form id="run">
+      <textarea id="task" placeholder="Describe the task. It runs in a sandbox; the workspace is ~/.uh/work"></textarea>
+      <button id="go" type="submit">Run</button>
+    </form>
+  </footer>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const logEl = $('#log'), delivEl = $('#deliverables');
+let es = null, started = 0;
+
+function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function row(cls, text){
+  const d = document.createElement('div');
+  d.className = 'row';
+  const t = ('+' + ((Date.now() - started)/1000).toFixed(1) + 's');
+  d.innerHTML = '<span class="t">' + t + '</span><span class="c ' + cls + '">' + text + '</span>';
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+  return d;
+}
+
+async function boot(){
+  const info = await (await fetch('/api/info')).json();
+  $('#iso').textContent = 'isolation ' + info.isolation;
+  $('#iso').className = 'pill ' + (info.isolation === 'none' || info.isolation === 'path-guard' ? 'bad' : 'ok');
+  $('#model').textContent = info.model || 'no model';
+  const list = await (await fetch('/api/sessions')).json();
+  const box = $('#sessions');
+  box.innerHTML = '';
+  for (const s of list){
+    const d = document.createElement('div');
+    d.className = 'sess';
+    d.innerHTML = '<b>' + esc(s.label || s.id) + '</b>' + esc(s.created) + ' · ' + s.events + ' events';
+    d.onclick = () => openSession(s.id);
+    box.appendChild(d);
+  }
+}
+
+function render(kind, p){
+  switch(kind){
+    case 'turn/start': row('step','turn start'); break;
+    case 'step/start': row('step','── step ' + p.step_index); break;
+    case 'llm/request': row('dim','→ ' + (p.provider||'') + ' ' + (p.model||'')); break;
+    case 'llm/response': row('dim','← ' + p.tool_calls + ' tool call(s), ' + ((p.usage&&p.usage.total_tokens)||0) + ' tokens'); break;
+    case 'tool/call': {
+      const d = p.argv ? p.argv.join(' ') : (p.args_preview || JSON.stringify(p.args||{}));
+      row('tool','⚙ ' + p.tool + ': ' + esc(String(d).slice(0,160)));
+      break;
+    }
+    case 'tool/result':
+      row(p.status === 'ok' ? 'ok' : 'bad', (p.status === 'ok' ? '✓' : '✗') + ' ' + (p.exit_code !== undefined ? 'exit=' + p.exit_code : p.status));
+      break;
+    case 'plan/updated': {
+      row('dim','plan:');
+      for (const s of p.steps || []) row('dim','  ' + (s.status==='completed'?'✓':s.status==='in_progress'?'▸':' ') + ' ' + esc(s.step));
+      break;
+    }
+    case 'session/compacted': row('warn','⟳ compacted: dropped ' + p.dropped_messages + ' msg(s), summary ~' + p.summary_chars + ' chars'); break;
+    case 'artifact/emitted': row('ok','◆ artifact ' + esc(p.path) + '  ' + p.bytes + ' B'); break;
+    case 'turn/end': row('step','turn end (' + p.stop_reason + ', ' + p.steps + ' steps)'); break;
+    case 'answer': row('answer','<div class="answer">' + esc(p.text || '(no text)') + '</div>'); break;
+    case 'deliverables': renderDeliverables(p.items || [], p.verifications || []); break;
+    case 'done': row('dim','— done —'); break;
+    case 'error': row('bad','ERROR: ' + esc(p.message)); break;
+  }
+}
+
+function renderDeliverables(items, verifications){
+  delivEl.innerHTML = '';
+  for (const a of items){
+    const vs = verifications.filter(v => v.path === a.path);
+    const passed = vs.filter(v => v.result === 'pass').length;
+    const ok = vs.length > 0 && passed === vs.length;
+    const d = document.createElement('div');
+    d.className = 'art';
+    d.innerHTML = '<span class="badge ' + (ok?'g':'r') + '">' + (ok?'✓':'✗') + ' ' + passed + '/' + vs.length + '</span>'
+      + '<span class="n">' + esc(a.path) + '</span>'
+      + '<span class="s">' + a.bytes + ' B</span>'
+      + '<span class="s">sha256=' + a.sha256.slice(0,12) + '</span>';
+    delivEl.appendChild(d);
+    for (const v of vs.filter(x => x.result !== 'pass')){
+      const f = document.createElement('div');
+      f.className = 'art';
+      f.innerHTML = '<span class="badge r">' + v.result + '</span><span class="n dim">' + esc(JSON.stringify(v.detail).slice(0,140)) + '</span>';
+      delivEl.appendChild(f);
+    }
+  }
+}
+
+function attach(id){
+  if (es) es.close();
+  logEl.innerHTML = '';
+  $('#sid').textContent = id;
+  started = Date.now();
+  es = new EventSource('/api/stream?session=' + encodeURIComponent(id));
+  for (const kind of ['turn/start','step/start','llm/request','llm/response','tool/call','tool/result','plan/updated','session/compacted','artifact/emitted','turn/end','answer','deliverables','done','error']){
+    es.addEventListener(kind, (e) => render(kind, JSON.parse(e.data)));
+  }
+  es.onerror = () => { /* keep the stream; the browser retries */ };
+}
+
+async function openSession(id){
+  $('#sid').textContent = id;
+  logEl.innerHTML = '';
+  delivEl.innerHTML = '';
+  const detail = await (await fetch('/api/session/' + id)).json();
+  started = Date.now() - 0;
+  for (const ev of detail.events) render(ev.kind, ev.payload);
+  if (detail.answer) render('answer', { text: detail.answer });
+  render('deliverables', detail);
+  for (const el of document.querySelectorAll('.sess')) el.classList.remove('active');
+}
+
+$('#run').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const task = $('#task').value.trim();
+  if (!task) return;
+  $('#go').disabled = true;
+  try {
+    const r = await fetch('/api/run', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ task }) });
+    const j = await r.json();
+    if (j.error){ row('bad', 'ERROR: ' + j.error); return; }
+    attach(j.sessionId);
+    boot();
+  } finally {
+    $('#go').disabled = false;
+  }
+});
+
+boot();
+</script>
+</body>
+</html>
