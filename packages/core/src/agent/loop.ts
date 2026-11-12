@@ -16,6 +16,8 @@ export interface RunCommandArgs {
 
 export interface AgentDeps {
   workspace: string
+  /** 系统提示：沙箱边界、可用工具、行为要求（为空则不注入） */
+  system?: string
   gateway: LlmGateway
   tools: ReadonlyArray<ToolDefinition>
   /** 内置 run_command：走 exec，因而自动受沙箱约束 */
@@ -68,7 +70,10 @@ export async function runAgent(
 
   deps.ev('turn/start', { turn_index: 1, trigger: 'user' })
 
-  const messages: Message[] = [{ role: 'user', content: opts.task }]
+  const messages: Message[] = []
+  // 之前这里漏了 system：提示词生成了却没用上，模型并不知道自己在沙箱里
+  if (deps.system) messages.push({ role: 'system', content: deps.system })
+  messages.push({ role: 'user', content: opts.task })
   const tools = [RUN_COMMAND_TOOL, ...toToolSpecs(deps.tools)]
 
   let steps = 0

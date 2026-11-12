@@ -100,6 +100,39 @@ $ node dist/uh.cjs tool hello
 E_SANDBOX_UNAVAILABLE: current isolation is "none". Refusing to execute (fail-closed).
 ```
 
+## 支持的模型
+
+```console
+$ uh provider list
+config: ~/.uh/config.json
+
+  id           provider              key           model                     state
+  deepseek     DeepSeek              (none)        —                         no key
+  anthropic    Anthropic (Claude)    (none)        —                         no key
+  openai       OpenAI                (none)        —                         no key
+  ...
+  ollama       Ollama (local)        —             qwen3.6:latest            running
+  lmstudio     LM Studio (local)     —             qwen3.8-27b               running
+```
+
+```bash
+uh config set deepseek        # 输入 API key，不回显，存成 0600
+uh config use deepseek        # 设为默认
+uh config set deepseek.model deepseek-v4-flash
+uh run --provider anthropic "…"
+```
+
+**模型名不硬编码**：`deepseek-chat` / `deepseek-reasoner` 已经在 2026 年 7 月退役，
+写死的列表一定会过期。真实模型列表是运行时从各家的 `/models` 拉的。
+
+**两套协议**：OpenAI 兼容（`/chat/completions`）和 Anthropic Messages（`/v1/messages`）。
+差异——system 是顶层参数、用 `input_schema` 而不是 `parameters`、`tool_use`/`tool_result`
+内容块、`x-api-key` 认证——全部在 `llm/anthropic.ts` 里吸收，内核只认自己的
+`CompletionResult`。
+
+**密钥不外泄**：存成 0600，所有输出里打码成 `sk-a…1234`，并且有测试断言 key 字符串
+不会出现在事件日志里。
+
 ## 跑一个任务
 
 ```console

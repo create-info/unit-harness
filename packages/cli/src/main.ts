@@ -8,7 +8,11 @@
 import os from 'node:os'
 import { join } from 'node:path'
 
-import { Harness, EventStore, describeIsolation, describeAssertion, resolveProvider } from '@unit-harness/core'
+import {
+  Harness, EventStore, describeIsolation, describeAssertion, resolveProvider,
+  PROVIDERS, findProvider, maskKey, listModels,
+  readConfig, setProviderEntry, unsetProvider, setDefaultProvider, configPath, apiKeyFor,
+} from '@unit-harness/core'
 
 import { VERSION } from './version.ts'
 
@@ -32,7 +36,7 @@ function fail(msg: string, code = 1): never {
   process.exit(code)
 }
 
-const VALUE_FLAGS = new Set(['--model', '--base-url', '--api-key', '--max-steps'])
+const VALUE_FLAGS = new Set(['--model', '--base-url', '--api-key', '--max-steps', '--provider'])
 
 function flag(name: string): string | undefined {
   const i = argv.indexOf(`--${name}`)
@@ -97,7 +101,9 @@ async function cmdDoctor(): Promise<void> {
     console.log('')
     try {
       const prov = await resolveProvider()
-      console.log(`model       ${prov.model}  @ ${prov.baseUrl}  (${prov.source})`)
+      console.log(`model       ${prov.model}`)
+      console.log(`provider    ${prov.def.id} (${prov.def.protocol})  @ ${prov.baseUrl}`)
+      console.log(`            ${prov.source}`)
     } catch {
       console.log('model       none')
       console.log('            → start LM Studio (http://127.0.0.1:1234) or Ollama (http://127.0.0.1:11434),')
@@ -258,6 +264,7 @@ async function cmdRun(task?: string): Promise<void> {
     console.log('')
     const res = await h.runTask({
       task: task!,
+      ...(flag('provider') ? { provider: flag('provider')! } : {}),
       ...(flag('model') ? { model: flag('model')! } : {}),
       ...(flag('base-url') ? { baseUrl: flag('base-url')! } : {}),
       ...(flag('api-key') ? { apiKey: flag('api-key')! } : {}),
@@ -294,6 +301,154 @@ async function cmdRun(task?: string): Promise<void> {
     console.log(`session: ${h.sessionId ?? '(not recorded)'}`)
     if (res.stoppedBy === 'max-steps') process.exitCode = 2
   }, { label: task!.slice(0, 60), onEvent: makePrinter() })
+}
+
+/** 不回显地读一行（API key 不该出现在终端回显或 shell 历史里） */
+async function readSecret(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    // 管道输入：uh config set deepseek < key.txt
+    const chunks: Buffer[] = []
+    for await (const c of process.stdin) chunks.push(Buffer.from(c))
+    return Buffer.concat(chunks).toString('utf8').trim()
+  }
+  return await new Promise<string>((resolve) => {
+    process.stdout.write(prompt)
+    const stdin = process.stdin
+    stdin.setRawMode?.(true)
+    stdin.resume()
+    stdin.setEncoding('utf8')
+    let buf = ''
+    const finish = (v: string) => {
+      stdin.setRawMode?.(false)
+      stdin.pause()
+      stdin.removeListener('data', onData)
+      process.stdout.write('\n')
+      resolve(v)
+    }
+    const onData = (chunk: string) => {
+      for (const c of chunk) {
+        if (c === '\r' || c === '\n') return finish(buf)
+        if (c === '\u0003') { process.stdout.write('\n'); process.exit(130) }
+        if (c === '\u007f' || c === '\b') { buf = buf.slice(0, -1); continue }
+        buf += c
+      }
+    }
+    stdin.on('data', onData)
+  })
+}
+
+async function cmdProvider(sub?: string): Promise<void> {
+  const cfg = readConfig()
+  const rows: Array<{ id: string; label: string; proto: string; key: string; model: string; note: string }> = []
+
+  for (const def of PROVIDERS) {
+    const key = apiKeyFor(def)
+    let model = cfg.providers[def.id]?.model ?? ''
+    let note = ''
+    if (def.local) {
+      const models = await listModels(def, undefined)
+      if (models.length) {
+        note = 'running'
+        model = model || models[0] || ''
+      } else {
+        note = 'not running'
+      }
+    } else if (key) {
+      const models = await listModels(def, key)
+      if (models.length) {
+        model = model || models[0] || ''
+        note = `${models.length} models`
+      } else {
+        note = 'key set, models unreachable'
+      }
+    } else {
+      note = def.keysUrl ? 'no key' : ''
+    }
+    rows.push({
+      id: def.id,
+      label: def.label,
+      proto: def.protocol,
+      key: def.local ? '—' : maskKey(key),
+      model: model || '—',
+      note,
+    })
+  }
+
+  const def = cfg.defaultProvider
+  console.log(`config: ${configPath()}${def ? `  default: ${def}` : ''}`)
+  console.log('')
+  const w = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s.padEnd(n))
+  console.log(`  ${w('id', 13)}${w('provider', 22)}${w('key', 14)}${w('model', 26)}state`)
+  for (const r of rows) {
+    const isDefault = r.id === def ? ' ←default' : ''
+    console.log(`  ${w(r.id, 13)}${w(r.label, 22)}${w(r.key, 14)}${w(r.model, 26)}${r.note}${isDefault}`)
+  }
+  console.log('')
+  console.log('  uh config set <id>          store an API key (hidden input)')
+  console.log('  uh config use <id>          make it the default')
+  console.log('  uh run --provider <id> "…"  one-off override')
+  void sub
+}
+
+async function cmdConfig(sub?: string, arg?: string, value?: string): Promise<void> {
+  if (!sub || sub === 'show') {
+    const cfg = readConfig()
+    console.log(configPath())
+    console.log(`default: ${cfg.defaultProvider ?? '(auto)'}`)
+    const ids = Object.keys(cfg.providers)
+    if (ids.length === 0) console.log('no providers configured')
+    for (const id of ids) {
+      const e = cfg.providers[id] as { apiKey?: string; model?: string; baseUrl?: string }
+      console.log(`  ${id}: key=${maskKey(e.apiKey)} model=${e.model ?? '(auto)'}${e.baseUrl ? ` baseUrl=${e.baseUrl}` : ''}`)
+    }
+    return
+  }
+
+  if (sub === 'use') {
+    if (!arg) fail('usage: uh config use <provider-id>')
+    if (!findProvider(arg!)) fail(`unknown provider: ${arg}`)
+    setDefaultProvider(arg!)
+    console.log(`default provider: ${arg}`)
+    return
+  }
+
+  if (sub === 'unset') {
+    if (!arg) fail('usage: uh config unset <provider-id>')
+    console.log(unsetProvider(arg!) ? `removed ${arg}` : `${arg} was not configured`)
+    return
+  }
+
+  if (sub === 'set') {
+    if (!arg) {
+      fail(
+        'usage: uh config set <provider-id>[.model|.baseUrl]\n' +
+        '       uh config set deepseek          (prompts for the key)',
+      )
+    }
+    const [id, field] = arg!.split('.')
+    if (!findProvider(id!)) fail(`unknown provider: ${id}\nKnown: ${PROVIDERS.map((p) => p.id).join(', ')}`)
+
+    if (field === 'model') {
+      if (!value) fail('usage: uh config set <id>.model <model-name>')
+      setProviderEntry(id!, { model: value! })
+      console.log(`${id}.model = ${value}`)
+      return
+    }
+    if (field === 'baseUrl') {
+      if (!value) fail('usage: uh config set <id>.baseUrl <url>')
+      setProviderEntry(id!, { baseUrl: value! })
+      console.log(`${id}.baseUrl = ${value}`)
+      return
+    }
+
+    const key = value ?? (await readSecret(`API key for ${id} (input hidden): `))
+    if (!key) fail('empty key, nothing stored')
+    setProviderEntry(id!, { apiKey: key })
+    console.log(`stored key for ${id}: ${maskKey(key)}  → ${configPath()}`)
+    return
+  }
+
+  fail(`unknown config command: ${sub}`)
 }
 
 async function cmdSession(sub?: string, id?: string): Promise<void> {
@@ -375,6 +530,10 @@ function cmdHelp(): void {
 
 Usage:
   uh run "<task>"           run a task with the model agent (sandboxed)
+  uh provider list          supported providers, keys, live models
+  uh config set <id>        store an API key (hidden input); .model / .baseUrl
+  uh config use <id>        set the default provider
+  uh config show            show config (keys masked)
   uh doctor                 show platform, sandbox isolation, plugins
   uh plugin list            list plugins found on disk
   uh tool <name>            run a tool registered by a plugin
@@ -412,6 +571,10 @@ async function main(): Promise<void> {
       await cmdSandbox(argv[1]); return
     case 'session':
       await cmdSession(argv[1], argv[2]); return
+    case 'provider':
+      await cmdProvider(argv[1]); return
+    case 'config':
+      await cmdConfig(argv[1], argv[2], argv[3]); return
     case 'run':
       await cmdRun(argv.slice(1).filter((a) => !a.startsWith('--') && !isFlagValue(a)).join(' ')); return
     case 'help': case '--help': case '-h':

@@ -15,7 +15,7 @@ import { pathToFileURL } from 'node:url'
 import { probeIsolation } from './sandbox/probe.ts'
 import { EventStore } from './evidence/store.ts'
 import { LlmGateway } from './llm/gateway.ts'
-import { resolveProvider } from './llm/discover.ts'
+import { resolveProvider } from './llm/resolve.ts'
 import { runAgent } from './agent/loop.ts'
 import { snapshotDir, diffSnapshots, collectArtifacts, sha256File } from './artifact/snapshot.ts'
 import type { Artifact } from './artifact/snapshot.ts'
@@ -71,6 +71,7 @@ export interface HarnessOptions {
 
 export interface RunTaskOptions {
   task: string
+  provider?: string
   model?: string
   baseUrl?: string
   apiKey?: string
@@ -468,13 +469,14 @@ export class Harness {
    */
   async runTask(o: RunTaskOptions): Promise<RunTaskOutcome> {
     const provider = await resolveProvider({
+      ...(o.provider ? { provider: o.provider } : {}),
       ...(o.model ? { model: o.model } : {}),
       ...(o.baseUrl ? { baseUrl: o.baseUrl } : {}),
       ...(o.apiKey ? { apiKey: o.apiKey } : {}),
     })
 
     const gateway = new LlmGateway({
-      primary: { baseUrl: provider.baseUrl, model: provider.model, ...(provider.apiKey ? { apiKey: provider.apiKey } : {}) },
+      primary: provider,
       emit: (kind, payload, parentId) => this.ev(kind, payload, 'agent', parentId ?? null)?.id ?? null,
     })
 
@@ -489,13 +491,14 @@ export class Harness {
     })
 
     // system 提示不写进事件（体积大且含环境细节），只记摘要
-    this.log('info', `provider: ${provider.source} model=${provider.model}`)
+    this.log('info', `provider: ${provider.def.id} (${provider.def.protocol}) model=${provider.model} — ${provider.source}`)
 
     const before = o.verify === false ? null : snapshotDir(this.workspace)
 
     const result = await runAgent(
       {
         workspace: this.workspace,
+        system: sys,
         gateway,
         tools: this.tools,
         runCommand: async (a) => {
