@@ -253,6 +253,20 @@ type IsolationLevel =
 
 **否决**：只支持 Linux/macOS（Windows 用户量不可忽略，"不支持"比"降级并告知"体验更差）；静默降级（违反 D1：验证意味着诚实报告状态）；默认关沙箱（与 D1 直接冲突）。
 
+**实施状态（2026-11-12）**：Linux 已实现，通过 `native/landlock-helper`（C，~250 行）。
+
+| 事实 | 值 |
+|---|---|
+| 实测内核 ABI | 7（Ubuntu 内核 6.17 / aarch64） |
+| 写权限范围 | workspace + `~/.uh` + `/dev` |
+| `$HOME` | 默认不可读（`--allow-home` 可放开） |
+| 网络 | `--no-net` 时禁止 TCP bind/connect（landlock 管不了 UDP，已如实标注） |
+| 读权限 | 系统路径白名单（`/usr /lib /lib64 /bin /sbin /etc /proc /sys /opt /run`） |
+| bwrap | **不可用**：本机 `apparmor_restrict_unprivileged_userns=1`，bwrap 连 `--unshare-pid` 都失败。这验证了 D7 预判的撞墙点，也说明 landlock 才是主路径 |
+
+自证命令：`uh sandbox check`（4 条断言，任一不过即退出码 1）。
+macOS / Windows 的施加仍未实现，`enforced` 保持 `none` → fail-closed。
+
 ---
 
 ## D8–D12 · 架构骨架：五个正交借鉴

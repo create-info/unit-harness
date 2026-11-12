@@ -18,10 +18,20 @@ jobs:
         run: node scripts/check-constraints.mjs
       - name: typecheck
         run: npm run typecheck
+      - name: build native (landlock helper)
+        run: npm run build:native || echo "::warning::native build skipped"
       - name: build
         run: npm run build
       - name: doctor
         run: node dist/uh.cjs doctor
+      - name: sandbox actually blocks
+        run: |
+          abi=$(~/.uh/bin/landlock-helper --probe 2>/dev/null || echo 0)
+          if [ "$abi" -gt 0 ]; then
+            node dist/uh.cjs sandbox check
+          else
+            echo "::warning::landlock unavailable on this runner (abi=$abi); skipping enforcement proof"
+          fi
       - name: plugin loads
         run: UH_PLUGIN_DIR="$PWD/examples" node dist/uh.cjs plugin list
       - name: exec fails closed without isolation

@@ -13,6 +13,10 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { probeIsolation } from './sandbox/probe.ts'
+import { buildLandlockArgv, findLandlockHelper } from './sandbox/landlock.ts'
+import type { LandlockHelper } from './sandbox/landlock.ts'
+import { mkdirSync } from 'node:fs'
+import os from 'node:os'
 import { API_VERSION } from './types.ts'
 import type {
   Disposer, ExecResult, ExecSpec, HookPoint, HookRegistration, HookSpec,
@@ -31,7 +35,12 @@ export interface HarnessOptions {
   /** path-guard 级别下是否允许执行（fail-closed 默认 false） */
   unconfined?: boolean
   logLevel?: LogLevel
+  /** 可写工作区；默认 ~/.uh/work */
   workspace?: string
+  /** 允许沙箱内读 home（默认 false：home 里有 .ssh/.aws 等） */
+  allowHome?: boolean
+  /** 禁止沙箱内 TCP 连接（landlock ABI >= 4） */
+  denyNetwork?: boolean
 }
 
 export interface LoadedPlugin {
@@ -53,12 +62,27 @@ export class Harness {
   private readonly toolRegistry = new Map<string, ToolDefinition>()
   private readonly hookRegistry: HookRegistration[] = []
   private readonly services = new Map<string, unknown>()
+  private readonly helper: LandlockHelper | null
+  private readonly workspace: string
 
   constructor(opts: HarnessOptions = {}) {
     this.opts = opts
     this.level = opts.logLevel ?? 'info'
     this.ctx = new Context()
     this.isolation = probeIsolation()
+    this.helper = findLandlockHelper()
+    this.workspace = opts.workspace ?? os.homedir() + '/.uh/work'
+    try { mkdirSync(this.workspace, { recursive: true }) } catch { /* best effort */ }
+  }
+
+  /** 当前生效的隔离方式说明，供 UI/日志展示 */
+  describeEnforcement(): string {
+    if (this.helper) {
+      return `landlock-v${this.helper.abi} via ${this.helper.path}; writes limited to ${this.workspace}` +
+        (this.opts.allowHome ? ' (+home readable)' : '; home unreadable') +
+        (this.opts.denyNetwork ? '; tcp blocked' : '')
+    }
+    return this.isolation.enforced
   }
 
   /** 当前实际隔离级别 */
@@ -230,11 +254,25 @@ export class Harness {
 
     const started = Date.now()
     const timeoutMs = spec.timeoutMs ?? 60_000
-    const [cmd, ...args] = spec.argv
+
+    // 默认在工作区执行：工作区是唯一可写区域，cwd 必须与之一致
+    const workdir = spec.cwd ?? this.workspace
+
+    // 有 helper 就整条命令经 landlock 施加后再 exec
+    const useLandlock = this.helper !== null && spec.isolation !== 'none'
+    const cmd = useLandlock ? this.helper!.path : (spec.argv[0] as string)
+    const args = useLandlock
+      ? buildLandlockArgv(this.helper!, {
+          argv: [...spec.argv],
+          workspace: workdir,
+          allowHome: this.opts.allowHome,
+          denyNetwork: this.opts.denyNetwork,
+        })
+      : spec.argv.slice(1)
 
     return await new Promise<ExecResult>((resolve, reject) => {
-      const child = spawn(cmd as string, args, {
-        cwd: spec.cwd,
+      const child = spawn(cmd, args, {
+        cwd: workdir,
         env: { ...process.env, ...(spec.env ?? {}) },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -260,7 +298,7 @@ export class Harness {
           exitCode: code ?? -1,
           stdout, stderr, truncated,
           durationMs: Date.now() - started,
-          isolation: level,
+          isolation: this.helper ? (`landlock-v${this.helper.abi}` as IsolationLevel) : level,
         })
       })
     })

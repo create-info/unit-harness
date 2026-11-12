@@ -81,6 +81,39 @@ this is not a version mismatch. It crashes before any of our code runs.
 **Conclusion: musl SEA on aarch64 is not usable today.** Linux ships glibc
 (>= 2.28); Alpine users get the npm JS mode or the Docker image.
 
+## S3 — landlock enforcement (implemented, not just a spike)
+
+**Question:** can we actually enforce filesystem/network limits on this kernel?
+
+Environment fact that decided the design:
+
+```
+bwrap --unshare-all  -> loopback: Failed RTM_NEWADDR: Operation not permitted
+bwrap --unshare-pid  -> setting up uid map: Permission denied
+/proc/sys/kernel/apparmor_restrict_unprivileged_userns = 1
+```
+
+bwrap is unusable on this machine (the exact wall predicted in D7). landlock needs
+no namespaces, so `native/landlock-helper` (C, ~250 lines) is the enforcement path.
+
+Two bugs found and fixed during bring-up, both worth remembering:
+
+1. `landlock_path_beneath_attr.allowed_access` is `__u64`, not `u32`.
+   Declaring it as `unsigned int` makes `landlock_add_rule` return `EINVAL`.
+2. `/dev` must be writable in the ruleset, otherwise every `> /dev/null`
+   redirection fails with `EACCES`.
+
+Verified behaviour (ABI 7):
+
+| Probe | Result |
+|---|---|
+| write inside workspace | allowed |
+| write `/tmp/outside` | `Permission denied` |
+| write `/etc/hostname` | `Permission denied` |
+| `curl` with `--net none` | blocked |
+| `curl` without `--net none` | `http=200` |
+| `ls /home` under whitelist mode | `Permission denied` (home unreadable) |
+
 Implication for `docs/release.md`:
 
 - Linux artifacts should be **glibc-based** (require glibc >= 2.28) until musl SEA
