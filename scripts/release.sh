@@ -56,6 +56,33 @@ api() { # api <method> <url> [json-body]
   fi
 }
 
+# 先确认 token 能不能写。仓库的 Actions 默认权限如果是只读，
+# workflow 里的 `permissions: contents: write` 会被静默降级，
+# 症状是「选 run、下产物、生成校验和全都成功，卡在创建 release」——
+# 与其让用户去猜 403，不如在这里说清楚该改哪个开关
+if [ "$DRY" = 0 ]; then
+echo "→ checking token permissions"
+PERM=$(api GET "${API}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+p = d.get("permissions") or {}
+print("write" if p.get("push") else "read-only")
+' 2>/dev/null || echo unknown)
+echo "  token: ${PERM}"
+if [ "$PERM" != "write" ]; then
+  cat >&2 <<'EOM'
+ERROR: this token cannot create a release.
+
+  GitHub repo settings → Actions → General → Workflow permissions
+  → "Read and write permissions" → Save, then re-push the tag.
+
+  Or publish from a machine with a personal access token:
+    GITHUB_TOKEN=<pat> bash scripts/release.sh <tag>
+EOM
+  exit 1
+fi
+fi
+
 # ---------------------------------------------------------------- 收集产物
 if [ "$DRY" = 1 ]; then
   echo "→ dry run: placeholders instead of downloading artifacts"
