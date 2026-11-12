@@ -59,7 +59,9 @@ export interface RunResult {
   text: string
   steps: number
   usage: { prompt: number; completion: number; total: number }
-  stoppedBy: 'model' | 'max-steps' | 'timeout'
+  stoppedBy: 'model' | 'max-steps' | 'timeout' | 'interrupted'
+  /** 结束时完整消息列表，供续跑落盘 */
+  messages: Message[]
   plan: PlanStep[]
   compactions: number
 }
@@ -180,7 +182,14 @@ function clip(s: string): string {
 
 export async function runAgent(
   deps: AgentDeps,
-  opts: { task: string; maxSteps?: number; maxSeconds?: number },
+  opts: {
+    task: string
+    maxSteps?: number
+    maxSeconds?: number
+    signal?: AbortSignal
+    /** 续跑：上次会话的消息（system 会被新提示替换） */
+    initialMessages?: Message[]
+  },
 ): Promise<RunResult> {
   const maxSteps = opts.maxSteps ?? 12
   const deadline = Date.now() + (opts.maxSeconds ?? 600) * 1000
@@ -190,7 +199,10 @@ export async function runAgent(
 
   const messages: Message[] = []
   if (deps.system) messages.push({ role: 'system', content: deps.system })
-  messages.push({ role: 'user', content: opts.task })
+  // 续跑：保留历史（去掉旧 system，换成当前这次的环境/工具描述），再接新指令
+  const carried = (opts.initialMessages ?? []).filter((m) => m.role !== 'system')
+  messages.push(...carried)
+  if (opts.task.trim()) messages.push({ role: 'user', content: opts.task })
 
   const skills = deps.skills ?? []
   const tools: ToolSpec[] = [
@@ -291,6 +303,9 @@ export async function runAgent(
   }
 
   while (steps < maxSteps) {
+    // 中断只在 step 边界生效：正在跑的工具调用会自己收到 abort 并收尾，
+    // 半路硬切会让事件日志停在「调用了但没结果」的状态。
+    if (opts.signal?.aborted) { stoppedBy = 'interrupted'; break }
     if (Date.now() > deadline) { stoppedBy = 'timeout'; break }
     steps++
     deps.ev('step/start', { step_index: steps, turn_index: 1 })
@@ -316,6 +331,9 @@ export async function runAgent(
 
 
     if (res.toolCalls.length === 0) {
+      // 最终回答也要进历史：否则 --continue 拿到的是「用户说了什么、模型没回过话」，
+      // 续跑时模型等于失忆；压缩估算也会少算这一段
+      messages.push({ role: 'assistant', content: res.content })
       deps.ev('step/end', { step_index: steps, status: 'ok', kind: 'assistant' })
       break
     }
@@ -363,5 +381,5 @@ export async function runAgent(
   }
 
   deps.ev('turn/end', { turn_index: 1, stop_reason: stoppedBy, steps })
-  return { text: lastText, steps, usage, stoppedBy, plan, compactions }
+  return { text: lastText, steps, usage, stoppedBy, plan, compactions, messages }
 }

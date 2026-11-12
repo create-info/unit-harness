@@ -35,6 +35,8 @@ import { buildSeatbeltProfile, findSeatbelt } from './sandbox/seatbelt.ts'
 import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/toolchains.ts'
 import { McpRegistry } from './mcp/bridge.ts'
 import { loadMcpServers } from './mcp/config.ts'
+import { uhHome } from './paths.ts'
+import type { Message } from './llm/types.ts'
 import { discoverSkills, renderSkillIndex } from './skill/registry.ts'
 import { loadHosts } from './remote/hosts.ts'
 import { runRemote } from './remote/ssh.ts'
@@ -107,6 +109,8 @@ export interface RunTaskOptions {
   skills?: boolean
   /** 是否用流式（默认 true；管道/CI 里也无害，画面不抖只是更快） */
   stream?: boolean
+  /** 续跑：上一次会话的消息 */
+  resumeFrom?: Message[]
 }
 
 export interface RunTaskOutcome extends RunResult {
@@ -137,6 +141,18 @@ export class Harness {
   private readonly seatbelt: SeatbeltInfo
   /** MCP server 桥接（外部进程，不在沙箱内） */
   readonly mcp = new McpRegistry()
+
+  /** 中断：Ctrl+C 走这里，而不是直接杀进程 */
+  private readonly abortCtl = new AbortController()
+
+  /** 请求中断（可重入：已中断时无副作用） */
+  abort(): void {
+    if (!this.abortCtl.signal.aborted) this.abortCtl.abort()
+  }
+
+  get aborted(): boolean {
+    return this.abortCtl.signal.aborted
+  }
   /** 工作区绝对路径（外部模块如剧本检查要读它） */
   readonly workspace: string
   private readonly store: EventStore
@@ -353,7 +369,7 @@ export class Harness {
       },
 
       exec: {
-        run: (argv, opts) => self.exec({ ...opts, argv }),
+        run: (argv, opts) => self.exec({ ...opts, argv, signal: self.abortCtl.signal }),
       },
 
       sandbox: {
@@ -459,6 +475,13 @@ export class Harness {
         stdio: ['ignore', 'pipe', 'pipe'],
       })
 
+      // 中断要能打断正在跑的命令，否则用户按了 Ctrl+C 还得等它跑完
+      const onAbort = (): void => { try { child.kill('SIGKILL') } catch { /* already gone */ } }
+      if (spec.signal) {
+        if (spec.signal.aborted) onAbort()
+        else spec.signal.addEventListener('abort', onAbort, { once: true })
+      }
+
       let truncated = false
       const LIMIT = 256 * 1024
       const timer = setTimeout(() => { child.kill('SIGKILL') }, timeoutMs)
@@ -497,6 +520,7 @@ export class Harness {
       child.on('error', (e) => { clearTimeout(timer); reject(e) })
       child.on('close', (code) => {
         clearTimeout(timer)
+        spec.signal?.removeEventListener('abort', onAbort)
         const stdout = outC.value()
         const stderr = errC.value()
         const digest = createHash('sha256').update(stdout + stderr).digest('hex').slice(0, 16)
@@ -622,6 +646,7 @@ export class Harness {
           const r = await this.exec({
             argv: [a.argv[0] as string, ...a.argv.slice(1)],
             ...(a.timeoutMs ? { timeoutMs: a.timeoutMs } : {}),
+            signal: this.abortCtl.signal,
           })
           const body = r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : '')
           return { content: `exit=${r.exitCode} isolation=${r.isolation}\n${body}`.trim() }
@@ -656,8 +681,35 @@ export class Harness {
         task: o.task,
         ...(o.maxSteps ? { maxSteps: o.maxSteps } : {}),
         ...(o.maxSeconds ? { maxSeconds: o.maxSeconds } : {}),
+        signal: this.abortCtl.signal,
+        ...(o.resumeFrom ? { initialMessages: o.resumeFrom } : {}),
       },
     )
+
+    // 落盘对话状态：这是 --continue 的唯一依据。
+    // 只写最后一个会话就够了，但每次覆盖写，保证「最后的状态」永远是最新的。
+    if (this.session) {
+      try {
+        const statePath = nodePath.join(uhHome(), 'sessions', this.session.id, 'state.json')
+        fsSync.writeFileSync(statePath, JSON.stringify({
+          session_id: this.session.id,
+          updated_at: new Date().toISOString(),
+          stopped_by: result.stoppedBy,
+          plan: result.plan ?? [],
+          messages: result.messages,
+        }), 'utf8')
+      } catch { /* 状态落盘失败不该让整次运行失败 */ }
+    }
+
+    // 中断不是失败：把「被谁停下的」写清楚，下次 --continue 才知道从哪接
+    if (result.stoppedBy === 'interrupted') {
+      this.ev('session/interrupted', {
+        steps: result.steps,
+        had_plan: (result.plan ?? []).length > 0,
+        workspace: this.workspace,
+      }, 'agent')
+      this.log('warn', 'run interrupted by signal')
+    }
 
     // ---- 交付物闭环：改了什么 → 登记 → 断言 → 事件 ----
     const artifacts: Artifact[] = []
