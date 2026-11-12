@@ -20,13 +20,17 @@ export interface LandlockHelper {
 export const SYSTEM_RO = ['/usr', '/lib', '/lib64', '/bin', '/sbin', '/etc', '/proc', '/sys', '/opt', '/run']
 
 function candidates(): string[] {
+  // 显式指定时只认它：`UH_LANDLOCK_HELPER=/nonexistent` 可用来模拟「没有沙箱」，
+  // 也避免测试时静默回落到仓库内的构建产物。
+  const explicit = process.env.UH_LANDLOCK_HELPER
+  if (explicit !== undefined && explicit !== '') return [explicit]
+
   const home = os.homedir()
   return [
-    process.env.UH_LANDLOCK_HELPER ?? '',
     path.join(home, '.uh', 'bin', 'landlock-helper'),
     path.join(process.cwd(), 'build', 'landlock-helper'),
     path.join(process.cwd(), 'native', 'landlock-helper', 'build', 'landlock-helper'),
-  ].filter(Boolean)
+  ]
 }
 
 function probeAbi(bin: string): number {

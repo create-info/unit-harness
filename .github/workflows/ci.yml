@@ -80,13 +80,10 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          helper="$HOME/.uh/bin/landlock-helper"
-          [ -x "$helper" ] && mv "$helper" "$RUNNER_TEMP/llh.bak"
           set +e
-          node dist/uh.cjs tool hello
+          UH_LANDLOCK_HELPER=/nonexistent node dist/uh.cjs tool hello
           code=$?
           set -e
-          [ -f "$RUNNER_TEMP/llh.bak" ] && mv "$RUNNER_TEMP/llh.bak" "$helper"
           if [ "$code" -eq 0 ]; then echo "expected refusal without helper, got success"; exit 1; fi
           echo "ok: refused (exit $code)"
         env:
