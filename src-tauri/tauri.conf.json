@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "UnitHarness",
+  "version": "0.1.0",
+  "identifier": "site.unitai.harness",
+  "build": {
+    "frontendDist": "webdist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "UnitHarness",
+        "width": 1240,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 560,
+        "visible": false,
+        "center": true,
+        "titleBarStyle": "Visible"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/uh"
+    ],
+    "shortDescription": "The agent that proves its work",
+    "longDescription": "A local agent harness: every deliverable is executed and verified in a sandbox, and every run is replayable.",
+    "category": "DeveloperTool",
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}

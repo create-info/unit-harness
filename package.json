@@ -19,7 +19,9 @@
     "check:constraints": "node scripts/check-constraints.mjs",
     "uh": "node packages/cli/src/main.ts",
     "build:native": "bash scripts/build-native.sh",
-    "prepare": "node scripts/build.mjs"
+    "prepare": "node scripts/build.mjs",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build"
   },
   "dependencies": {
     "@deepseek-ai/cordis": "4.0.1"
@@ -27,7 +29,8 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "esbuild": "^0.24.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "@tauri-apps/cli": "^2.0.0"
   },
   "bin": {
     "uh": "dist/uh.cjs",

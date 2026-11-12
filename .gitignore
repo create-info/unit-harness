@@ -9,3 +9,5 @@ spikes/**/node_modules/
 /core
 core.[0-9]*
 .idea
+src-tauri/target/
+src-tauri/binaries/*
