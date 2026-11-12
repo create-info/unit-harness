@@ -209,6 +209,31 @@ export UH_API_KEY=sk-...
 uh run "看看工作区里有什么"
 ```
 
+## How it decides
+
+The system prompt is assembled from sections, not written as one string — the
+same structure Codex uses:
+
+| Section | Contents |
+|---|---|
+| base | identity, how to act, how to report (no "looks right", only "I ran it") |
+| `environment_context` | workspace, platform, real sandbox strength, network, date |
+| `tool_guidance` | when to use which tool, and when not to |
+| `project_instructions` | `AGENTS.md` / `CLAUDE.md` from the workspace upward — nearest wins |
+
+Built-in tools are deliberately few and each has a *contract*:
+
+- **`apply_patch`** — create/edit/move/delete files with `*** Begin Patch` hunks.
+  Applied **atomically**: if any hunk fails to match, nothing is written. Context
+  matching is forgiving (whitespace-insensitive) because models are imprecise.
+- **`run_command`** — argv array, not a shell string; `["sh","-c","..."]` when you
+  really want shell syntax. Every call goes through the sandbox.
+- **`update_plan`** — the only place the model's plan is visible to you; one step
+  in progress at a time.
+
+`uh exec -- <cmd>` runs a single command inside the sandbox, which is handy when
+you want to check *why* something failed without involving a model.
+
 The model decides the steps; the sandbox decides what it is allowed to touch.
 
 ## Every run is evidence
@@ -295,6 +320,13 @@ What landlock actually gives you on Linux:
 - read access to system paths (`/usr`, `/lib`, `/etc`, `/proc`, …) is required for shells and runtimes to work
 
 If nothing is available, `exec` **fails closed**. We never silently downgrade.
+
+**One deliberate exception**: interpreter and package-manager directories are
+**readable** (`~/.nvm/versions`, `~/.pyenv/versions`, `~/.cargo/bin`, and the venv
+root of whatever binary you actually invoke). A sandbox where `python3` cannot
+start is not secure, it is useless — the first `pyvenv.cfg` read fails and every
+script dies. Credential paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.cargo/credentials*`,
+`~/.netrc`, `~/.git-credentials`) stay unreadable, and `uh sandbox check` proves it.
 
 On macOS the same guarantees hold, built from an sbpl profile: `(deny file-write*)`
 with the workspace and `~/.uh` re-allowed, `(deny file-read* …)` on `$HOME`, and

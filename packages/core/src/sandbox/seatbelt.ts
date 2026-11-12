@@ -37,6 +37,8 @@ export interface SeatbeltOptions {
   allowHome?: boolean
   /** 禁止网络 */
   denyNetwork?: boolean
+  /** 额外只读放行（工具链目录；放在 deny $HOME 之后，sbpl 是最后匹配优先） */
+  extraReadOnly?: string[]
 }
 
 /** 生成 sbpl profile */
@@ -50,6 +52,10 @@ export function buildSeatbeltProfile(o: SeatbeltOptions): string {
   if (!o.allowHome) {
     rules.push(`(deny file-read* (subpath ${q(home)}))`)
     rules.push(`(allow file-read* (subpath ${q(o.workspace)}) (subpath ${q(uhHome)}))`)
+    if (o.extraReadOnly?.length) {
+      // 在后面 allow 才能覆盖前面的 deny（解释器、包缓存）
+      rules.push(`(allow file-read* ${o.extraReadOnly.map((p) => `(subpath ${q(p)})`).join(' ')})`)
+    }
   }
 
   // 写：默认全禁，只放行工作区 / ~/.uh / 临时目录 / 必要的设备
