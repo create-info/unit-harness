@@ -37,10 +37,12 @@ cordis.schema.json          # 配置补全（编辑器用）
 ### 2.1 流程
 
 ```bash
-# ① 打包成单 JS（把 node_modules 收进一个 ESM 文件）
-esbuild dist/uh.js --bundle --platform=node --format=esm \
-  --target=node22 --outfile=build/uh.bundle.mjs \
-  --external:node:* --banner:js="import{createRequire}from'module';const require=createRequire(import.meta.url);"
+# ① 打包成单文件 **CJS**
+#    实测：Node 22 的 SEA 入口必须是 CJS（ESM 会报 Cannot use import statement
+#    outside a module at internal/main/embedding:60 embedderRunCjs）。
+#    源码可以写 ESM/TS，esbuild 输出 CJS 即可。
+esbuild packages/cli/src/main.ts --bundle --platform=node --format=cjs \
+  --target=node22 --outfile=dist/uh.cjs
 
 # ② 生成 SEA blob（可内嵌 web 静态资源）
 node --experimental-sea-config sea-config.json
@@ -59,7 +61,7 @@ codesign --sign - build/uh                  # ad-hoc，正式版用 Developer ID
 
 ```json
 {
-  "main": "build/uh.bundle.mjs",
+  "main": "dist/uh.cjs",
   "output": "build/sea-prep.blob",
   "disableExperimentalSEAWarning": true,
   "useCodeCache": true,
@@ -71,7 +73,17 @@ codesign --sign - build/uh                  # ad-hoc，正式版用 Developer ID
 }
 ```
 
-### 2.2 两个必须先验证的点（spike，P0 第一天）
+### 2.2 Spike 实测结论（已完成，2026-11-12）
+
+S1 与 S1b 均已通过（详见 `spikes/RESULTS.md`），并带来两条必须遵守的实现约束：
+
+1. **SEA 入口必须是 CJS**——Node 22 不支持 ESM `main`（`embedderRunCjs` 直接抛错）。
+2. **动态 import 用户插件必须用 `new Function('s','return import(s)')` 包裹**，
+   否则打包器会把它改写成 `require` 链，运行时找不到外部 ESM。
+3. 插件必须**零运行时依赖**（不 import cordis / core），否则在 `~/.uh/plugins` 下
+   解析不到 `node_modules`；插件目录需带 `"type": "module"`。
+
+### 2.3 两个必须先验证的点（spike）
 
 | # | 问题 | 若失败的影响 | fallback |
 |---|---|---|---|
