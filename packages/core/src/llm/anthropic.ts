@@ -77,6 +77,17 @@ export function toAnthropicMessages(messages: Message[]): {
       continue
     }
 
+    // 带图的 user 消息：Anthropic 要求 image block 放在 text 之前或并列，content 必须是数组
+    if (m.images?.length) {
+      const blocks: AnthropicBlock[] = m.images.map((img) => ({
+        type: 'image' as const,
+        source: { type: 'base64' as const, media_type: img.mediaType, data: img.data },
+      }))
+      if (m.content) blocks.push({ type: 'text', text: m.content })
+      out.push({ role: 'user', content: blocks })
+      continue
+    }
+
     out.push({ role: 'user', content: m.content })
   }
 

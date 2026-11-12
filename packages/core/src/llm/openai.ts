@@ -37,6 +37,16 @@ export async function chatComplete(
     model: cfg.model,
     messages: body.messages.map((m) => {
       const out: Record<string, unknown> = { role: m.role, content: m.content }
+      // 有图时 content 必须变成 parts 数组，纯字符串 + 图片在 OpenAI 协议里不接受
+      if (m.images?.length) {
+        out.content = [
+          ...(m.content ? [{ type: 'text', text: m.content }] : []),
+          ...m.images.map((img) => ({
+            type: 'image_url',
+            image_url: { url: `data:${img.mediaType};base64,${img.data}` },
+          })),
+        ]
+      }
       if (m.tool_calls) out.tool_calls = m.tool_calls
       if (m.tool_call_id) out.tool_call_id = m.tool_call_id
       if (m.name) out.name = m.name

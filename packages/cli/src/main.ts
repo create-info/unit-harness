@@ -17,7 +17,8 @@ import {
   loadHosts, upsertHost, removeHost, runRemote, classify, describeRisk,
   latestResumable,
 } from '@unit-harness/core'
-import type { Message } from '@unit-harness/core'
+import type { Message, ImageInput } from '@unit-harness/core'
+import { readFileSync } from 'node:fs'
 
 import { VERSION } from './version.ts'
 import { startServer, openBrowser } from './serve.ts'
@@ -42,7 +43,7 @@ function fail(msg: string, code = 1): never {
   process.exit(code)
 }
 
-const VALUE_FLAGS = new Set(['--model', '--base-url', '--api-key', '--max-steps', '--provider', '--max-context'])
+const VALUE_FLAGS = new Set(['--model', '--base-url', '--api-key', '--max-steps', '--provider', '--max-context', '--image', '--port', '--key', '--host', '--set'])
 
 function flag(name: string): string | undefined {
   const i = argv.indexOf(`--${name}`)
@@ -644,6 +645,34 @@ async function cmdMcp(sub?: string, rest: string[] = []): Promise<void> {
   fail(`unknown mcp command: ${sub}. Try: uh mcp list`)
 }
 
+const IMAGE_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+}
+
+/** 收 `--image <path>`（可重复）并读成 base64 */
+function loadImages(): ImageInput[] {
+  const out: ImageInput[] = []
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '--image') continue
+    const file = argv[i + 1]
+    if (!file) fail('--image needs a path')
+    const ext = (file.match(/\.[^.]+$/) ?? [''])[0].toLowerCase()
+    const mediaType = IMAGE_TYPES[ext]
+    if (!mediaType) fail(`unsupported image type: ${file} (png/jpg/webp/gif)`)
+    try {
+      const data = readFileSync(file).toString('base64')
+      out.push({ path: file, mediaType: mediaType as string, data })
+    } catch (err) {
+      fail(`cannot read image ${file}: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  return out
+}
+
 async function cmdRun(task?: string): Promise<void> {
   const cont = argv.includes('--continue')
   let resumeFrom: Message[] | undefined
@@ -665,6 +694,7 @@ async function cmdRun(task?: string): Promise<void> {
     fail('usage: uh run "<task>" [--continue] [--model M] [--base-url U] [--api-key K] [--max-steps N]')
   }
   const maxStepsRaw = flag('max-steps')
+  const images = loadImages()
 
   await withHarness(async (h) => {
     console.log(`workspace: ${h.workspaceDir}`)
@@ -673,6 +703,7 @@ async function cmdRun(task?: string): Promise<void> {
     const res = await h.runTask({
       task: task!,
       ...(resumeFrom ? { resumeFrom } : {}),
+      ...(images.length ? { images } : {}),
       ...(flag('provider') ? { provider: flag('provider')! } : {}),
       ...(flag('model') ? { model: flag('model')! } : {}),
       ...(flag('base-url') ? { baseUrl: flag('base-url')! } : {}),
@@ -949,6 +980,7 @@ Usage:
   uh run "<task>"           run a task with the model agent (sandboxed)
   uh host [list|add|test]   manage remote hosts (ssh targets, key paths only)
   uh run --continue [task]  resume the previous session instead of starting over
+  uh run "..." --image f    attach an image (png/jpg/webp/gif) to the task
   uh do [name]              run a recipe: fixed task, then our own acceptance checks
   uh serve [--port N]       local web UI (default 127.0.0.1:7878)
   uh desktop                same, and open it in your browser
