@@ -255,6 +255,39 @@ you want to check *why* something failed without involving a model.
 
 The model decides the steps; the sandbox decides what it is allowed to touch.
 
+## MCP
+
+```console
+$ uh mcp list
+config: ~/.uh/mcp.json
+
+✓ filesystem  (stdio)  14 tool(s)
+
+  mcp__filesystem__read_file
+      [MCP:filesystem] Read a file (runs outside the local sandbox)
+```
+
+Config is the same shape as Claude Desktop's, so anything you already run there
+works here — `~/.uh/mcp.json` globally, `./.uh/mcp.json` per project:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
+    "remote": { "url": "https://example.com/mcp", "headers": { "authorization": "Bearer …" } }
+  }
+}
+```
+
+Both stdio and streamable-HTTP transports are supported.
+
+**MCP servers run outside the sandbox.** They are separate processes with your
+full user privileges — nothing landlock or seatbelt does applies to them. So the
+tool name is prefixed `mcp__<server>__<tool>`, `uh doctor` lists them under a
+warning, and every call is logged with `isolation: "none"` rather than
+inheriting the sandbox level. If an MCP call deletes something, the event log
+will not pretend it was contained.
+
 ## Every run is evidence
 
 Nothing happens silently. Each session writes an append-only JSONL log:
