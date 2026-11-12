@@ -339,7 +339,23 @@ export class Harness {
   /** 唯一的命令执行入口；path-guard 下默认拒绝（fail-closed） */
   async exec(spec: ExecSpec): Promise<ExecResult> {
     const level = this.isolation.enforced
+    const workdir0 = spec.cwd ?? this.workspace
+
+    // 先记 tool/call：即使随后被拒绝，"有人试图执行"也必须留痕（审计完整性）
+    const attempted = this.ev('tool/call', {
+      tool: 'exec',
+      argv: spec.argv,
+      cwd: workdir0,
+    }, 'agent')
+
     if ((level === 'path-guard' || level === 'none') && this.opts.unconfined !== true) {
+      this.ev('tool/result', {
+        tool: 'exec',
+        status: 'error',
+        isolation: level,
+        error: 'E_SANDBOX_UNAVAILABLE',
+        refused: true,
+      }, 'environment', attempted?.id ?? null)
       throw new Error(
         `E_SANDBOX_UNAVAILABLE: current isolation is "${level}". ` +
         `Refusing to execute (fail-closed). Re-run with --allow-unconfined if you accept the risk.`,
@@ -348,12 +364,7 @@ export class Harness {
 
     const started = Date.now()
     const timeoutMs = spec.timeoutMs ?? 60_000
-    const callEv = this.ev('tool/call', {
-      tool: 'exec',
-      argv: spec.argv,
-      cwd: spec.cwd ?? this.workspace,
-      timeout_ms: timeoutMs,
-    }, 'agent')
+    const callEv = attempted
 
     // 默认在工作区执行：工作区是唯一可写区域，cwd 必须与之一致
     const workdir = spec.cwd ?? this.workspace
