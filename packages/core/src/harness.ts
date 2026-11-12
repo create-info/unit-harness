@@ -14,6 +14,11 @@ import { pathToFileURL } from 'node:url'
 
 import { probeIsolation } from './sandbox/probe.ts'
 import { EventStore } from './evidence/store.ts'
+import { LlmGateway } from './llm/gateway.ts'
+import { resolveProvider } from './llm/discover.ts'
+import { runAgent } from './agent/loop.ts'
+import { systemPrompt } from './agent/prompt.ts'
+import type { RunResult } from './agent/loop.ts'
 import type { SessionEvent, SessionMeta } from './evidence/store.ts'
 import type { EventSource, SessionKind } from './evidence/kinds.ts'
 import { createHash } from 'node:crypto'
@@ -53,6 +58,17 @@ export interface HarnessOptions {
   label?: string
   /** CLI 注入的版本号，写进 session/start */
   harnessVersion?: string
+  /** 事件回调，CLI 用来实时打印进度 */
+  onEvent?: (kind: string, payload: Record<string, unknown>) => void
+}
+
+export interface RunTaskOptions {
+  task: string
+  model?: string
+  baseUrl?: string
+  apiKey?: string
+  maxSteps?: number
+  maxSeconds?: number
 }
 
 export interface LoadedPlugin {
@@ -92,6 +108,11 @@ export class Harness {
     this.store = new EventStore()
   }
 
+  /** 可写工作区根目录 */
+  get workspaceDir(): string {
+    return this.workspace
+  }
+
   /** 当前会话 id（未开启记录时为 null） */
   get sessionId(): string | null {
     return this.session?.id ?? null
@@ -108,6 +129,7 @@ export class Harness {
     source: EventSource = 'agent',
     parentId: string | null = null,
   ): SessionEvent | null {
+    this.opts.onEvent?.(kind, payload)
     if (!this.session) return null
     try {
       return this.store.append(this.session.id, kind, payload, { source, parentId })
@@ -407,6 +429,68 @@ export class Harness {
         })
       })
     })
+  }
+
+  /** 已注册工具列表（只读） */
+  get tools(): ReadonlyArray<ToolDefinition> {
+    return [...this.toolRegistry.values()]
+  }
+
+  /**
+   * 跑一次 agent 任务：模型在沙箱护甲里自主决定步骤，每步落事件。
+   * 这是 harness 唯一"对外的主入口"。
+   */
+  async runTask(o: RunTaskOptions): Promise<RunResult> {
+    const provider = await resolveProvider({
+      ...(o.model ? { model: o.model } : {}),
+      ...(o.baseUrl ? { baseUrl: o.baseUrl } : {}),
+      ...(o.apiKey ? { apiKey: o.apiKey } : {}),
+    })
+
+    const gateway = new LlmGateway({
+      primary: { baseUrl: provider.baseUrl, model: provider.model, ...(provider.apiKey ? { apiKey: provider.apiKey } : {}) },
+      emit: (kind, payload, parentId) => this.ev(kind, payload, 'agent', parentId ?? null)?.id ?? null,
+    })
+
+    const sys = systemPrompt({
+      workspace: this.workspace,
+      isolation: this.isolation.enforced,
+      networkBlocked: this.opts.denyNetwork === true,
+      tools: [
+        { name: 'run_command', description: 'run a program in the sandbox' },
+        ...this.tools.map((t) => ({ name: t.name, description: t.description })),
+      ],
+    })
+
+    // system 提示不写进事件（体积大且含环境细节），只记摘要
+    this.log('info', `provider: ${provider.source} model=${provider.model}`)
+
+    return await runAgent(
+      {
+        workspace: this.workspace,
+        gateway,
+        tools: this.tools,
+        runCommand: async (a) => {
+          if (!Array.isArray(a.argv) || a.argv.length === 0 || a.argv.some((x) => typeof x !== 'string')) {
+            throw new Error('run_command expects argv: string[] with at least one element')
+          }
+          const r = await this.exec({
+            argv: [a.argv[0] as string, ...a.argv.slice(1)],
+            ...(a.timeoutMs ? { timeoutMs: a.timeoutMs } : {}),
+          })
+          const body = r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : '')
+          return { content: `exit=${r.exitCode} isolation=${r.isolation}\n${body}`.trim() }
+        },
+        callTool: (name, args) => this.callTool(name, args),
+        ev: (kind, payload) => { this.ev(kind, payload, 'agent') },
+        log: (m) => this.log('info', m),
+      },
+      {
+        task: o.task,
+        ...(o.maxSteps ? { maxSteps: o.maxSteps } : {}),
+        ...(o.maxSeconds ? { maxSeconds: o.maxSeconds } : {}),
+      },
+    )
   }
 
   /** 调用已注册的工具（供 CLI / 后续 agent loop 使用） */

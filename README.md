@@ -79,6 +79,48 @@ E_SANDBOX_UNAVAILABLE: current isolation is "none". Refusing to execute (fail-cl
 Re-run with --allow-unconfined if you accept the risk.
 ```
 
+## Run a task
+
+```console
+$ uh run "在工作区创建一个 hello.txt，内容写 hi from unit-harness，然后用 ls 确认"
+workspace: /home/you/.uh/work
+isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; home unreadable
+
+· turn start
+· step 1
+  → qwen3.8-27b
+  ← 1 tool call(s), 775 tokens
+  ⚙ run_command: sh -c printf 'hi from unit-harness\n' > hello.txt && ls -la
+  ✓ exit=0
+· step 2
+  → qwen3.8-27b
+  ← 1 tool call(s), 706 tokens
+  ⚙ run_command: cat hello.txt
+  ✓ exit=0
+· step 3
+  → qwen3.8-27b
+  ← 0 tool call(s), 837 tokens
+· turn end (model, 3 steps)
+
+--- answer ---
+完成 ✅
+- 已在工作区创建 hello.txt，内容为 hi from unit-harness
+- ls -la 确认文件存在
+```
+
+No API key needed if you have LM Studio (`:1234`) or Ollama (`:11434`) running — `uh`
+probes both and picks the first model it finds. Otherwise point it anywhere
+OpenAI-compatible:
+
+```bash
+export UH_BASE_URL=https://api.deepseek.com/v1
+export UH_MODEL=deepseek-chat
+export UH_API_KEY=sk-...
+uh run "看看工作区里有什么"
+```
+
+The model decides the steps; the sandbox decides what it is allowed to touch.
+
 ## Every run is evidence
 
 Nothing happens silently. Each session writes an append-only JSONL log:
@@ -189,7 +231,8 @@ package and do not fork it. Thanks to the DeepSeek team for releasing it openly.
 |---|---|---|
 | P0 | kernel, plugin loading, sandbox probing, fail-closed exec, CLI | ✅ done |
 | P1 | landlock enforcement + `sandbox check` | ✅ done |
-| P1 | event log (`session/*`), assertions, replay | next |
+| P1 | event log (`session/*`), assertions, replay | ✅ done |
+| P1 | agent loop, `uh run`, zero-config local model discovery | ✅ done |
 | P2 | macOS seatbelt / Windows restricted token, desktop shell | — |
 | P2 | desktop shell, data packs, monitors | — |
 | P3 | protocol adapters (MCP / ACP / A2A) | — |
