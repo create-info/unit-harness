@@ -1,0 +1,9 @@
+UnitHarness
+Copyright 2026 create-info
+
+This product includes software developed by DeepSeek
+(https://github.com/deepseek-ai/deepseek-harness), licensed under the
+MIT License.
+
+Portions of the plugin framework are provided by Cordis (MIT).
+See https://github.com/cordisjs/cordis

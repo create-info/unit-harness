@@ -1,0 +1,13 @@
+{
+  "name": "@unit-harness/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "uh": "dist/uh.cjs",
+    "unitai": "dist/uh.cjs"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@unit-harness/core": "0.1.0"
+  }
+}
