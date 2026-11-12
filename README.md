@@ -111,6 +111,47 @@ E_SANDBOX_UNAVAILABLE: current isolation is "none". Refusing to execute (fail-cl
 Re-run with --allow-unconfined if you accept the risk.
 ```
 
+## Providers
+
+```console
+$ uh provider list
+config: ~/.uh/config.json
+
+  id           provider              key           model                     state
+  deepseek     DeepSeek              (none)        —                         no key
+  anthropic    Anthropic (Claude)    (none)        —                         no key
+  openai       OpenAI                (none)        —                         no key
+  moonshot     Moonshot (Kimi)       (none)        —                         no key
+  zhipu        Zhipu (GLM)           (none)        —                         no key
+  qwen         Qwen (DashScope)      (none)        —                         no key
+  siliconflow  SiliconFlow           (none)        —                         no key
+  groq         Groq                  (none)        —                         no key
+  openrouter   OpenRouter            (none)        —                         no key
+  ollama       Ollama (local)        —             qwen3.6:latest            running
+  lmstudio     LM Studio (local)     —             qwen3.8-27b               running
+  vllm         vLLM / llama.cpp (loc…—             —                         not running
+```
+
+```bash
+uh config set deepseek        # API key, hidden input, stored 0600
+uh config use deepseek        # make it the default
+uh config set deepseek.model deepseek-v4-flash
+uh run --provider anthropic "…"
+```
+
+**Model names are never hardcoded.** `deepseek-chat` and `deepseek-reasoner` were
+retired in July 2026 — a static list rots. The real list is fetched from each
+endpoint's `/models` on demand.
+
+**Two wire protocols, not one**: OpenAI-compatible (`/chat/completions`) and
+Anthropic Messages (`/v1/messages`). The differences — system as a top-level
+param, `input_schema` instead of `parameters`, `tool_use`/`tool_result` content
+blocks, `x-api-key` auth — are absorbed in `llm/anthropic.ts`. The kernel only
+ever sees its own `CompletionResult`.
+
+**Keys never leak**: stored 0600, masked as `sk-a…1234` in every output, and a
+test asserts the key string never appears in the event log.
+
 ## Run a task
 
 ```console

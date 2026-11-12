@@ -1,12 +1,12 @@
 /**
  * LLM 网关：全系统唯一的模型出口。
  *
- * 负责四件事（docs/design-decisions.md 的 llmgw 设计）：
- *  ① 路由（role → 模型） ② 预算/用量记录 ③ 事件留痕 ④ 失败重试
- * P1 只做 ①③④ 的最小实现；② 记录 usage 但不做配额拒绝。
+ * 负责：路由（provider/role）· 用量记录 · 事件留痕 · 失败重试。
+ * 协议差异交给 complete() 分发，这里不认识任何具体厂商。
  */
-import { chatComplete } from './openai.ts'
-import type { CompletionResult, LlmRole, Message, ProviderConfig, ToolSpec } from './types.ts'
+import { complete as dispatch } from './complete.ts'
+import type { CompletionResult, LlmRole, Message, ToolSpec } from './types.ts'
+import type { ResolvedProvider } from './resolve.ts'
 
 export type EventSink = (
   kind: 'llm/request' | 'llm/response',
@@ -15,9 +15,8 @@ export type EventSink = (
 ) => string | null
 
 export interface GatewayOptions {
-  primary: ProviderConfig
-  /** 便宜模型（可选），role=cheap 时使用 */
-  cheap?: ProviderConfig
+  primary: ResolvedProvider
+  cheap?: ResolvedProvider
   emit: EventSink
   maxRetries?: number
 }
@@ -30,7 +29,7 @@ export function estimateTokens(messages: Message[]): number {
 export class LlmGateway {
   constructor(private readonly opts: GatewayOptions) {}
 
-  private cfgFor(role: LlmRole): ProviderConfig {
+  private pick(role: LlmRole): ResolvedProvider {
     if (role === 'cheap' && this.opts.cheap) return this.opts.cheap
     return this.opts.primary
   }
@@ -42,9 +41,11 @@ export class LlmGateway {
     temperature?: number
     maxTokens?: number
   }): Promise<CompletionResult> {
-    const cfg = this.cfgFor(req.role ?? 'plan')
+    const target = this.pick(req.role ?? 'plan')
     const requestEv = this.opts.emit('llm/request', {
-      model: cfg.model,
+      provider: target.def.id,
+      protocol: target.def.protocol,
+      model: target.model,
       role: req.role ?? 'plan',
       messages: req.messages.length,
       tools: req.tools?.length ?? 0,
@@ -55,8 +56,17 @@ export class LlmGateway {
     let lastErr: unknown
     for (let i = 0; i < attempts; i++) {
       try {
-        const res = await chatComplete(cfg, req)
+        const res = await dispatch(
+          target.def,
+          {
+            baseUrl: target.baseUrl,
+            ...(target.apiKey ? { apiKey: target.apiKey } : {}),
+            model: target.model,
+          },
+          req,
+        )
         this.opts.emit('llm/response', {
+          provider: target.def.id,
           model: res.model,
           usage: res.usage,
           finish_reason: res.finishReason,
@@ -67,8 +77,8 @@ export class LlmGateway {
       } catch (err) {
         lastErr = err
         const msg = err instanceof Error ? err.message : String(err)
-        // 认证/请求错误不重试
-        if (/E_LLM_HTTP 4\d\d/.test(msg)) break
+        // 认证/参数错误重试没用
+        if (/E_LLM_HTTP 4\d\d|E_LLM_NO_KEY/.test(msg)) break
         if (i < attempts - 1) await new Promise((r) => setTimeout(r, 500 * (i + 1)))
       }
     }
