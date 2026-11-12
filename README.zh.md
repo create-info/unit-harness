@@ -306,6 +306,16 @@ config: ~/.uh/mcp.json
 
 stdio 和 streamable-HTTP 两种传输都支持。
 
+```console
+$ uh mcp add unitai https://unitai.site/mcp --header authorization
+authorization value (input hidden): ********
+$ uh mcp test unitai
+✓ unitai  (http)  7 tool(s)
+```
+
+`uh mcp add` 要求输入 token 时不回显、写 `~/.uh/mcp.json` 时权限 0600；`uh mcp test` 打印
+真实的握手错误（401 会告诉你去哪拿 token），而不是甩一段堆栈。见 [`docs/unitai.md`](docs/unitai.md)。
+
 **MCP server 不在沙箱里。** 它们是独立进程，拥有你本人的全部权限——landlock 和
 seatbelt 管不到它们。所以：工具名带 `mcp__<server>__<tool>` 前缀，`uh doctor` 会带警告
 列出来，每次调用在事件里记 `isolation: "none"` 而不是继承沙箱等级。如果某次 MCP 调用

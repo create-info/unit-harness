@@ -64,8 +64,22 @@ export class McpClient {
   }
 
   async connect(): Promise<void> {
-    if (this.isRemote) return // HTTP 无连接状态
+    // HTTP 传输没有「子进程」，但**握手不能跳过**：MCP 的 initialize 用来协商
+    // 协议版本与能力，Streamable HTTP 同样要求。跳过它，严格实现的 server 直接拒绝，
+    // 松一点的则让你带着未知版本继续跑——两种都不该发生。
+    if (!this.isRemote) {
+      this.spawnChild()
+    }
 
+    await this.request('initialize', {
+      protocolVersion: PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: CLIENT_INFO,
+    })
+    await this.notify('notifications/initialized')
+  }
+
+  private spawnChild(): void {
     const command = this.cfg.command
     if (!command) throw new Error(`E_MCP_CONFIG: server "${this.name}" has neither command nor url`)
 
@@ -86,13 +100,6 @@ export class McpClient {
     // stderr 是 server 的日志，不能混进协议流
     this.child.stderr?.setEncoding('utf8')
     this.child.stderr?.on('data', () => { /* 丢弃：某些 server 会刷屏 */ })
-
-    await this.request('initialize', {
-      protocolVersion: PROTOCOL_VERSION,
-      capabilities: {},
-      clientInfo: CLIENT_INFO,
-    })
-    await this.notify('notifications/initialized')
   }
 
   private onData(chunk: string): void {
@@ -137,11 +144,21 @@ export class McpClient {
 
   async notify(method: string, params?: Record<string, unknown>): Promise<void> {
     if (this.isRemote) {
-      await fetch(this.cfg.url as string, {
-        method: 'POST',
-        headers: this.httpHeaders(),
-        body: JSON.stringify({ jsonrpc: '2.0', method, ...(params ? { params } : {}) }),
-      })
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), this.cfg.timeoutMs ?? 30_000)
+      try {
+        const res = await fetch(this.cfg.url as string, {
+          method: 'POST',
+          headers: this.httpHeaders(),
+          body: JSON.stringify({ jsonrpc: '2.0', method, ...(params ? { params } : {}) }),
+          signal: controller.signal,
+        })
+        // 通知没有响应体，但**必须读掉**：undici 不消费 body 就把连接留在池里不释放，
+        // 紧接着的下一个 POST 会一直等到超时（表象是「握手成功后就卡住」）。
+        await res.text()
+      } finally {
+        clearTimeout(timer)
+      }
       return
     }
     this.send({ jsonrpc: '2.0', method, ...(params ? { params } : {}) })

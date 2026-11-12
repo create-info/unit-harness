@@ -12,7 +12,7 @@ import {
   Harness, EventStore, describeIsolation, describeAssertion, resolveProvider,
   PROVIDERS, findProvider, maskKey, listModels,
   readConfig, setProviderEntry, unsetProvider, setDefaultProvider, configPath, apiKeyFor,
-  loadMcpServers,
+  loadMcpServers, upsertMcpServer, removeMcpServer, McpRegistry,
 } from '@unit-harness/core'
 
 import { VERSION } from './version.ts'
@@ -294,7 +294,82 @@ async function cmdExec(rest: string[]): Promise<void> {
   }, { label: `exec ${argv.join(' ')}`.slice(0, 60), record: false })
 }
 
-async function cmdMcp(sub?: string): Promise<void> {
+async function cmdMcp(sub?: string, rest: string[] = []): Promise<void> {
+  if (sub === 'add') {
+    const name = rest[0]
+    const url = rest[1]
+    const headerIdx = rest.indexOf('--header')
+    const header = headerIdx >= 0 ? (rest[headerIdx + 1] ?? 'authorization') : null
+
+    if (!name || !url) {
+      fail('usage: uh mcp add <name> <url> [--header authorization]')
+    }
+    if (header && !url.startsWith('http')) {
+      fail('--header is for HTTP servers only (url must start with http)')
+    }
+
+    let entry: Record<string, unknown> = url.startsWith('http') ? { url } : { command: url, args: rest.slice(2) }
+
+    if (header) {
+      // token 不回显、不进 shell history、文件 0600
+      const raw = (await readSecret(`${header} value (input hidden): `)).trim()
+      if (!raw) fail('empty value; nothing written')
+      const value = raw.toLowerCase().startsWith('bearer ') || header.toLowerCase() !== 'authorization'
+        ? raw
+        : `Bearer ${raw}`
+      entry = { ...entry, headers: { [header]: value } }
+    }
+
+    const res = upsertMcpServer(name, entry as never)
+    console.log(`added ${res.name} → ${res.path} (mode 0600)`)
+    console.log('verify with:  uh mcp test ' + res.name)
+    return
+  }
+
+  if (sub === 'remove') {
+    const name = rest[0]
+    if (!name) fail('usage: uh mcp remove <name>')
+    if (removeMcpServer(name)) console.log(`removed ${name}`)
+    else fail(`no such server: ${name}`)
+    return
+  }
+
+  if (sub === 'test') {
+    const wanted = rest[0]
+    const { servers } = loadMcpServers()
+    const names = wanted ? [wanted] : Object.keys(servers)
+    if (names.length === 0) fail('no MCP servers configured (see: uh mcp list)')
+
+    for (const n of names) {
+      const cfg = servers[n]
+      if (!cfg) { fail(`no such server: ${n}`) }
+      const reg = new McpRegistry()
+      try {
+        await reg.start({ [n]: cfg })
+        const st = reg.status[0]
+        if (!st) {
+          console.log(`✗ ${n}  (no status returned)`)
+        } else if (st.error) {
+          console.log(`✗ ${n}  (${st.transport})`)
+          console.log(`    ${st.error}`)
+          if (/401|令牌|token|unauthor/i.test(st.error)) {
+            console.log('    hint: the server needs a token —')
+            console.log(`          uh mcp add ${n} <url> --header authorization`)
+          }
+        } else {
+          console.log(`✓ ${n}  (${st.transport})  ${st.tools} tool(s)`)
+          for (const t of reg.tools) {
+            console.log(`    ${t.name}`)
+            if (t.description) console.log(`        ${t.description.slice(0, 100)}`)
+          }
+        }
+      } finally {
+        await reg.close()
+      }
+    }
+    return
+  }
+
   const { servers, sources } = loadMcpServers()
 
   if (sub === 'list' || sub === undefined) {
@@ -621,6 +696,9 @@ Usage:
   uh serve [--port N]       local web UI (default 127.0.0.1:7878)
   uh desktop                same, and open it in your browser
   uh mcp list               show MCP servers and the tools they expose
+  uh mcp add <name> <url>   add an HTTP MCP server (token asked, hidden)
+  uh mcp test [name]        handshake check, with a readable failure
+  uh mcp remove <name>      drop a server from ~/.uh/mcp.json
   uh exec -- <cmd>          run one command inside the sandbox (debugging)
   uh provider list          supported providers, keys, live models
   uh config set <id>        store an API key (hidden input); .model / .baseUrl
@@ -683,7 +761,7 @@ async function main(): Promise<void> {
       return
     }
     case 'mcp':
-      await cmdMcp(argv[1]); return
+      await cmdMcp(argv[1], argv.slice(2)); return
     case 'exec':
       await cmdExec(argv.slice(1)); return
     case 'run':
