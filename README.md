@@ -343,6 +343,17 @@ works here — `~/.uh/mcp.json` globally, `./.uh/mcp.json` per project:
 
 Both stdio and streamable-HTTP transports are supported.
 
+```console
+$ uh mcp add unitai https://unitai.site/mcp --header authorization
+authorization value (input hidden): ********
+$ uh mcp test unitai
+✓ unitai  (http)  7 tool(s)
+```
+
+`uh mcp add` asks for the token with echo off, writes `~/.uh/mcp.json` at 0600, and
+`uh mcp test` prints the real handshake error (a 401 tells you where to get the
+token) instead of a stack trace. See [`docs/unitai.md`](docs/unitai.md).
+
 **MCP servers run outside the sandbox.** They are separate processes with your
 full user privileges — nothing landlock or seatbelt does applies to them. So the
 tool name is prefixed `mcp__<server>__<tool>`, `uh doctor` lists them under a

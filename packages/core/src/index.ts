@@ -22,7 +22,7 @@ export { discoverSkills, renderSkillIndex, skillRoots } from './skill/registry.t
 export type { Skill } from './skill/registry.ts'
 export { McpRegistry, qualify } from './mcp/bridge.ts'
 export { McpClient } from './mcp/client.ts'
-export { loadMcpServers, globalMcpConfigPath, projectMcpConfigPath } from './mcp/config.ts'
+export { loadMcpServers, globalMcpConfigPath, projectMcpConfigPath, upsertMcpServer, removeMcpServer } from './mcp/config.ts'
 export type { McpServerConfig, McpTool } from './mcp/client.ts'
 export type { RunResult } from './agent/loop.ts'
 export type { RunTaskOutcome } from './harness.ts'

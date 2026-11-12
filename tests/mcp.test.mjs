@@ -117,3 +117,68 @@ test('an MCP tool call is logged with isolation:none', async () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('http MCP: streamable transport carries the configured headers', async () => {
+  // 之前只测了 stdio。HTTP 传输要证明两件事：
+  //  1. 响应里 JSON 与 SSE 两种形态都能解；
+  //  2. 配置里的 Authorization 真的发出去了（token 不生效是静默的）
+  const seen = []
+  const server = http.createServer((req, res) => {
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const msg = JSON.parse(body || '{}')
+      seen.push({ method: msg.method, auth: req.headers.authorization })
+      const send = (payload, sse) => {
+        if (sse) {
+          res.writeHead(200, { 'content-type': 'text/event-stream' })
+          res.end(`event: message\ndata: ${JSON.stringify(payload)}\n\n`)
+        } else {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify(payload))
+        }
+      }
+      if (msg.method === 'initialize') {
+        send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'mock-http', version: '1' } } }, false)
+      } else if (msg.method === 'tools/list') {
+        // 用 SSE 响应，覆盖另一种形态
+        send({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'ping', description: 'say pong', inputSchema: { type: 'object', properties: {} } }] } }, true)
+      } else if (msg.method === 'tools/call') {
+        send({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'pong' }] } }, false)
+      } else {
+        send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'unknown' } }, false)
+      }
+    })
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const port = server.address().port
+
+  const home = mkdtempSync(join(tmpdir(), 'uh-mcp-http-'))
+  writeFileSync(join(home, 'mcp.json'), JSON.stringify({
+    mcpServers: { remote: { url: `http://127.0.0.1:${port}/mcp`, headers: { authorization: 'Bearer test-token' } } },
+  }))
+
+  try {
+    // 必须用 spawn（异步）：execFileSync 会阻塞本进程的事件循环，
+    // 而 mock server 就跑在本进程里 —— 同步等待 = 自己把自己锁死到超时。
+    const out = await new Promise((resolve) => {
+      const p = spawn(process.execPath, [CLI, 'mcp', 'test', 'remote'], {
+        env: { ...process.env, UH_HOME: home },
+      })
+      let acc = ''
+      p.stdout.on('data', (d) => (acc += d))
+      p.stderr.on('data', (d) => (acc += d))
+      p.on('close', () => resolve(acc))
+    })
+    assert.match(out, /✓ remote/)
+    assert.match(out, /mcp__remote__ping/)
+
+    // token 必须真的发出去
+    const inits = seen.filter((x) => x.method === 'initialize')
+    assert.ok(inits.length > 0, 'initialize must be sent')
+    assert.equal(inits[0].auth, 'Bearer test-token', 'the configured Authorization header must reach the server')
+  } finally {
+    server.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
