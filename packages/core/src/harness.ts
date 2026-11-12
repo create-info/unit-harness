@@ -17,6 +17,13 @@ import { EventStore } from './evidence/store.ts'
 import { LlmGateway } from './llm/gateway.ts'
 import { resolveProvider } from './llm/discover.ts'
 import { runAgent } from './agent/loop.ts'
+import { snapshotDir, diffSnapshots, collectArtifacts, sha256File } from './artifact/snapshot.ts'
+import type { Artifact } from './artifact/snapshot.ts'
+import { inferAssertions, runAssertion } from './verify/assertions.ts'
+import type { AssertionOutcome } from './verify/assertions.ts'
+import fsSync from 'node:fs'
+import { workspaceDir } from './paths.ts'
+import nodePath from 'node:path'
 import { systemPrompt } from './agent/prompt.ts'
 import type { RunResult } from './agent/loop.ts'
 import type { SessionEvent, SessionMeta } from './evidence/store.ts'
@@ -69,6 +76,13 @@ export interface RunTaskOptions {
   apiKey?: string
   maxSteps?: number
   maxSeconds?: number
+  /** 结束时对工作区变更做自动验证（默认 true） */
+  verify?: boolean
+}
+
+export interface RunTaskOutcome extends RunResult {
+  artifacts: Artifact[]
+  verifications: Array<AssertionOutcome & { path: string }>
 }
 
 export interface LoadedPlugin {
@@ -103,7 +117,8 @@ export class Harness {
     this.isolation = probeIsolation()
     this.helper = findLandlockHelper()
     this.seatbelt = findSeatbelt()
-    this.workspace = opts.workspace ?? os.homedir() + '/.uh/work'
+    // 必须走 paths.ts，否则 UH_HOME 只影响事件存储、不影响工作区，测试隔离会失效
+    this.workspace = opts.workspace ?? workspaceDir()
     try { mkdirSync(this.workspace, { recursive: true }) } catch { /* best effort */ }
     this.store = new EventStore()
   }
@@ -451,7 +466,7 @@ export class Harness {
    * 跑一次 agent 任务：模型在沙箱护甲里自主决定步骤，每步落事件。
    * 这是 harness 唯一"对外的主入口"。
    */
-  async runTask(o: RunTaskOptions): Promise<RunResult> {
+  async runTask(o: RunTaskOptions): Promise<RunTaskOutcome> {
     const provider = await resolveProvider({
       ...(o.model ? { model: o.model } : {}),
       ...(o.baseUrl ? { baseUrl: o.baseUrl } : {}),
@@ -476,7 +491,9 @@ export class Harness {
     // system 提示不写进事件（体积大且含环境细节），只记摘要
     this.log('info', `provider: ${provider.source} model=${provider.model}`)
 
-    return await runAgent(
+    const before = o.verify === false ? null : snapshotDir(this.workspace)
+
+    const result = await runAgent(
       {
         workspace: this.workspace,
         gateway,
@@ -502,6 +519,59 @@ export class Harness {
         ...(o.maxSeconds ? { maxSeconds: o.maxSeconds } : {}),
       },
     )
+
+    // ---- 交付物闭环：改了什么 → 登记 → 断言 → 事件 ----
+    const artifacts: Artifact[] = []
+    const verifications: Array<AssertionOutcome & { path: string }> = []
+
+    if (before) {
+      const after = snapshotDir(this.workspace)
+      const changes = diffSnapshots(before, after)
+      artifacts.push(...collectArtifacts(this.workspace, changes, after))
+
+      if (changes.removed.length > 0) {
+        this.ev('error', { message: 'files were removed during the run', files: changes.removed })
+      }
+
+      for (const art of artifacts) {
+        this.ev('artifact/emitted', {
+          path: art.path,
+          sha256: art.sha256,
+          bytes: art.bytes,
+          kind: nodePath.extname(art.path).replace('.', '') || 'file',
+        })
+
+        const deps = {
+          workspace: this.workspace,
+          exec: async (argv: [string, ...string[]]) => {
+            const r = await this.exec({ argv })
+            return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr }
+          },
+          exists: (rel: string) => fsSync.existsSync(this.safeJoin(rel)),
+          size: (rel: string) => {
+            try { return fsSync.statSync(this.safeJoin(rel)).size } catch { return -1 }
+          },
+          sha256: (rel: string) => sha256File(this.safeJoin(rel)),
+        }
+
+        for (const a of inferAssertions(art)) {
+          const out = await runAssertion(a, deps)
+          this.recordVerification(a as unknown as Record<string, unknown>, out.result, out.detail)
+          verifications.push({ path: art.path, ...out })
+        }
+      }
+    }
+
+    return { ...result, artifacts, verifications }
+  }
+
+  /** 把相对路径限制在工作区内（挡住 ../ 逃逸） */
+  private safeJoin(rel: string): string {
+    const abs = nodePath.resolve(this.workspace, rel)
+    if (!abs.startsWith(nodePath.resolve(this.workspace))) {
+      throw new Error(`E_PATH_ESCAPE: ${rel}`)
+    }
+    return abs
   }
 
   /** 调用已注册的工具（供 CLI / 后续 agent loop 使用） */

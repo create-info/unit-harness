@@ -95,7 +95,22 @@ isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/wo
 完成 ✅
 - 已在工作区创建 hello.txt，内容为 hi from unit-harness
 - ls -la 确认文件存在
+
+--- deliverables (1) ---
+  ✓ hello.txt                    21 B  3/3  sha256=3f2a1b2c9d8e
 ```
+
+交付物那一段**不是模型的自述**，而是跑前跑后对比工作区、对新文件算哈希、再在沙箱里
+执行断言得出的：
+
+| 文件类型 | 自动执行的断言 |
+|---|---|
+| 任意 | 存在 · 非空 · sha256 匹配 |
+| `.sh` | `sh -n`（语法检查） |
+| `.json` | 能被解析 |
+| `.py` | `python3 -m py_compile` |
+
+任一断言失败，`uh run` 退非零。运行时被**删除**的文件会记成 `error` 事件。
 
 如果你开着 LM Studio（`:1234`）或 Ollama（`:11434`），**不需要任何 API key**——
 `uh` 会探测这两个默认端口并取第一个模型。否则指向任何 OpenAI 兼容服务：
@@ -217,6 +232,7 @@ DeepSeek Harness 使用的同一个插件框架。我们以普通 npm 依赖的�
 | P1 | landlock 施加 + `sandbox check` | ✅ 完成 |
 | P1 | 事件日志（`session/*`）、断言、回放 | ✅ 完成 |
 | P1 | agent loop + `uh run`（零配置探测本地模型） | ✅ 完成 |
+| P1 | 交付物识别 + 自动断言（proves its work） | ✅ 完成 |
 | P2 | macOS seatbelt / Windows 受限令牌、桌面壳 | — |
 | P2 | 桌面壳、数据包、巡检 | — |
 | P3 | 协议适配器（MCP / ACP / A2A） | — |

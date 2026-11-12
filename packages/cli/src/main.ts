@@ -8,7 +8,7 @@
 import os from 'node:os'
 import { join } from 'node:path'
 
-import { Harness, EventStore, describeIsolation } from '@unit-harness/core'
+import { Harness, EventStore, describeIsolation, describeAssertion } from '@unit-harness/core'
 
 import { VERSION } from './version.ts'
 
@@ -188,6 +188,17 @@ async function cmdTool(name?: string, rest: string[] = []): Promise<void> {
   })
 }
 
+function makePrinter(): (kind: string, p: Record<string, unknown>) => void {
+  let verifyingShown = false
+  return (kind: string, p: Record<string, unknown>) => {
+    if (kind === 'artifact/emitted' && !verifyingShown) {
+      console.log('· verifying deliverables')
+      verifyingShown = true
+    }
+    printEvent(kind, p)
+  }
+}
+
 function printEvent(kind: string, p: Record<string, unknown>): void {
   switch (kind) {
     case 'turn/start':
@@ -245,10 +256,33 @@ async function cmdRun(task?: string): Promise<void> {
     console.log('--- answer ---')
     console.log(res.text || '(no text)')
     console.log('')
+
+    // 交付物与断言：这是"proves its work"的字面兑现
+    if (res.artifacts.length === 0) {
+      console.log('--- deliverables ---')
+      console.log('  (no files changed)')
+    } else {
+      console.log(`--- deliverables (${res.artifacts.length}) ---`)
+      let anyFail = false
+      for (const a of res.artifacts) {
+        const vs = res.verifications.filter((v) => v.path === a.path)
+        const passed = vs.filter((v) => v.result === 'pass').length
+        const ok = passed === vs.length && vs.length > 0
+        if (!ok) anyFail = true
+        const size = a.bytes > 1024 ? `${(a.bytes / 1024).toFixed(1)} KB` : `${a.bytes} B`
+        console.log(`  ${ok ? '✓' : '✗'} ${a.path.padEnd(28)} ${size.padStart(8)}  ${passed}/${vs.length}  sha256=${a.sha256.slice(0, 12)}`)
+        for (const v of vs.filter((x) => x.result !== 'pass')) {
+          console.log(`      FAILED: ${describeAssertion(v.assertion)} — ${JSON.stringify(v.detail).slice(0, 160)}`)
+        }
+      }
+      if (anyFail) process.exitCode = 1
+    }
+
+    console.log('')
     console.log(`steps=${res.steps} tokens=${res.usage.total} stoppedBy=${res.stoppedBy}`)
     console.log(`session: ${h.sessionId ?? '(not recorded)'}`)
     if (res.stoppedBy === 'max-steps') process.exitCode = 2
-  }, { label: task!.slice(0, 60), onEvent: printEvent })
+  }, { label: task!.slice(0, 60), onEvent: makePrinter() })
 }
 
 async function cmdSession(sub?: string, id?: string): Promise<void> {
