@@ -10,8 +10,9 @@
 
 | 目标 | 三元组 | 格式 | npm 包 | 状态 |
 |---|---|---|---|---|
-| Linux x64（静态） | `x86_64-unknown-linux-musl` | `.tar.gz` + `.zst` | `@unit-harness/cli-linux-x64` | P0 必须 |
-| Linux arm64（静态） | `aarch64-unknown-linux-musl` | `.tar.gz` + `.zst` | `@unit-harness/cli-linux-arm64` | **P0 必须**（ARM 云便宜 30–40%） |
+| Linux x64 | `x86_64-unknown-linux-gnu`（glibc ≥ 2.28） | `.tar.gz` + `.zst` | `@unit-harness/cli-linux-x64` | P0 必须 |
+| Linux arm64 | `aarch64-unknown-linux-gnu`（glibc ≥ 2.28） | `.tar.gz` + `.zst` | `@unit-harness/cli-linux-arm64` | **P0 必须**（ARM 云便宜 30–40%） |
+| Linux musl（静态） | `*-unknown-linux-musl` | — | — | **暂停**，S2 未通过 |
 | macOS arm64 | `aarch64-apple-darwin` | `.tar.gz` | `@unit-harness/cli-darwin-arm64` | P0 必须 |
 | macOS x64 | `x86_64-apple-darwin` | `.tar.gz` | `@unit-harness/cli-darwin-x64` | P0 必须 |
 | Windows x64 | `x86_64-pc-windows-msvc` | `.zip` | `@unit-harness/cli-win32-x64` | P0 必须 |
@@ -75,7 +76,7 @@ codesign --sign - build/uh                  # ad-hoc，正式版用 Developer ID
 | # | 问题 | 若失败的影响 | fallback |
 |---|---|---|---|
 | **S1** | SEA 产物能否 `import()` **用户目录下的 ESM 插件**（`~/.uh/plugins/x/index.js`） | 插件体系不可用，整个架构前提崩塌 | ① 改用 `createRequire` + CJS 兼容层；② 退回"内嵌 Node 的轻量启动器"（`uh` 只是个 shell wrapper，实际用系统 node 跑 `lib/`，体积 15MB，要求 node≥22）；③ 最差：Tauri 壳内嵌 Node |
-| **S2** | musl 基座是否可用（`unofficial-builds.nodejs.org`，实测有 musl 目标） | Linux 无法静态分发，Alpine 容器场景受限 | ① glibc 构建 + 文档要求 glibc ≥ 2.28；② 提供 Docker 镜像 `ghcr.io/create-info/unit-harness` |
+| **S2** | musl SEA —— **2026-11-12 实测失败**：alpine 3.22 + 自带 node 22.23.4（musl）生成 blob → postject 注入 → 运行即 `Segmentation fault`，崩在我们的代码之前。blob 与基座是同一二进制，非版本不匹配 | Linux 无法静态分发，Alpine 容器场景受限 | **已采用**：glibc 构建 + 文档要求 glibc ≥ 2.28；补 Docker 镜像。**后台继续试**：unofficial-builds 静态 musl node / `objcopy --add-section` 替代 postject / 更新的 postject |
 
 **验证脚本（S1）**：
 
@@ -176,11 +177,12 @@ jobs:
     strategy:
       matrix:
         include:
-          - { os: ubuntu-22.04,      target: linux-x64,   musl: true  }
-          - { os: ubuntu-22.04-arm,  target: linux-arm64, musl: true  }
-          - { os: macos-14,          target: darwin-arm64, musl: false }
-          - { os: macos-13,          target: darwin-x64,   musl: false }
-          - { os: windows-2022,      target: win32-x64,    musl: false }
+          - { os: ubuntu-22.04,      target: linux-x64,   flavor: glibc }
+          - { os: ubuntu-22.04-arm,  target: linux-arm64, flavor: glibc }
+          - { os: macos-14,          target: darwin-arm64, flavor: none }
+          - { os: macos-13,          target: darwin-x64,   flavor: none }
+          - { os: windows-2022,      target: win32-x64,    flavor: none }
+          # musl 暂停：见 §2.2 S2
   sign:
     needs: build
     permissions: { id-token: write, contents: write }   # keyless OIDC 必需
@@ -192,7 +194,7 @@ jobs:
   release:     # gh release create vX.Y.Z + 全部产物 + notes
 ```
 
-**musl 构建**：在 `ubuntu` runner 上跑 `alpine:3.20` 容器，用 `unofficial-builds` 的 musl node 作为 SEA 基座。容器内完成 esbuild → SEA → strip。
+**Linux 构建**：在 `ubuntu` runner 上用官方 glibc node 作 SEA 基座，完成后 `strip`。**musl 暂停**——segfault 未解决（见 §2.2 S2），恢复前不要发布 `*-linux-musl` 产物，也不要在 README 声称支持 Alpine。
 
 **Windows 构建**：`postject` 在 Windows 上对 `.exe` 注入后**必须重签**（我们的代码签名证书），否则 SmartScreen 拦截。
 
@@ -251,7 +253,8 @@ jobs:
 | 期 | 产物 | 说明 |
 |---|---|---|
 | P0 | linux-x64 + darwin-arm64 + win32-x64 三个产物 + `npm i -g` | 先覆盖 80% 用户；`install.sh` 同步上线 |
-| P1 | 加 linux-arm64（musl）+ darwin-x64 + bwrap 内嵌 | ARM 云用户到位；`uh doctor` 报告沙箱矩阵 |
+| P1 | 加 linux-arm64 + darwin-x64 + bwrap 内嵌 | ARM 云用户到位；`uh doctor` 报告沙箱矩阵 |
+| P1.5 | musl SEA（若 spike 通过）+ Docker 镜像 | Alpine / 容器场景 |
 | P2 | win32-arm64 + Docker 镜像 + `cordis.schema.json` | 容器/CI 场景 |
 | P3 | `.dmg` 桌面壳 + 自动更新 | `uh update` 检查 manifest 与签名 |
 
