@@ -211,6 +211,17 @@ jobs:
           [ -f "$BIN.exe" ] && BIN="$BIN.exe"
           "$BIN" --version
 
+      - name: assert an installer was produced
+        shell: bash
+        run: |
+          set -e
+          echo "bundles:"
+          find src-tauri/target/release/bundle -maxdepth 2 -type f | sort | head -20
+          # job 绿不等于有产物：这里显式要求至少一个安装包
+          count=$(find src-tauri/target/release/bundle -maxdepth 2 -type f \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' -o -name '*.exe' \) | wc -l)
+          echo "installer files: $count"
+          test "$count" -ge 1
+
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.target }}

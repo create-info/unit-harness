@@ -226,6 +226,21 @@ uh run "看看工作区里有什么"
 
 **步骤由模型决定，边界由沙箱决定。**
 
+## 桌面应用
+
+| 平台 | 安装包 |
+|---|---|
+| macOS（Apple Silicon） | `UnitHarness_0.1.0_aarch64.dmg` |
+| Windows x64 | `UnitHarness_0.1.0_x64-setup.exe` / `.msi` |
+| Linux x64 | `UnitHarness_0.1.0_amd64.deb` / `.AppImage` |
+
+用 Tauri 构建，macOS 上约 36 MB。壳刻意做得很薄：把内置的 `uh` 二进制作为 sidecar 拉起
+（`uh serve`），等端口通了再把窗口导航过去。**界面只有一份实现**——就是 CLI 服务的那张
+静态页——所以桌面端和 CLI 不可能走岔。退出时壳会杀掉 sidecar，不留下占端口的孤儿进程。
+
+安装包**没有签名**：macOS 首次打开要右键 → 打开，Windows 会弹 SmartScreen。签名需要证书，
+这是分发问题不是代码问题。
+
 ## 桌面界面
 
 ```console
