@@ -255,6 +255,24 @@ you want to check *why* something failed without involving a model.
 
 The model decides the steps; the sandbox decides what it is allowed to touch.
 
+## Desktop app
+
+| Platform | Installer |
+|---|---|
+| macOS (Apple Silicon) | `UnitHarness_0.1.0_aarch64.dmg` |
+| Windows x64 | `UnitHarness_0.1.0_x64-setup.exe` / `.msi` |
+| Linux x64 | `UnitHarness_0.1.0_amd64.deb` / `.AppImage` |
+
+Built with Tauri, ~36 MB on macOS. The shell is deliberately thin: it spawns the
+bundled `uh` binary as a sidecar (`uh serve`), waits for the port to open, then
+navigates the window to it. **The UI has exactly one implementation** — the same
+static page the CLI serves — so the desktop app and the CLI cannot drift apart.
+On exit the shell kills the sidecar, so nothing is left holding the port.
+
+The installers are **unsigned**: macOS needs right-click → Open the first time,
+Windows shows a SmartScreen prompt. Signing requires certificates we don't have;
+that is a distribution problem, not a code one.
+
 ## Desktop UI
 
 ```console
