@@ -231,6 +231,25 @@ Built-in tools are deliberately few and each has a *contract*:
 - **`update_plan`** — the only place the model's plan is visible to you; one step
   in progress at a time.
 
+### Long runs
+
+When the conversation approaches the context window (`--max-context`, default
+32000 tokens), early turns are replaced with a summary — the same local-summary
+path Codex falls back to when a provider has no remote compaction.
+
+Three rules make it safe:
+
+1. the user's original request survives verbatim — it is the authorization, a
+   summary must not rewrite it;
+2. failed attempts go into the summary, so the agent does not confidently repeat
+   the same mistake;
+3. the retained tail always starts at an assistant boundary — otherwise `tool`
+   messages lose their matching `tool_calls` and Anthropic rejects the request.
+
+Compaction only happens when there is more work to do; compressing the final
+answer's context would just burn a call. Every compaction is a
+`session/compacted` event, so a replay shows exactly what the model forgot.
+
 `uh exec -- <cmd>` runs a single command inside the sandbox, which is handy when
 you want to check *why* something failed without involving a model.
 

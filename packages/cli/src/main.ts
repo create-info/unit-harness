@@ -36,7 +36,7 @@ function fail(msg: string, code = 1): never {
   process.exit(code)
 }
 
-const VALUE_FLAGS = new Set(['--model', '--base-url', '--api-key', '--max-steps', '--provider'])
+const VALUE_FLAGS = new Set(['--model', '--base-url', '--api-key', '--max-steps', '--provider', '--max-context'])
 
 function flag(name: string): string | undefined {
   const i = argv.indexOf(`--${name}`)
@@ -234,16 +234,20 @@ function printEvent(kind: string, p: Record<string, unknown>): void {
       break
     }
     case 'tool/call': {
-      // exec 的记录字段是 argv；插件工具的是 args
+      // exec 记 argv；内置工具记 args_preview；插件工具记 args
       const argv = p.argv as string[] | undefined
+      const preview = p.args_preview as string | undefined
       const args = p.args as Record<string, unknown> | undefined
-      const cmd = argv ? argv.join(' ') : JSON.stringify(args ?? {})
-      console.log(`  ⚙ ${p.tool as string}: ${cmd.slice(0, 120)}`)
+      const detail = argv ? argv.join(' ') : preview ?? JSON.stringify(args ?? {})
+      console.log(`  ⚙ ${p.tool as string}: ${detail.replace(/\s+/g, ' ').slice(0, 110)}`)
       break
     }
-    case 'tool/result':
-      console.log(`  ${p.status === 'ok' ? '✓' : '✗'} exit=${String(p.exit_code ?? '-')}`)
+    case 'tool/result': {
+      const ok = p.status === 'ok'
+      const exit = p.exit_code
+      console.log(`  ${ok ? '✓' : '✗'} ${exit !== undefined ? `exit=${String(exit)}` : String(p.status)}`)
       break
+    }
     case 'plan/updated': {
       const steps = p.steps as Array<{ step: string; status: string }> | undefined
       if (steps) {
@@ -255,6 +259,9 @@ function printEvent(kind: string, p: Record<string, unknown>): void {
       }
       break
     }
+    case 'session/compacted':
+      console.log(`  ⟳ compacted: dropped ${String(p.dropped_messages)} msg(s), summary ~${String(p.summary_chars)} chars (prompt was ${String(p.prompt_tokens_before)} tokens)`)
+      break
     case 'turn/end':
       console.log(`· turn end (${String(p.stop_reason)}, ${String(p.steps)} steps)`)
       break
@@ -293,6 +300,7 @@ async function cmdRun(task?: string): Promise<void> {
       ...(flag('api-key') ? { apiKey: flag('api-key')! } : {}),
       ...(maxStepsRaw ? { maxSteps: Number(maxStepsRaw) } : {}),
       ...(argv.includes('--no-plan') ? { plan: false } : {}),
+      ...(flag('max-context') ? { maxContextTokens: Number(flag('max-context')) } : {}),
     })
     console.log('')
     console.log('--- answer ---')
@@ -321,7 +329,7 @@ async function cmdRun(task?: string): Promise<void> {
     }
 
     console.log('')
-    console.log(`steps=${res.steps} tokens=${res.usage.total} stoppedBy=${res.stoppedBy}`)
+    console.log(`steps=${res.steps} tokens=${res.usage.total} stoppedBy=${res.stoppedBy}${res.compactions ? ` compactions=${res.compactions}` : ''}`)
     console.log(`session: ${h.sessionId ?? '(not recorded)'}`)
     if (res.stoppedBy === 'max-steps') process.exitCode = 2
   }, { label: task!.slice(0, 60), onEvent: makePrinter() })
