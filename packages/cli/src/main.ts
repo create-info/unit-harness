@@ -12,6 +12,7 @@ import {
   Harness, EventStore, describeIsolation, describeAssertion, resolveProvider,
   PROVIDERS, findProvider, maskKey, listModels,
   readConfig, setProviderEntry, unsetProvider, setDefaultProvider, configPath, apiKeyFor,
+  loadMcpServers,
 } from '@unit-harness/core'
 
 import { VERSION } from './version.ts'
@@ -108,6 +109,16 @@ async function cmdDoctor(): Promise<void> {
       console.log('model       none')
       console.log('            → start LM Studio (http://127.0.0.1:1234) or Ollama (http://127.0.0.1:11434),')
       console.log('              or export UH_BASE_URL / UH_MODEL / UH_API_KEY')
+    }
+
+    const { servers: mcpServers, sources: mcpSources } = loadMcpServers()
+    const mcpNames = Object.keys(mcpServers)
+    if (mcpNames.length === 0) {
+      console.log('mcp         (none configured)')
+    } else {
+      console.log(`mcp         ${mcpNames.length} server(s) from ${mcpSources.join(', ')}`)
+      console.log('            NOTE: MCP servers run outside the sandbox reported above')
+      for (const n of mcpNames) console.log(`            - ${n}`)
     }
 
     if (r.enforced === 'none' || r.enforced === 'path-guard') {
@@ -280,6 +291,50 @@ async function cmdExec(rest: string[]): Promise<void> {
     if (r.stderr) process.stderr.write(r.stderr)
     process.exitCode = r.exitCode
   }, { label: `exec ${argv.join(' ')}`.slice(0, 60), record: false })
+}
+
+async function cmdMcp(sub?: string): Promise<void> {
+  const { servers, sources } = loadMcpServers()
+
+  if (sub === 'list' || sub === undefined) {
+    if (sources.length === 0) {
+      console.log('no MCP config found. Create one of:')
+      console.log('  ~/.uh/mcp.json          (global)')
+      console.log('  ./.uh/mcp.json          (this project)')
+      console.log('')
+      console.log('Format (same shape as Claude Desktop):')
+      console.log(JSON.stringify({
+        mcpServers: {
+          filesystem: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/tmp'] },
+          remote: { url: 'https://example.com/mcp', headers: { authorization: 'Bearer …' } },
+        },
+      }, null, 2))
+      return
+    }
+
+    console.log(`config: ${sources.join(', ')}`)
+    console.log('')
+    await withHarness(async (h) => {
+      await h.mcp.start(servers)
+      for (const st of h.mcp.status) {
+        const mark = st.error ? '✗' : '✓'
+        console.log(`${mark} ${st.name}  (${st.transport})  ${st.error ?? `${st.tools} tool(s)`}`)
+      }
+      if (!h.mcp.isEmpty) {
+        console.log('')
+        for (const t of h.mcp.tools) {
+          console.log(`  ${t.name}`)
+          if (t.description) console.log(`      ${t.description.slice(0, 110)}`)
+        }
+      }
+      console.log('')
+      console.log('note: MCP servers run outside the local sandbox — their calls are logged')
+      console.log("      with isolation: 'none', not with the sandbox level above.")
+    }, { record: false })
+    return
+  }
+
+  fail(`unknown mcp command: ${sub}. Try: uh mcp list`)
 }
 
 async function cmdRun(task?: string): Promise<void> {
@@ -562,6 +617,7 @@ function cmdHelp(): void {
 
 Usage:
   uh run "<task>"           run a task with the model agent (sandboxed)
+  uh mcp list               show MCP servers and the tools they expose
   uh exec -- <cmd>          run one command inside the sandbox (debugging)
   uh provider list          supported providers, keys, live models
   uh config set <id>        store an API key (hidden input); .model / .baseUrl
@@ -608,6 +664,8 @@ async function main(): Promise<void> {
       await cmdProvider(argv[1]); return
     case 'config':
       await cmdConfig(argv[1], argv[2], argv[3]); return
+    case 'mcp':
+      await cmdMcp(argv[1]); return
     case 'exec':
       await cmdExec(argv.slice(1)); return
     case 'run':

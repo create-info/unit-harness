@@ -33,6 +33,8 @@ import { buildLandlockArgv, findLandlockHelper } from './sandbox/landlock.ts'
 import type { LandlockHelper } from './sandbox/landlock.ts'
 import { buildSeatbeltProfile, findSeatbelt } from './sandbox/seatbelt.ts'
 import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/toolchains.ts'
+import { McpRegistry } from './mcp/bridge.ts'
+import { loadMcpServers } from './mcp/config.ts'
 import type { SeatbeltInfo } from './sandbox/seatbelt.ts'
 import { mkdirSync } from 'node:fs'
 import os from 'node:os'
@@ -84,6 +86,8 @@ export interface RunTaskOptions {
   plan?: boolean
   /** 上下文窗口预算（默认 32000；到 70% 自动压缩，0 关闭） */
   maxContextTokens?: number
+  /** 是否启动 MCP server（默认 true） */
+  mcp?: boolean
 }
 
 export interface RunTaskOutcome extends RunResult {
@@ -112,6 +116,8 @@ export class Harness {
   private readonly services = new Map<string, unknown>()
   private readonly helper: LandlockHelper | null
   private readonly seatbelt: SeatbeltInfo
+  /** MCP server 桥接（外部进程，不在沙箱内） */
+  readonly mcp = new McpRegistry()
   private readonly workspace: string
   private readonly store: EventStore
   private session: SessionMeta | null = null
@@ -472,9 +478,16 @@ export class Harness {
     })
   }
 
-  /** 已注册工具列表（只读） */
+  /** 已注册工具列表（只读）：插件工具 + MCP 桥接工具 */
   get tools(): ReadonlyArray<ToolDefinition> {
-    return [...this.toolRegistry.values()]
+    const base = [...this.toolRegistry.values()]
+    const mcpTools = this.mcp.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      schema: t.schema as unknown as ToolDefinition['schema'],
+      handler: async (args: Record<string, unknown>) => this.callTool(t.name, args),
+    }))
+    return [...base, ...mcpTools]
   }
 
   /**
@@ -504,6 +517,25 @@ export class Harness {
 
     // system 提示不写进事件（体积大且含环境细节），只记摘要
     this.log('info', `provider: ${provider.def.id} (${provider.def.protocol}) model=${provider.model} — ${provider.source}`)
+
+    // MCP：外部 server，按配置启动；单个失败不影响本次运行
+    if (o.mcp !== false && this.mcp.isEmpty) {
+      const loaded = loadMcpServers()
+      if (Object.keys(loaded.servers).length > 0) {
+        await this.mcp.start(loaded.servers)
+        for (const st of this.mcp.status) {
+          this.log(st.error ? 'warn' : 'info',
+            st.error ? `mcp ${st.name}: ${st.error}` : `mcp ${st.name}: ${st.tools} tool(s) via ${st.transport}`)
+        }
+        this.ev('tool/result', {
+          tool: 'mcp/connect',
+          status: this.mcp.status.some((x) => x.error) ? 'error' : 'ok',
+          isolation: 'none',
+          external: true,
+          servers: this.mcp.status,
+        }, 'environment')
+      }
+    }
 
     const before = o.verify === false ? null : snapshotDir(this.workspace)
 
@@ -617,22 +649,31 @@ export class Harness {
     return abs
   }
 
-  /** 调用已注册的工具（供 CLI / 后续 agent loop 使用） */
+  /** 调用已注册的工具（含 MCP 桥接工具） */
   async callTool(name: string, args: Record<string, unknown>): Promise<{ content: string }> {
+    const isMcp = this.mcp.has(name)
     const tool = this.toolRegistry.get(name)
-    if (!tool) throw new Error(`tool not found: ${name}`)
+    if (!tool && !isMcp) throw new Error(`tool not found: ${name}`)
 
-    const callEv = this.ev('tool/call', { tool: name, args }, 'agent')
+    // MCP 调用发生在守护进程之外，隔离强度报 'none' —— 不能继承本地沙箱的假象
+    const isolation = isMcp ? 'none' : this.isolation.enforced
+
+    const callEv = this.ev('tool/call', {
+      tool: name,
+      args,
+      ...(isMcp ? { external: true, transport: 'mcp' } : {}),
+    }, 'agent')
     const started = Date.now()
     try {
-      const res = await tool.handler(args)
+      const res = isMcp ? await this.mcp.call(name, args) : await tool!.handler(args)
       const digest = createHash('sha256').update(res.content).digest('hex').slice(0, 16)
       this.ev('tool/result', {
         tool: name,
         status: 'ok',
         duration_ms: Date.now() - started,
         output_digest: digest,
-        isolation: this.isolation.enforced,
+        isolation,
+        ...(isMcp ? { external: true } : {}),
       }, 'environment', callEv?.id ?? null)
       return res
     } catch (err) {
@@ -641,7 +682,8 @@ export class Harness {
         status: 'error',
         duration_ms: Date.now() - started,
         error: err instanceof Error ? err.message : String(err),
-        isolation: this.isolation.enforced,
+        isolation,
+        ...(isMcp ? { external: true } : {}),
       }, 'environment', callEv?.id ?? null)
       throw err
     }
@@ -653,6 +695,7 @@ export class Harness {
       try { this.store.end(this.session.id, reason) } catch { /* already closed */ }
       this.session = null
     }
+    void this.mcp.close()
     for (const d of [...this.disposers].reverse()) {
       try { d() } catch { /* keep disposing */ }
     }

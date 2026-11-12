@@ -226,6 +226,37 @@ uh run "看看工作区里有什么"
 
 **步骤由模型决定，边界由沙箱决定。**
 
+## MCP
+
+```console
+$ uh mcp list
+config: ~/.uh/mcp.json
+
+✓ filesystem  (stdio)  14 tool(s)
+
+  mcp__filesystem__read_file
+      [MCP:filesystem] Read a file (runs outside the local sandbox)
+```
+
+配置格式和 Claude Desktop 一致，你在那边跑的 server 直接能用——全局
+`~/.uh/mcp.json`，项目级 `./.uh/mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "filesystem": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"] },
+    "remote": { "url": "https://example.com/mcp", "headers": { "authorization": "Bearer …" } }
+  }
+}
+```
+
+stdio 和 streamable-HTTP 两种传输都支持。
+
+**MCP server 不在沙箱里。** 它们是独立进程，拥有你本人的全部权限——landlock 和
+seatbelt 管不到它们。所以：工具名带 `mcp__<server>__<tool>` 前缀，`uh doctor` 会带警告
+列出来，每次调用在事件里记 `isolation: "none"` 而不是继承沙箱等级。如果某次 MCP 调用
+删了东西，日志不会假装它被隔离住了。
+
 ## 每次运行都是证据
 
 没有静默发生的事。每个会话写一份追加式 JSONL 日志：
