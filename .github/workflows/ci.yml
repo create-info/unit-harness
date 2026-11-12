@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci || npm install
+      - name: constraints (D2/D3/D6/D5)
+        run: node scripts/check-constraints.mjs
+      - name: typecheck
+        run: npm run typecheck
+      - name: build
+        run: npm run build
+      - name: doctor
+        run: node dist/uh.cjs doctor
+      - name: plugin loads
+        run: UH_PLUGIN_DIR="$PWD/examples" node dist/uh.cjs plugin list
+      - name: exec fails closed without isolation
+        run: |
+          set +e
+          UH_PLUGIN_DIR="$PWD/examples" node dist/uh.cjs tool hello
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then echo "expected fail-closed refusal, got success"; exit 1; fi
+          echo "ok: refused (exit $code)"

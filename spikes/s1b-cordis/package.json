@@ -1,0 +1,15 @@
+{
+  "name": "s1b-cordis",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  }
+}
