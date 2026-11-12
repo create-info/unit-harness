@@ -226,6 +226,36 @@ uh run "看看工作区里有什么"
 
 **步骤由模型决定，边界由沙箱决定。**
 
+## 远端主机
+
+```console
+$ uh host add prod ubuntu@203.0.113.10 --key ~/.ssh/id_ed25519
+$ uh host test prod
+✓ prod  Linux 6.8.0-117-generic x86_64 · ubuntu  (657ms)
+
+$ uh exec --host prod -- df -h /
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda2        40G  7.6G   31G  20% /
+```
+
+`hosts.json` 里存的是**私钥路径**，不是私钥。只要配了至少一台，agent 就会多出
+`remote_exec` 工具，能真的去操作一台服务器。
+
+三条规矩，因为那是别人的生产机：
+
+| 命令 | 行为 |
+|---|---|
+| 只读（`df`、`ps`、`journalctl`、`systemctl status`、`docker ps`） | 直接执行 |
+| 改状态（`mkdir`、`npm i`、`systemctl restart`、`echo > 文件`） | 默认拒绝，要 `--allow-remote-write` |
+| 毁灭性（`rm -rf /`、`dd`、`mkfs`、`shutdown`、`curl … \| sh`） | 默认拒绝，要 `--allow-remote-destructive` |
+
+远端执行**故意绕开本地沙箱**——ssh 必须读私钥，而沙箱正是让 `~/.ssh` 不可读的那道墙。所以它
+是一个独立工具：凭据不经过模型，每次调用记 `isolation: "none"` + `scope: "remote"`，绝不冒充
+landlock 生效。
+
+分级靠模式匹配，一定有漏网之鱼——它是多一道闸，不是保证。真正的保证是审计：每一次尝试
+（包括被拒的）都在事件日志里。
+
 ## 剧本
 
 `uh run "..."` 让模型自己判断什么叫完成；`uh do <剧本>` 不让：
