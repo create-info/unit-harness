@@ -81,6 +81,10 @@ export interface HarnessOptions {
   allowRemoteDestructive?: boolean
   /** 远端命令超时（默认 60s） */
   remoteTimeoutMs?: number
+  /** 流式：模型正文增量 */
+  onText?: (delta: string) => void
+  /** 流式：推理模型思考增量 */
+  onReasoning?: (delta: string) => void
 }
 
 export interface RunTaskOptions {
@@ -101,6 +105,8 @@ export interface RunTaskOptions {
   mcp?: boolean
   /** 是否加载 skills（默认 true） */
   skills?: boolean
+  /** 是否用流式（默认 true；管道/CI 里也无害，画面不抖只是更快） */
+  stream?: boolean
 }
 
 export interface RunTaskOutcome extends RunResult {
@@ -453,23 +459,46 @@ export class Harness {
         stdio: ['ignore', 'pipe', 'pipe'],
       })
 
-      let stdout = ''
-      let stderr = ''
       let truncated = false
       const LIMIT = 256 * 1024
       const timer = setTimeout(() => { child.kill('SIGKILL') }, timeoutMs)
 
-      child.stdout.on('data', (b: Buffer) => {
-        if (stdout.length > LIMIT) { truncated = true; return }
-        stdout += b.toString('utf8')
-      })
-      child.stderr.on('data', (b: Buffer) => {
-        if (stderr.length > LIMIT) { truncated = true; return }
-        stderr += b.toString('utf8')
-      })
+      // 保留**头和尾**：超过上限后继续滑动保留最后一段。
+      // 只留头会把错误信息（通常在结尾）丢掉，模型于是对着一堆进度日志发呆。
+      const makeCollector = () => {
+        let head = ''
+        let tail = ''
+        let over = false
+        return {
+          push(chunk: string): void {
+            if (!over) {
+              head += chunk
+              if (head.length > LIMIT) {
+                over = true
+                tail = head.slice(-LIMIT)
+                head = head.slice(0, LIMIT)
+              }
+            } else {
+              tail = (tail + chunk).slice(-LIMIT)
+            }
+          },
+          value(): string {
+            if (!over) return head
+            truncated = true
+            return `${head}\n\n… [output too long; middle dropped] …\n\n${tail}`
+          },
+        }
+      }
+      const outC = makeCollector()
+      const errC = makeCollector()
+
+      child.stdout.on('data', (b: Buffer) => outC.push(b.toString('utf8')))
+      child.stderr.on('data', (b: Buffer) => errC.push(b.toString('utf8')))
       child.on('error', (e) => { clearTimeout(timer); reject(e) })
       child.on('close', (code) => {
         clearTimeout(timer)
+        const stdout = outC.value()
+        const stderr = errC.value()
         const digest = createHash('sha256').update(stdout + stderr).digest('hex').slice(0, 16)
         this.ev('tool/result', {
           tool: 'exec',
@@ -615,6 +644,10 @@ export class Harness {
         },
         planEnabled: o.plan !== false,
         skills,
+        ...(o.stream !== false ? {
+          onText: (d: string) => { this.opts.onText?.(d) },
+          onReasoning: (d: string) => { this.opts.onReasoning?.(d) },
+        } : {}),
         maxContextTokens: o.maxContextTokens ?? Number(process.env.UH_MAX_CONTEXT ?? 32000),
         ev: (kind, payload) => this.ev(kind, payload, 'agent')?.id ?? null,
         log: (m) => this.log('info', m),

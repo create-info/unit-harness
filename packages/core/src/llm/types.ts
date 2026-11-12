@@ -40,6 +40,8 @@ export interface CompletionResult {
   usage: Usage
   finishReason: string
   model: string
+  /** 推理模型的思考内容（reasoning_content / thinking block），不参与消息回传 */
+  reasoning?: string
 }
 
 export interface ProviderConfig {
