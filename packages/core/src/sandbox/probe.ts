@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import type { IsolationLevel, IsolationReport } from '../types.ts'
+import { findLandlockHelper } from './landlock.ts'
 
 /** P0 的诚实声明：能探测到能力，但还没有施加隔离的代码 */
 const SANDBOX_ENFORCED_IN_P0: IsolationLevel = 'none'
@@ -85,7 +86,12 @@ function probeSeatbelt(notes: string[]): { available: boolean; reason?: string }
 /** 探测当前机器真实可用的隔离能力 */
 export function probeIsolation(): IsolationReport {
   const notes: string[] = []
-  const landlock = probeLandlock(notes)
+  // 优先用 helper 拿真实 ABI：文件探测只能说明"内核支持"，不能说明"能施加"
+  const helper = findLandlockHelper()
+  const landlock = helper
+    ? { available: true, abi: helper.abi }
+    : probeLandlock(notes)
+  if (helper) notes.push(`landlock-helper: ${helper.path} (abi ${helper.abi})`)
   const bwrap = probeBwrap(notes)
   const seatbelt = probeSeatbelt(notes)
 
@@ -107,9 +113,12 @@ export function probeIsolation(): IsolationReport {
     notes.push('path-guard: no kernel isolation available; exec will require --allow-unconfined')
   }
 
-  // P0：尚未实现 landlock/bwrap/seatbelt 的封装，因此实际施加的隔离为 none。
-  // P1 实现后，enforced 应改为实测值（不要在这里写死成 available）。
-  const enforced: IsolationLevel = SANDBOX_ENFORCED_IN_P0
+  // 只有在 helper 真能施加时才声称 enforced；否则如实报 none。
+  let enforced: IsolationLevel = SANDBOX_ENFORCED_IN_P0
+  if (process.platform === 'linux' && helper && helper.abi > 0) {
+    enforced = `landlock-v${helper.abi}` as IsolationLevel
+    notes.push('enforced by landlock-helper: filesystem writes limited to workspace, home unreadable')
+  }
 
   return {
     platform: process.platform,

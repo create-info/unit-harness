@@ -4,9 +4,9 @@
 
 它交给你的每一份产物，都在沙箱里真跑过；每一次运行都可回放。验证不过，就不算完成。
 
-> 状态：`v0.1.0` — P0 骨架。内核能跑、插件能加载、沙箱探测与 fail-closed 已就位。
-> 真正的隔离施加（landlock / bwrap / seatbelt）在 P1；在此之前 `exec` 如实报告 `none`，
-> 并在没有 `--allow-unconfined` 时拒绝执行。
+> 状态：`v0.1.0` —— Linux 上 landlock 隔离已生效（通过一个小型 C helper）。
+> 文件写入被限制在工作区，`$HOME` 不可读，TCP 可禁用。macOS / Windows 的施加仍未实现，
+> 这两个平台保持 fail-closed。用 `uh sandbox check` 自己验证。
 
 ---
 
@@ -30,22 +30,38 @@ UnitHarness 把**验证**做成一等公民：
 git clone https://github.com/create-info/unit-harness.git
 cd unit-harness
 npm install
+npm run build:native     # 编译 landlock helper -> ~/.uh/bin（需要 cc）
 npm run build
 
 node dist/uh.cjs doctor
-node dist/uh.cjs --version
+node dist/uh.cjs sandbox check
 ```
+
+`build:native` 是可选的：不做的话 `exec` 报无隔离并拒绝执行（fail-closed）。
 
 ```console
 $ node dist/uh.cjs doctor
 UnitHarness 0.1.0  (node v22.22.3)
 platform    linux/arm64  kernel=6.17.0-1008-nvidia
-isolation   none (platform=linux/arm64, kernel=6.17.0-1008-nvidia)  [available landlock-v1, NOT enforced]
-            capability detected but not yet applied by this build
+isolation   landlock-v7 (platform=linux/arm64, kernel=6.17.0-1008-nvidia)
+enforcement landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; home unreadable
 ```
 
-注意这里的诚实：这个构建**探测到** landlock，但还**没有施加**它。
-所以 `exec` 报 `none`，并拒绝执行：
+而且不是"相信"，是能验证：
+
+```console
+$ node dist/uh.cjs sandbox check
+isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; home unreadable
+
+PASS  write inside workspace  (expected ok, got ok)
+PASS  write outside workspace  (expected deny, got deny)
+PASS  read $HOME/.gitconfig  (expected deny, got deny)
+PASS  write to /etc  (expected deny, got deny)
+
+4/4 checks passed
+```
+
+没有任何隔离后端时，`exec` 直接拒绝执行：
 
 ```console
 $ node dist/uh.cjs tool hello
@@ -94,13 +110,23 @@ L6 分发层     CLI / 桌面壳、签名产物
 
 ## 沙箱
 
-| 平台 | 第一档 | 第二档 | 兜底 |
-|---|---|---|---|
-| Linux | landlock | bwrap | 路径约束 + 每次确认 |
-| macOS | seatbelt | 路径约束 + 确认 | — |
-| Windows | 受限令牌 + Job Object（P2） | 路径约束 + 确认 | — |
+| 平台 | 第一档 | 第二档 | 兜底 | 状态 |
+|---|---|---|---|---|
+| Linux | landlock（`native/landlock-helper`） | bwrap | 路径约束 + 确认 | landlock **已实现** |
+| macOS | seatbelt | 路径约束 + 确认 | — | 待做 |
+| Windows | 受限令牌 + Job Object | 路径约束 + 确认 | — | 待做 |
+
+Linux 上 landlock 实际给了什么：
+
+- 写入**只能**在工作区（默认 `~/.uh/work`）与 `~/.uh`
+- `$HOME` **不可读**，除非显式 `--allow-home`——这是挡住 `~/.ssh`、`~/.aws` 的关键
+- `--no-net` 可禁 TCP（landlock 管不了 UDP，我们如实说明，不含糊）
+- 系统路径（`/usr`、`/lib`、`/etc`、`/proc`…）需要可读，否则 shell 和运行时起不来
 
 全部不可用时 **fail-closed**。我们绝不静默降级。
+
+注：bwrap 会被探测到，但在 `apparmor_restrict_unprivileged_userns=1` 的内核上
+（Ubuntu 23.10+）无法创建 user namespace，因此不作为施加路径；landlock 没有这个前提。
 
 ## 基于 Cordis
 
@@ -113,7 +139,9 @@ DeepSeek Harness 使用的同一个插件框架。我们以普通 npm 依赖的�
 | 阶段 | 范围 | 状态 |
 |---|---|---|
 | P0 | 内核、插件加载、沙箱探测、fail-closed exec、CLI | ✅ 完成 |
-| P1 | landlock/bwrap/seatbelt 施加、事件日志、断言 | 下一步 |
+| P1 | landlock 施加 + `sandbox check` | ✅ 完成 |
+| P1 | 事件日志（`session/*`）、断言、回放 | 下一步 |
+| P2 | macOS seatbelt / Windows 受限令牌、桌面壳 | — |
 | P2 | 桌面壳、数据包、巡检 | — |
 | P3 | 协议适配器（MCP / ACP / A2A） | — |
 

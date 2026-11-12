@@ -25,7 +25,10 @@ This repository is written with AI assistance. Follow these rules.
 ## Verify before claiming done
 
 ```bash
+npm run build:native          # landlock helper -> ~/.uh/bin
 npm run build && node dist/uh.cjs doctor
-UH_PLUGIN_DIR=$PWD/examples node dist/uh.cjs tool hello        # expect fail-closed
-UH_PLUGIN_DIR=$PWD/examples node dist/uh.cjs tool hello --allow-unconfined
+node dist/uh.cjs sandbox check                                 # must pass 4/4 on Linux
+UH_PLUGIN_DIR=$PWD/examples node dist/uh.cjs tool hello        # expect fail-closed WITHOUT helper
 ```
+
+Never claim an isolation level that `sandbox check` does not demonstrate.

@@ -31,6 +31,8 @@ async function withHarness<T>(fn: (h: Harness) => Promise<T>): Promise<T> {
     pluginDirs: pluginDirs(),
     logLevel: (process.env.UH_LOG_LEVEL as never) ?? 'warn',
     unconfined: argv.includes('--allow-unconfined'),
+    allowHome: argv.includes('--allow-home'),
+    denyNetwork: argv.includes('--no-net'),
   })
   try {
     await h.start()
@@ -47,6 +49,7 @@ async function cmdDoctor(): Promise<void> {
     console.log(`UnitHarness ${VERSION}  (node ${process.version})`)
     console.log(`platform    ${r.platform}/${r.arch}  kernel=${r.release}`)
     console.log(`isolation   ${describeIsolation(r)}`)
+    console.log(`enforcement ${(h as unknown as { describeEnforcement?: () => string }).describeEnforcement?.() ?? '—'}`)
     if (r.available !== r.enforced) {
       console.log(`            capability detected but not yet applied by this build`)
     }
@@ -89,6 +92,45 @@ async function cmdPlugin(sub?: string): Promise<void> {
   })
 }
 
+async function cmdSandbox(sub?: string): Promise<void> {
+  if (sub !== 'check') fail('usage: uh sandbox check')
+
+  await withHarness(async (h) => {
+    const info = h.isolation
+    const enforcer = (h as unknown as { describeEnforcement: () => string }).describeEnforcement()
+    console.log(`isolation: ${enforcer}`)
+    console.log('')
+
+    const probes: Array<{ name: string; argv: [string, ...string[]]; expect: 'ok' | 'deny' }> = [
+      { name: 'write inside workspace', argv: ['sh', '-c', 'echo ok > ./sb-check.txt && cat ./sb-check.txt'], expect: 'ok' },
+      { name: 'write outside workspace', argv: ['sh', '-c', 'echo x > /tmp/uh-sb-outside.txt'], expect: 'deny' },
+      { name: 'read $HOME/.gitconfig', argv: ['sh', '-c', 'cat "$HOME/.gitconfig"'], expect: argv.includes('--allow-home') ? 'ok' : 'deny' },
+      { name: 'write to /etc', argv: ['sh', '-c', 'echo x >> /etc/uh-sb-etc.txt'], expect: 'deny' },
+    ]
+
+    let pass = 0
+    for (const p of probes) {
+      let status: 'ok' | 'deny'
+      try {
+        const r = await h.exec({ argv: p.argv, timeoutMs: 8000 })
+        status = r.exitCode === 0 ? 'ok' : 'deny'
+      } catch {
+        status = 'deny'
+      }
+      const good = status === p.expect
+      if (good) pass++
+      console.log(`${good ? 'PASS' : 'FAIL'}  ${p.name}  (expected ${p.expect}, got ${status})`)
+    }
+
+    console.log('')
+    console.log(`${pass}/${probes.length} checks passed`)
+    if (info.enforced === 'none' || info.enforced === 'path-guard') {
+      console.log('note: no kernel isolation active — results above are meaningless')
+    }
+    if (pass !== probes.length) process.exitCode = 1
+  })
+}
+
 async function cmdTool(name?: string, rest: string[] = []): Promise<void> {
   if (!name) fail('usage: uh tool <name> [--json <args>]')
   await withHarness(async (h) => {
@@ -122,6 +164,7 @@ Usage:
   uh doctor                 show platform, sandbox isolation, plugins
   uh plugin list            list plugins found on disk
   uh tool <name>            run a tool registered by a plugin
+  uh sandbox check          prove the sandbox actually blocks what it claims
   uh --version              print version
 
 Environment:
@@ -131,6 +174,10 @@ Environment:
 Sandbox:
   Isolated exec requires landlock / bwrap / seatbelt. If none is available the
   effective level is "path-guard" and exec is refused unless --allow-unconfined.
+
+  --allow-unconfined   run without isolation (explicit risk acceptance)
+  --allow-home         let sandboxed commands read $HOME (default: unreadable)
+  --no-net             block TCP inside the sandbox (landlock ABI >= 4)
 `)
 }
 
@@ -144,6 +191,8 @@ async function main(): Promise<void> {
       await cmdPlugin(argv[1]); return
     case 'tool':
       await cmdTool(argv[1], argv.slice(2)); return
+    case 'sandbox':
+      await cmdSandbox(argv[1]); return
     case 'help': case '--help': case '-h':
       cmdHelp(); return
     default:

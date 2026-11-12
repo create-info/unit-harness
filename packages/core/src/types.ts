@@ -14,12 +14,22 @@ export type Disposer = () => void
 
 /** 沙箱实际生效的隔离级别。必须如实上报，绝不静默降级（D7）。 */
 export type IsolationLevel =
-  | 'landlock-v1' | 'landlock-v2' | 'landlock-v3' | 'landlock-v4'
+  | `landlock-v${number}`
   | 'bwrap'
   | 'seatbelt'
   | 'win-restricted-token'
   | 'path-guard'
   | 'none'
+
+/** landlock 施加的范围说明（写进报告与事件，避免用户误判） */
+export interface SandboxScope {
+  /** 只读挂载/规则覆盖的路径 */
+  readonlyRead: string[]
+  /** 可写路径 */
+  readWrite: string[]
+  /** 网络是否被禁止（landlock 只能管 TCP） */
+  network: 'blocked-tcp' | 'allowed'
+}
 
 /** 探测结果：每个机制单独报告，不合并成一个是/否。 */
 export interface IsolationReport {
