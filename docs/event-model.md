@@ -299,7 +299,27 @@ ctx.hooks.on('pre-tool', {
 
 ---
 
-## 6. SQLite 存储
+## 6. 存储：JSONL（P1 实现选择）
+
+实现选了 **每个会话一个目录 + `events.jsonl` 追加写**，不是 SQLite。理由：
+
+| 维度 | JSONL | SQLite |
+|---|---|---|
+| 语义匹配 | 追加流本来就是日志，与 D9 一致 | 需要自己保证"只追加" |
+| 依赖 | 零（`node:fs`） | `node:sqlite` 在 Node 22 仍需实验 flag，或引 native 模块 |
+| SEA 单文件 | 友好 | native 模块难打包 |
+| 可审计 | `cat` / `grep` 直接看 | 需要 sqlite3 |
+| 复杂查询 | 弱 | 强 |
+
+事件格式与下面的表结构一一对应，将来迁移只是换索引层，事件本身不变。
+
+```
+~/.uh/sessions/<session_id>/
+├── meta.json      # id / created_at / workspace / status / last_seq
+└── events.jsonl   # 每行一个事件，append + fsync
+```
+
+## 7. 参考表结构（若迁移到 SQLite）
 
 ```sql
 CREATE TABLE IF NOT EXISTS sessions (
@@ -351,7 +371,7 @@ ctx.evidence.append(kind, payload, { source, parentId })
 
 ---
 
-## 7. JSON Schema 骨架（`schema/events.v1.json`）
+## 8. JSON Schema 骨架（`schema/events.v1.json`）
 
 ```jsonc
 {
@@ -382,7 +402,7 @@ ctx.evidence.append(kind, payload, { source, parentId })
 
 ---
 
-## 8. 验收（写进测试）
+## 9. 验收（写进测试）
 
 | # | 断言 | 方式 |
 |---|---|---|

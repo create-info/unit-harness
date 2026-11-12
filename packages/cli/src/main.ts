@@ -8,12 +8,18 @@
 import os from 'node:os'
 import { join } from 'node:path'
 
-import { Harness, describeIsolation } from '@unit-harness/core'
+import { Harness, EventStore, describeIsolation } from '@unit-harness/core'
 
 import { VERSION } from './version.ts'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0] ?? 'help'
+
+function localTime(iso: string): string {
+  const d = new Date(iso)
+  const p = (n: number): string => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
 
 function pluginDirs(): string[] {
   const env = process.env.UH_PLUGIN_DIR
@@ -26,13 +32,19 @@ function fail(msg: string, code = 1): never {
   process.exit(code)
 }
 
-async function withHarness<T>(fn: (h: Harness) => Promise<T>): Promise<T> {
+async function withHarness<T>(
+  fn: (h: Harness) => Promise<T>,
+  opts: { record?: boolean; label?: string } = {},
+): Promise<T> {
   const h = new Harness({
     pluginDirs: pluginDirs(),
     logLevel: (process.env.UH_LOG_LEVEL as never) ?? 'warn',
     unconfined: argv.includes('--allow-unconfined'),
     allowHome: argv.includes('--allow-home'),
     denyNetwork: argv.includes('--no-net'),
+    harnessVersion: VERSION,
+    ...(opts.record === undefined ? {} : { record: opts.record }),
+    ...(opts.label === undefined ? {} : { label: opts.label }),
   })
   try {
     await h.start()
@@ -71,7 +83,7 @@ async function cmdDoctor(): Promise<void> {
       console.log('')
       console.log('WARNING: exec is NOT isolated in this build. It is refused unless --allow-unconfined.')
     }
-  })
+  }, { record: false })
 }
 
 async function cmdPlugin(sub?: string): Promise<void> {
@@ -120,6 +132,11 @@ async function cmdSandbox(sub?: string): Promise<void> {
       const good = status === p.expect
       if (good) pass++
       console.log(`${good ? 'PASS' : 'FAIL'}  ${p.name}  (expected ${p.expect}, got ${status})`)
+      h.recordVerification(
+        { kind: 'sandbox-probe', name: p.name, argv: p.argv, expect: p.expect },
+        good ? 'pass' : 'fail',
+        { got: status },
+      )
     }
 
     console.log('')
@@ -157,6 +174,80 @@ async function cmdTool(name?: string, rest: string[] = []): Promise<void> {
   })
 }
 
+async function cmdSession(sub?: string, id?: string): Promise<void> {
+  const store = new EventStore()
+
+  if (sub === 'list' || sub === undefined) {
+    const rows = store.list()
+    if (rows.length === 0) {
+      console.log('no sessions yet (run something that executes, e.g. `uh sandbox check`)')
+      return
+    }
+    console.log('ID                              CREATED                 EVENTS  STATUS')
+    for (const m of rows.slice(0, 30)) {
+      const c = localTime(m.created_at)
+      console.log(`${m.id.padEnd(31)} ${c.padEnd(23)} ${String(m.last_seq).padStart(6)}  ${m.status}`)
+    }
+    return
+  }
+
+  if (sub === 'show') {
+    if (!id) fail('usage: uh session show <session-id>')
+    const meta = store.get(id)
+    if (!meta) fail(`session not found: ${id}`)
+    const evs = store.read(id)
+    console.log(`${meta.id}  ${meta.status}  ${localTime(meta.created_at)}`)
+    console.log(`workspace: ${meta.workspace}`)
+    console.log(`${evs.length} events`)
+    console.log('')
+    for (const e of evs) {
+      const p = JSON.stringify(e.payload)
+      const brief = p.length > 96 ? p.slice(0, 93) + '...' : p
+      console.log(`#${String(e.seq).padStart(3)}  ${e.kind.padEnd(22)} ${e.source.padEnd(12)} ${brief}`)
+    }
+    return
+  }
+
+  if (sub === 'replay') {
+    if (!id) fail('usage: uh session replay <session-id>')
+    const meta = store.get(id)
+    if (!meta) fail(`session not found: ${id}`)
+    const verifications = store.read(id, { kinds: ['verification/asserted'] })
+    if (verifications.length === 0) fail(`no verification/asserted events in ${id}`)
+
+    // 回放：重新执行断言并比对，不重跑有副作用的钩子（docs/event-model.md §4.3）
+    await withHarness(async (h) => {
+      let same = 0
+      let diff = 0
+      for (const ev of verifications) {
+        const a = ev.payload.assertion as { kind?: string; name?: string; argv?: string[]; expect?: string }
+        if (a?.kind !== 'sandbox-probe' || !a.argv) {
+          console.log(`SKIP  ${ev.id} (unsupported assertion kind: ${String(a?.kind)})`)
+          continue
+        }
+        let got: 'ok' | 'deny'
+        try {
+          const r = await h.exec({ argv: a.argv as [string, ...string[]], timeoutMs: 8000 })
+          got = r.exitCode === 0 ? 'ok' : 'deny'
+        } catch {
+          got = 'deny'
+        }
+        const recorded = ev.payload.result === 'pass' ? a.expect : (ev.payload.detail as { got?: string })?.got
+        const match = got === recorded || got === a.expect
+        if (match) same++
+        else diff++
+        console.log(`${match ? 'SAME' : 'DIFF'}  ${a.name ?? ev.id}  recorded=${String(recorded)} now=${got}`)
+      }
+      console.log('')
+      console.log(`${same} reproduced, ${diff} diverged`)
+      if (diff > 0) process.exitCode = 1
+    }, { record: false })
+    return
+  }
+
+  fail(`unknown session subcommand: ${sub}`)
+}
+
 function cmdHelp(): void {
   console.log(`uh ${VERSION} — the agent that proves its work
 
@@ -165,6 +256,9 @@ Usage:
   uh plugin list            list plugins found on disk
   uh tool <name>            run a tool registered by a plugin
   uh sandbox check          prove the sandbox actually blocks what it claims
+  uh session list           recent sessions (append-only event log)
+  uh session show <id>      print a session's events
+  uh session replay <id>    re-run recorded assertions and compare results
   uh --version              print version
 
 Environment:
@@ -193,6 +287,8 @@ async function main(): Promise<void> {
       await cmdTool(argv[1], argv.slice(2)); return
     case 'sandbox':
       await cmdSandbox(argv[1]); return
+    case 'session':
+      await cmdSession(argv[1], argv[2]); return
     case 'help': case '--help': case '-h':
       cmdHelp(); return
     default:

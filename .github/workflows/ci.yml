@@ -34,6 +34,13 @@ jobs:
           fi
       - name: plugin loads
         run: UH_PLUGIN_DIR="$PWD/examples" node dist/uh.cjs plugin list
+      - name: session log + replay
+        run: |
+          UH_PLUGIN_DIR="$PWD/examples" node dist/uh.cjs sandbox check
+          sid=$(node dist/uh.cjs session list | tail -1 | awk '{print $1}')
+          echo "session: $sid"
+          node dist/uh.cjs session show "$sid" | head -12
+          node dist/uh.cjs session replay "$sid"
       - name: exec fails closed without isolation
         run: |
           set +e

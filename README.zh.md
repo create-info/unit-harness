@@ -68,6 +68,33 @@ $ node dist/uh.cjs tool hello
 E_SANDBOX_UNAVAILABLE: current isolation is "none". Refusing to execute (fail-closed).
 ```
 
+## 每次运行都是证据
+
+没有静默发生的事。每个会话写一份追加式 JSONL 日志：
+
+```console
+$ node dist/uh.cjs session show ses_01M77JP1...
+#  1  session/start          environment  {"workspace":"~/.uh/work","isolation":"landlock-v7",...}
+#  2  tool/call              agent        {"tool":"exec","argv":["sh","-c","echo ok > ./sb-check.txt"],...}
+#  3  tool/result            environment  {"tool":"exec","status":"ok","exit_code":0,"isolation":"landlock-v7",...}
+#  4  verification/asserted  environment  {"assertion":{"kind":"sandbox-probe","name":"write inside workspace",...}
+```
+
+断言可以事后只凭日志重跑：
+
+```console
+$ node dist/uh.cjs session replay ses_01M77JP1...
+SAME  write inside workspace  recorded=ok now=ok
+SAME  write outside workspace  recorded=deny now=deny
+SAME  read $HOME/.gitconfig  recorded=deny now=deny
+SAME  write to /etc  recorded=deny now=deny
+
+4 reproduced, 0 diverged
+```
+
+`replay` **不会重跑钩子**（钩子可能有副作用），只读日志里记录的决策。
+任一结果不一致即退非零。
+
 ## 插件
 
 一切皆插件，从 `~/.uh/plugins/<name>/index.js` 加载：
