@@ -34,7 +34,8 @@ jobs:
           set -o pipefail
           if ! bash scripts/release.sh "$TAG" 2>&1 | tee out.log; then
             # 匿名读不到 job log，所以把失败现场塞进 annotation
-            DETAIL=$(tail -45 out.log | tr '\n' ' ' | tr -s ' ')
+            # 只报最后几行：前面是候选 run 列表，真正的错误在末尾
+            DETAIL=$(tail -12 out.log | tr '\n' ' ' | tr -s ' ')
             echo "::error title=release failed::${DETAIL:0:900}"
             exit 1
           fi
