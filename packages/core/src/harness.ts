@@ -122,7 +122,8 @@ export class Harness {
   private readonly seatbelt: SeatbeltInfo
   /** MCP server 桥接（外部进程，不在沙箱内） */
   readonly mcp = new McpRegistry()
-  private readonly workspace: string
+  /** 工作区绝对路径（外部模块如剧本检查要读它） */
+  readonly workspace: string
   private readonly store: EventStore
   private session: SessionMeta | null = null
 

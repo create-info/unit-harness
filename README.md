@@ -255,6 +255,35 @@ you want to check *why* something failed without involving a model.
 
 The model decides the steps; the sandbox decides what it is allowed to touch.
 
+## Recipes
+
+`uh run "..."` lets the model decide what "done" means. `uh do <recipe>` doesn't:
+
+```console
+$ uh do node-service
+recipe: node-service
+vars:   port=8731
+
+--- deliverables (1) ---
+  ✓ server.mjs  1223 B  3/3
+
+--- checks ---
+  ✓ server.mjs 已创建   1223 B
+  ✓ 服务能起来且 /healthz 返回 200   exit 0
+```
+
+The checks are **ours, not the model's**: it starts the server in the sandbox,
+polls the port, kills it, and fails the run if nothing answers. A model claiming
+"done" is not evidence; a port that responds is.
+
+Built in: `node-service`, `python-cli`. Drop your own JSON into
+`~/.uh/recipes/` — same shape as `packages/core/src/recipe/builtin.ts`, and a
+user recipe with the same name shadows the builtin.
+
+Directory names, ports and other knobs are `{{vars}}`, overridable with
+`--set port=9000`. Built-in checks shell out via `sh`, so they are POSIX-only
+today; the failure surfaces as `error`, never as a silent pass.
+
 ## Desktop app
 
 | Platform | Installer |

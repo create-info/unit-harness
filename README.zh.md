@@ -226,6 +226,32 @@ uh run "看看工作区里有什么"
 
 **步骤由模型决定，边界由沙箱决定。**
 
+## 剧本
+
+`uh run "..."` 让模型自己判断什么叫完成；`uh do <剧本>` 不让：
+
+```console
+$ uh do node-service
+recipe: node-service
+vars:   port=8731
+
+--- deliverables (1) ---
+  ✓ server.mjs  1223 B  3/3
+
+--- checks ---
+  ✓ server.mjs 已创建   1223 B
+  ✓ 服务能起来且 /healthz 返回 200   exit 0
+```
+
+验收单是**我们的，不是模型的**：它在沙箱里真的把服务起起来、探端口、再杀掉，没响应就是失败。
+模型说"完成了"不算证据，一个会回应的端口才算。
+
+内置 `node-service`、`python-cli`。自己的剧本丢进 `~/.uh/recipes/*.json`（形状同
+`packages/core/src/recipe/builtin.ts`），同名覆盖内置。
+
+端口之类的参数是 `{{变量}}`，用 `--set port=9000` 覆盖。内置检查目前经由 `sh` 执行，
+所以只在 POSIX 上可用；失败会报成 `error`，不会静默算通过。
+
 ## 桌面应用
 
 | 平台 | 安装包 |
