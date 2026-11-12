@@ -115,7 +115,7 @@ async function cmdSandbox(sub?: string): Promise<void> {
 
     const probes: Array<{ name: string; argv: [string, ...string[]]; expect: 'ok' | 'deny' }> = [
       { name: 'write inside workspace', argv: ['sh', '-c', 'echo ok > ./sb-check.txt && cat ./sb-check.txt'], expect: 'ok' },
-      { name: 'write outside workspace', argv: ['sh', '-c', 'echo x > /tmp/uh-sb-outside.txt'], expect: 'deny' },
+      { name: 'write outside workspace', argv: ['sh', '-c', 'echo x > "$HOME/uh-sb-outside.txt"'], expect: 'deny' },
       { name: 'read $HOME/.gitconfig', argv: ['sh', '-c', 'cat "$HOME/.gitconfig"'], expect: argv.includes('--allow-home') ? 'ok' : 'deny' },
       { name: 'write to /etc', argv: ['sh', '-c', 'echo x >> /etc/uh-sb-etc.txt'], expect: 'deny' },
     ]
