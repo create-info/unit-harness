@@ -255,6 +255,50 @@ you want to check *why* something failed without involving a model.
 
 The model decides the steps; the sandbox decides what it is allowed to touch.
 
+## Desktop UI
+
+```console
+$ uh desktop
+UnitHarness UI  http://127.0.0.1:7878  (opened in your browser)
+```
+
+A local UI served by the binary itself — same shape DeepSeek Harness uses
+(`apps/web` + `host/webserver`): one HTTP server on `127.0.0.1`, a single static
+page, events streamed over SSE. No Electron, no frontend build step, no second
+process to supervise, and it behaves identically on macOS, Linux and Windows.
+
+What you see is the evidence, live: each step, each tool call with the exact
+argv, plan updates, compaction, and at the end the deliverables with assertion
+counts and sha256. Past sessions replay from the same event log the CLI writes.
+
+## Skills
+
+```console
+$ tree .uh/skills
+.uh/skills/
+└── deploy-check/
+    └── SKILL.md
+```
+
+```markdown
+---
+name: deploy-check
+description: Verify a deployment actually took effect
+---
+
+# Deploy check
+1. curl the health endpoint
+2. compare the git sha in /status with the one you deployed
+```
+
+Skills are discovered from `./.uh/skills`, `./.agents/skills`, `~/.uh/skills`
+(nearest wins) — the same roots DeepSeek Harness scans.
+
+The **index** (name + one-line description) always sits in the prompt; the
+**body** is loaded only when the model calls `use_skill`. That split is the whole
+point: fifty skills of full text would eat the window, but fifty one-liners keep
+the model aware of what exists.
+
 ## MCP
 
 ```console

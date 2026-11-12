@@ -24,6 +24,7 @@ await esbuild.build({
     __UH_VERSION__: JSON.stringify(pkg.version),
     __UH_LANDLOCK_B64__: JSON.stringify(embedHelper),
   },
+  loader: { '.html': 'text' },
   logLevel: 'info',
 })
 

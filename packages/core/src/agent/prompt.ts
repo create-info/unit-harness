@@ -22,6 +22,8 @@ export interface PromptContext {
   planEnabled?: boolean
   /** 额外注入的项目指令（覆盖 AGENTS.md 发现结果） */
   projectInstructions?: string
+  /** 已发现 skill 的索引文本（由 renderSkillIndex 生成） */
+  skillIndex?: string
 }
 
 /** 从 workspace 向上找 AGENTS.md，越近的越优先（同名文件后出现的覆盖前面的） */
@@ -116,6 +118,8 @@ function toolsSection(ctx: PromptContext): string {
 export function buildSystemPrompt(ctx: PromptContext): string {
   const parts = [baseSection(ctx), environmentSection(ctx)]
   if (ctx.tools.length > 0) parts.push(toolsSection(ctx))
+
+  if (ctx.skillIndex) parts.push(ctx.skillIndex)
 
   const project = ctx.projectInstructions ?? findProjectInstructions(ctx.workspace).text
   if (project) {

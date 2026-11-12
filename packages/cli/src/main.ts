@@ -16,6 +16,7 @@ import {
 } from '@unit-harness/core'
 
 import { VERSION } from './version.ts'
+import { startServer, openBrowser } from './serve.ts'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0] ?? 'help'
@@ -617,6 +618,8 @@ function cmdHelp(): void {
 
 Usage:
   uh run "<task>"           run a task with the model agent (sandboxed)
+  uh serve [--port N]       local web UI (default 127.0.0.1:7878)
+  uh desktop                same, and open it in your browser
   uh mcp list               show MCP servers and the tools they expose
   uh exec -- <cmd>          run one command inside the sandbox (debugging)
   uh provider list          supported providers, keys, live models
@@ -664,6 +667,21 @@ async function main(): Promise<void> {
       await cmdProvider(argv[1]); return
     case 'config':
       await cmdConfig(argv[1], argv[2], argv[3]); return
+    case 'serve': {
+      const port = Number(flag('port') ?? 7878)
+      const srv = await startServer({ port })
+      console.log(`UnitHarness UI  ${srv.url}`)
+      console.log('press Ctrl+C to stop')
+      return
+    }
+    case 'desktop': {
+      const port = Number(flag('port') ?? 7878)
+      const srv = await startServer({ port })
+      const opened = openBrowser(srv.url)
+      console.log(`UnitHarness UI  ${srv.url}${opened ? '  (opened in your browser)' : ''}`)
+      console.log('press Ctrl+C to stop')
+      return
+    }
     case 'mcp':
       await cmdMcp(argv[1]); return
     case 'exec':

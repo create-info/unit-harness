@@ -226,6 +226,45 @@ uh run "看看工作区里有什么"
 
 **步骤由模型决定，边界由沙箱决定。**
 
+## 桌面界面
+
+```console
+$ uh desktop
+UnitHarness UI  http://127.0.0.1:7878  (opened in your browser)
+```
+
+二进制自己起的本地 UI——和 DeepSeek Harness 的形态一致（`apps/web` + `host/webserver`）：
+一个绑在 `127.0.0.1` 的 HTTP 服务、一张静态页、事件走 SSE。没有 Electron，没有前端构建，
+没有第二个要守护的进程，macOS / Linux / Windows 表现完全一致。
+
+你看到的就是证据本身：每一步、每次工具调用（带确切 argv）、计划更新、压缩，跑完后是交付物
+清单和断言计数、sha256。历史会话从 CLI 写的同一份事件日志回放。
+
+## Skills
+
+```console
+$ tree .uh/skills
+.uh/skills/
+└── deploy-check/
+    └── SKILL.md
+```
+
+```markdown
+---
+name: deploy-check
+description: Verify a deployment actually took effect
+---
+
+# Deploy check
+1. curl 健康检查端点
+2. 把 /status 里的 git sha 和你部署的那个比对
+```
+
+扫描 `.uh/skills`、`.agents/skills`、`~/.uh/skills`（就近优先）——和 DeepSeek Harness 同一组根。
+
+**索引**（名字 + 一句话）常驻 prompt，**正文**只在模型调 `use_skill` 时才加载。这个分工是全部
+意义所在：五十个 skill 的全文会吃光窗口，但五十行名字能让模型知道"有什么可用"。
+
 ## MCP
 
 ```console

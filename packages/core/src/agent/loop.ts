@@ -11,6 +11,7 @@ import type { LlmGateway } from '../llm/gateway.ts'
 import type { ToolDefinition } from '../types.ts'
 import { parsePatch, planPatch } from './tools/apply-patch.ts'
 import { compactMessages, shouldCompact } from './compact.ts'
+import type { Skill } from '../skill/registry.ts'
 
 export interface RunCommandArgs {
   argv: string[]
@@ -45,6 +46,8 @@ export interface AgentDeps {
   planEnabled?: boolean
   /** 上下文预算：超过 budget*0.7 就压缩（0 = 关闭压缩） */
   maxContextTokens?: number
+  /** 可用的 skills（正文按需加载） */
+  skills?: Skill[]
 }
 
 export interface RunResult {
@@ -102,6 +105,25 @@ const APPLY_PATCH: ToolSpec = {
         patch: { type: 'string', description: 'the full patch text, starting with *** Begin Patch' },
       },
       required: ['patch'],
+      additionalProperties: false,
+    },
+  },
+}
+
+const USE_SKILL: ToolSpec = {
+  type: 'function',
+  function: {
+    name: 'use_skill',
+    description:
+      'Load a skill: returns its full instructions. Call this when the task matches a skill listed ' +
+      'in <available_skills>. Load it before starting work, not after — the skill usually tells you ' +
+      'how it expects to be used.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'skill name from the list' },
+      },
+      required: ['name'],
       additionalProperties: false,
     },
   },
@@ -165,7 +187,14 @@ export async function runAgent(
   if (deps.system) messages.push({ role: 'system', content: deps.system })
   messages.push({ role: 'user', content: opts.task })
 
-  const tools: ToolSpec[] = [RUN_COMMAND, APPLY_PATCH, ...(planEnabled ? [UPDATE_PLAN] : []), ...toToolSpecs(deps.tools)]
+  const skills = deps.skills ?? []
+  const tools: ToolSpec[] = [
+    RUN_COMMAND,
+    APPLY_PATCH,
+    ...(planEnabled ? [UPDATE_PLAN] : []),
+    ...(skills.length > 0 ? [USE_SKILL] : []),
+    ...toToolSpecs(deps.tools),
+  ]
 
   let steps = 0
   let stoppedBy: RunResult['stoppedBy'] = 'model'
@@ -178,7 +207,7 @@ export async function runAgent(
   const execOne = async (call: ToolCall): Promise<string> => {
     const name = call.function.name
     // apply_patch / update_plan 在进程内执行，不经过 exec，因此这里自己补审计
-    const needsOwnEvent = name === 'apply_patch' || name === 'update_plan'
+    const needsOwnEvent = name === 'apply_patch' || name === 'update_plan' || name === 'use_skill'
     let callEvId: string | null = null
     if (needsOwnEvent) {
       callEvId = deps.ev('tool/call', { tool: name, args_preview: String(call.function.arguments).slice(0, 200) })
@@ -221,6 +250,18 @@ export async function runAgent(
         deps.log(`patch applied:\n${summary}`)
         finish('ok', { files: results.map((r) => r.file) })
         return `patch applied\n${summary}${warnings.length ? `\nwarnings:\n${warnings.map((w) => `  ${w}`).join('\n')}` : ''}`
+      }
+
+      if (name === 'use_skill') {
+        const wanted = String(args.name ?? '')
+        const skill = skills.find((s) => s.name === wanted)
+        if (!skill) {
+          finish('error', { error: `unknown skill ${wanted}` })
+          return `ERROR: unknown skill "${wanted}". Available: ${skills.map((s) => s.name).join(', ')}`
+        }
+        finish('ok', { skill: wanted, root: skill.root, chars: skill.body.length })
+        deps.log(`skill loaded: ${wanted} (${skill.body.length} chars)`)
+        return `# Skill: ${skill.name}\n\n${skill.body}`
       }
 
       if (name === 'update_plan') {
