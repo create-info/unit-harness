@@ -36,6 +36,9 @@ import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/t
 import { McpRegistry } from './mcp/bridge.ts'
 import { loadMcpServers } from './mcp/config.ts'
 import { discoverSkills, renderSkillIndex } from './skill/registry.ts'
+import { loadHosts } from './remote/hosts.ts'
+import { runRemote } from './remote/ssh.ts'
+import { classify } from './remote/risk.ts'
 import type { Skill } from './skill/registry.ts'
 import type { SeatbeltInfo } from './sandbox/seatbelt.ts'
 import { mkdirSync } from 'node:fs'
@@ -72,6 +75,12 @@ export interface HarnessOptions {
   harnessVersion?: string
   /** 事件回调，CLI 用来实时打印进度 */
   onEvent?: (kind: string, payload: Record<string, unknown>) => void
+  /** 允许远端写操作（默认 false：只读才放行） */
+  allowRemoteWrite?: boolean
+  /** 允许远端毁灭性命令（默认 false） */
+  allowRemoteDestructive?: boolean
+  /** 远端命令超时（默认 60s） */
+  remoteTimeoutMs?: number
 }
 
 export interface RunTaskOptions {
@@ -497,7 +506,27 @@ export class Harness {
       schema: t.schema as unknown as ToolDefinition['schema'],
       handler: async (args: Record<string, unknown>) => this.callTool(t.name, args),
     }))
-    return [...base, ...mcpTools]
+    const hosts = loadHosts().hosts
+    const remoteTools: ToolDefinition[] = Object.keys(hosts).length === 0 ? [] : [{
+      name: 'remote_exec',
+      description:
+        'Run a command on a configured remote host (e.g. a server you deploy to). ' +
+        'Read-only commands run directly; anything that modifies the host is refused unless ' +
+        'the user allowed it for this run. This does NOT run in the local sandbox — it runs ' +
+        `on the remote machine. Hosts: ${Object.keys(hosts).join(', ')}`,
+      schema: {
+        type: 'object',
+        properties: {
+          host: { type: 'string', description: 'host name from hosts.json' },
+          command: { type: 'string', description: 'shell command to run on the remote host' },
+        },
+        required: ['host', 'command'],
+      } as unknown as ToolDefinition['schema'],
+      handler: async (args: Record<string, unknown>) =>
+        this.callTool('remote_exec', args),
+    }]
+
+    return [...base, ...mcpTools, ...remoteTools]
   }
 
   /**
@@ -662,8 +691,66 @@ export class Harness {
     return abs
   }
 
+  /**
+   * 远端执行。
+   *
+   * 三条硬约束：
+   *  1. **不经过本地沙箱**（SSH 要读私钥，而沙箱故意禁读 ~/.ssh）——所以隔离如实记 'none'
+   *     并加 scope:'remote'，绝不冒充成 landlock。
+   *  2. **默认只读**：写操作要这次运行显式授权，destructive 永远先拦。
+   *  3. **每一次都留痕**，包括被拒绝的那次。
+   */
+  private async remoteExec(args: Record<string, unknown>): Promise<{ content: string }> {
+    const hostName = String(args.host ?? '')
+    const command = String(args.command ?? '')
+    const hosts = loadHosts().hosts
+    const host = hosts[hostName]
+
+    if (!host) {
+      throw new Error(`unknown host "${hostName}". Configured: ${Object.keys(hosts).join(', ') || '(none)'} — add one with \`uh host add\``)
+    }
+    if (!command.trim()) throw new Error('remote_exec: empty command')
+
+    const risk = classify(command)
+    const callEv = this.ev('tool/call', {
+      tool: 'remote_exec', host: hostName, command, risk, scope: 'remote',
+    }, 'agent')
+
+    const allowed =
+      risk === 'read' ||
+      (risk === 'write' && this.opts.allowRemoteWrite === true) ||
+      (risk === 'destructive' && this.opts.allowRemoteDestructive === true)
+
+    if (!allowed) {
+      const reason = risk === 'destructive'
+        ? 'E_REMOTE_DESTRUCTIVE: refused (needs --allow-remote-destructive)'
+        : 'E_REMOTE_WRITE: refused (needs --allow-remote-write)'
+      this.ev('tool/result', {
+        tool: 'remote_exec', host: hostName, status: 'error', refused: true,
+        reason, risk, isolation: 'none', external: true, scope: 'remote',
+      }, 'environment', callEv?.id ?? null)
+      throw new Error(`${reason} — ran on ${hostName}: ${command.slice(0, 120)}`)
+    }
+
+    const started = Date.now()
+    const r = await runRemote({ host, command, timeoutMs: this.opts.remoteTimeoutMs ?? 60_000 })
+    const digest = createHash('sha256').update(r.stdout + r.stderr).digest('hex').slice(0, 16)
+
+    this.ev('tool/result', {
+      tool: 'remote_exec', host: hostName, status: r.exitCode === 0 ? 'ok' : 'error',
+      exit_code: r.exitCode, stdout_digest: digest, risk,
+      duration_ms: Date.now() - started, timed_out: r.timedOut,
+      isolation: 'none', external: true, scope: 'remote',
+    }, 'environment', callEv?.id ?? null)
+
+    if (r.timedOut) throw new Error(`E_REMOTE_TIMEOUT: ${hostName} did not finish within ${this.opts.remoteTimeoutMs ?? 60_000}ms`)
+    return { content: `${r.stdout}${r.stderr ? (r.stdout ? '\n' : '') + r.stderr : ''}` }
+  }
+
   /** 调用已注册的工具（含 MCP 桥接工具） */
   async callTool(name: string, args: Record<string, unknown>): Promise<{ content: string }> {
+    if (name === 'remote_exec') return await this.remoteExec(args)
+
     const isMcp = this.mcp.has(name)
     const tool = this.toolRegistry.get(name)
     if (!tool && !isMcp) throw new Error(`tool not found: ${name}`)

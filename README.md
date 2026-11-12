@@ -255,6 +255,38 @@ you want to check *why* something failed without involving a model.
 
 The model decides the steps; the sandbox decides what it is allowed to touch.
 
+## Remote hosts
+
+```console
+$ uh host add prod ubuntu@203.0.113.10 --key ~/.ssh/id_ed25519
+$ uh host test prod
+✓ prod  Linux 6.8.0-117-generic x86_64 · ubuntu  (657ms)
+
+$ uh exec --host prod -- df -h /
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda2        40G  7.6G   31G  20% /
+```
+
+`hosts.json` stores the **key path**, never the key. The agent gets a `remote_exec`
+tool once at least one host exists, so it can inspect and operate a real server.
+
+Three rules, because this is someone's production box:
+
+| Command | Behaviour |
+|---|---|
+| read-only (`df`, `ps`, `journalctl`, `systemctl status`, `docker ps`) | runs |
+| modifies state (`mkdir`, `npm i`, `systemctl restart`, `echo > file`) | refused unless `--allow-remote-write` |
+| destructive (`rm -rf /`, `dd`, `mkfs`, `shutdown`, `curl … \| sh`) | refused unless `--allow-remote-destructive` |
+
+Remote execution **bypasses the local sandbox on purpose** — ssh has to read a
+private key, and the sandbox deliberately makes `~/.ssh` unreadable. So it is a
+separate tool, credentials never reach the model, and every call is logged as
+`isolation: "none"`, `scope: "remote"` rather than pretending landlock applied.
+
+Classification is pattern matching and will miss things. It is an extra gate, not
+a guarantee. The guarantee is the audit trail: every attempt, including refused
+ones, is in the event log.
+
 ## Recipes
 
 `uh run "..."` lets the model decide what "done" means. `uh do <recipe>` doesn't:

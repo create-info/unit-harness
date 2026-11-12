@@ -14,6 +14,7 @@ import {
   readConfig, setProviderEntry, unsetProvider, setDefaultProvider, configPath, apiKeyFor,
   loadMcpServers, upsertMcpServer, removeMcpServer, McpRegistry,
   listRecipes, loadRecipe, resolveVars, renderTemplate, runRecipeChecks,
+  loadHosts, upsertHost, removeHost, runRemote, classify, describeRisk,
 } from '@unit-harness/core'
 
 import { VERSION } from './version.ts'
@@ -284,6 +285,34 @@ function printEvent(kind: string, p: Record<string, unknown>): void {
 }
 
 async function cmdExec(rest: string[]): Promise<void> {
+  const hostIdx = rest.indexOf('--host')
+  if (hostIdx >= 0) {
+    const hostName = rest[hostIdx + 1] ?? ''
+    const command = rest.slice(hostIdx + 2).filter((a) => a !== '--').join(' ')
+    if (!hostName || !command) fail('usage: uh exec --host <name> -- <command>')
+
+    const { hosts } = loadHosts()
+    const host = hosts[hostName]
+    if (!host) fail(`no such host: ${hostName}. Configured: ${Object.keys(hosts).join(', ') || '(none)'}`)
+
+    const risk = classify(command)
+    const allowWrite = rest.includes('--allow-remote-write')
+    const allowDestructive = rest.includes('--allow-remote-destructive')
+
+    if (risk === 'destructive' && !allowDestructive) {
+      fail(`refused: ${describeRisk(risk)}\n  add --allow-remote-destructive if you really mean it\n  command was: ${command}`)
+    }
+    if (risk === 'write' && !allowWrite && !allowDestructive) {
+      fail(`refused: ${describeRisk(risk)}\n  add --allow-remote-write to run it\n  command was: ${command}`)
+    }
+
+    const r = await runRemote({ host, command })
+    if (r.stdout) process.stdout.write(r.stdout)
+    if (r.stderr) process.stderr.write(r.stderr)
+    process.exitCode = r.exitCode
+    return
+  }
+
   const argv = rest.filter((a) => a !== '--')
   if (argv.length === 0) fail('usage: uh exec -- <program> [args...]   (runs inside the sandbox)')
 
@@ -311,6 +340,71 @@ function collectVars(rest: string[]): Record<string, string> {
     }
   }
   return vars
+}
+
+async function cmdHost(sub?: string, rest: string[] = []): Promise<void> {
+  const { hosts, path: cfgPath } = loadHosts()
+
+  if (sub === 'add') {
+    const name = rest[0]
+    const target = rest[1]
+    if (!name || !target) fail('usage: uh host add <name> <user@host> [--key ~/.ssh/id_ed25519] [--port 22]')
+
+    const keyIdx = rest.indexOf('--key')
+    const portIdx = rest.indexOf('--port')
+    const at = target.lastIndexOf('@')
+    const entry = {
+      host: at >= 0 ? target.slice(at + 1) : target,
+      ...(at >= 0 ? { user: target.slice(0, at) } : {}),
+      ...(keyIdx >= 0 && rest[keyIdx + 1] ? { key: rest[keyIdx + 1] as string } : {}),
+      ...(portIdx >= 0 && rest[portIdx + 1] ? { port: Number(rest[portIdx + 1]) } : {}),
+    }
+    upsertHost(name, entry as never)
+    console.log(`added ${name} → ${cfgPath} (mode 0600)`)
+    console.log('note: hosts.json stores the key *path*, never the key itself')
+    console.log(`verify with:  uh host test ${name}`)
+    return
+  }
+
+  if (sub === 'remove') {
+    const name = rest[0]
+    if (!name) fail('usage: uh host remove <name>')
+    if (removeHost(name)) console.log(`removed ${name}`)
+    else fail(`no such host: ${name}`)
+    return
+  }
+
+  if (sub === 'test') {
+    const names = rest[0] ? [rest[0]] : Object.keys(hosts)
+    if (names.length === 0) fail('no hosts configured (uh host add <name> <user@host>)')
+    for (const n of names) {
+      const h = hosts[n]
+      if (!h) { fail(`no such host: ${n}`) }
+      const r = await runRemote({ host: h, command: 'uname -srm; whoami', timeoutMs: 20000 })
+      if (r.exitCode === 0) {
+        console.log(`✓ ${n}  ${r.stdout.trim().replace(/\n/g, ' · ')}  (${r.durationMs}ms)`)
+      } else {
+        console.log(`✗ ${n}  exit ${r.exitCode}`)
+        console.log(`    ${(r.stderr || r.stdout).trim().split('\n').slice(-3).join('\n    ')}`)
+      }
+    }
+    return
+  }
+
+  // list
+  if (Object.keys(hosts).length === 0) {
+    console.log('no hosts configured. add one:')
+    console.log('  uh host add prod ubuntu@203.0.113.10 --key ~/.ssh/id_ed25519')
+    return
+  }
+  console.log(`config: ${cfgPath}`)
+  for (const [name, h] of Object.entries(hosts)) {
+    const t = h.user ? `${h.user}@${h.host}` : h.host
+    console.log(`  ${name.padEnd(14)} ${t}${h.port ? `:${h.port}` : ''}${h.key ? `  key=${h.key}` : ''}`)
+  }
+  console.log('')
+  console.log('remote commands are NOT sandboxed: they run on the host with your SSH identity.')
+  console.log('read-only commands run freely; writes need --allow-remote-write.')
 }
 
 async function cmdDo(name?: string, rest: string[] = []): Promise<void> {
@@ -774,6 +868,7 @@ function cmdHelp(): void {
 
 Usage:
   uh run "<task>"           run a task with the model agent (sandboxed)
+  uh host [list|add|test]   manage remote hosts (ssh targets, key paths only)
   uh do [name]              run a recipe: fixed task, then our own acceptance checks
   uh serve [--port N]       local web UI (default 127.0.0.1:7878)
   uh desktop                same, and open it in your browser
@@ -782,6 +877,7 @@ Usage:
   uh mcp test [name]        handshake check, with a readable failure
   uh mcp remove <name>      drop a server from ~/.uh/mcp.json
   uh exec -- <cmd>          run one command inside the sandbox (debugging)
+  uh exec --host <h> -- <c> run one command on a remote host (read-only by default)
   uh provider list          supported providers, keys, live models
   uh config set <id>        store an API key (hidden input); .model / .baseUrl
   uh config use <id>        set the default provider
@@ -842,6 +938,8 @@ async function main(): Promise<void> {
       console.log('press Ctrl+C to stop')
       return
     }
+    case 'host':
+      await cmdHost(argv[1], argv.slice(2)); return
     case 'do':
       await cmdDo(argv[1], argv.slice(2)); return
     case 'mcp':
