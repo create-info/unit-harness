@@ -2,6 +2,18 @@
 
 export type Role = 'system' | 'user' | 'assistant' | 'tool'
 
+/**
+ * 图片附件。
+ *
+ * `data` 是 base64（不含 data: 前缀）。它**不落盘**：state.json 只留 path + mediaType，
+ * 续跑时重新读文件——否则一份带截图的会话就能让 state.json 涨到几十 MB。
+ */
+export interface ImageInput {
+  path: string
+  mediaType: string
+  data: string
+}
+
 export interface Message {
   role: Role
   content: string
@@ -10,6 +22,8 @@ export interface Message {
   /** role=tool 时指向被回应的调用 */
   tool_call_id?: string
   name?: string
+  /** 多模态：附在 user 消息上的图片 */
+  images?: ImageInput[]
 }
 
 export interface ToolCall {

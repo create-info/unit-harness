@@ -36,7 +36,7 @@ import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/t
 import { McpRegistry } from './mcp/bridge.ts'
 import { loadMcpServers } from './mcp/config.ts'
 import { uhHome } from './paths.ts'
-import type { Message } from './llm/types.ts'
+import type { Message, ImageInput } from './llm/types.ts'
 import { discoverSkills, renderSkillIndex } from './skill/registry.ts'
 import { loadHosts } from './remote/hosts.ts'
 import { runRemote } from './remote/ssh.ts'
@@ -111,6 +111,8 @@ export interface RunTaskOptions {
   stream?: boolean
   /** 续跑：上一次会话的消息 */
   resumeFrom?: Message[]
+  /** 附在第一轮用户消息上的图片 */
+  images?: ImageInput[]
 }
 
 export interface RunTaskOutcome extends RunResult {
@@ -683,6 +685,7 @@ export class Harness {
         ...(o.maxSeconds ? { maxSeconds: o.maxSeconds } : {}),
         signal: this.abortCtl.signal,
         ...(o.resumeFrom ? { initialMessages: o.resumeFrom } : {}),
+        ...(o.images?.length ? { images: o.images } : {}),
       },
     )
 
@@ -696,7 +699,11 @@ export class Harness {
           updated_at: new Date().toISOString(),
           stopped_by: result.stoppedBy,
           plan: result.plan ?? [],
-          messages: result.messages,
+          // base64 不落盘：一份带截图的会话能让 state.json 涨到几十 MB，
+          // 续跑时按 path 重新读就行
+          messages: result.messages.map((m) => (m.images?.length
+            ? { ...m, images: m.images.map((i) => ({ path: i.path, mediaType: i.mediaType, data: '' })) }
+            : m)),
         }), 'utf8')
       } catch { /* 状态落盘失败不该让整次运行失败 */ }
     }

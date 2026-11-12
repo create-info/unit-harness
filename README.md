@@ -268,6 +268,24 @@ things that decide whether an agent finishes a real task:
   path handed to the model so it can read the omitted part.
 - **Tool output budget.** 20k chars reach the model, the rest stays on disk.
 - **Compaction** at 70% of the context budget, only when there is still work to do.
+- **Interrupt without losing the run.** Ctrl+C aborts the running command, closes the
+  step cleanly, records `session/interrupted` and writes state — then exits 130. A
+  second Ctrl+C force-quits.
+- **Resume.** `uh run --continue` restores the previous conversation from
+  `state.json` and carries on; with no new instruction it supplies one rather than
+  sending an empty turn.
+- **Images.** `uh run "..." --image shot.png` — sent as a data URL (OpenAI) or a
+  base64 image block (Anthropic). Verified against a local vision model: asked what
+  was in a screenshot of this very UI, it named the session list correctly.
+
+```console
+$ uh run "这张截图里左侧栏列出了什么？" --image shot.png
+左侧栏标题为 **SESSIONS**，列出了两条历史会话记录：…
+```
+
+Base64 never goes to disk: `state.json` keeps the path and the media type, and a
+resume re-reads the file. Otherwise one screenshot would inflate a session by tens
+of megabytes.
 
 ## Remote hosts
 

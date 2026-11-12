@@ -41,4 +41,4 @@ export { snapshotDir, diffSnapshots, collectArtifacts } from './artifact/snapsho
 export type { Artifact } from './artifact/snapshot.ts'
 export { inferAssertions, runAssertion, describeAssertion } from './verify/assertions.ts'
 export type { Assertion, AssertionOutcome } from './verify/assertions.ts'
-export type { Message, ToolCall, ToolSpec, Usage, ProviderConfig, LlmRole } from './llm/types.ts'
+export type { Message, ImageInput, ToolCall, ToolSpec, Usage, ProviderConfig, LlmRole } from './llm/types.ts'

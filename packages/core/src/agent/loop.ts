@@ -13,6 +13,7 @@ import { parsePatch, planPatch } from './tools/apply-patch.ts'
 import { compactMessages, shouldCompact } from './compact.ts'
 import { prepareToolOutput } from './output.ts'
 import type { Skill } from '../skill/registry.ts'
+import type { ImageInput } from '../llm/types.ts'
 
 export interface RunCommandArgs {
   argv: string[]
@@ -189,6 +190,8 @@ export async function runAgent(
     signal?: AbortSignal
     /** 续跑：上次会话的消息（system 会被新提示替换） */
     initialMessages?: Message[]
+    /** 附在第一轮用户消息上的图片 */
+    images?: ImageInput[]
   },
 ): Promise<RunResult> {
   const maxSteps = opts.maxSteps ?? 12
@@ -202,7 +205,13 @@ export async function runAgent(
   // 续跑：保留历史（去掉旧 system，换成当前这次的环境/工具描述），再接新指令
   const carried = (opts.initialMessages ?? []).filter((m) => m.role !== 'system')
   messages.push(...carried)
-  if (opts.task.trim()) messages.push({ role: 'user', content: opts.task })
+  if (opts.task.trim() || opts.images?.length) {
+    messages.push({
+      role: 'user',
+      content: opts.task,
+      ...(opts.images?.length ? { images: opts.images } : {}),
+    })
+  }
 
   const skills = deps.skills ?? []
   const tools: ToolSpec[] = [
