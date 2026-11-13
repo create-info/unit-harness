@@ -10,7 +10,14 @@
  * 而不是继承 harness 的 landlock/seatbelt 报告 —— 否则用户会以为那些调用被隔离了。
  */
 import { spawn } from 'node:child_process'
+import { parseBearerChallenge, ensureToken } from './oauth.ts'
 import type { ChildProcess } from 'node:child_process'
+
+/** 一个头里可能有多条挑战，用逗号分隔；这里拆成多行交给解析器 */
+function splitAuthHeaders(v: string | null): string[] {
+  if (!v) return []
+  return v.split(/,(?=\s*[A-Za-z])/).map((x) => x.trim()).filter(Boolean)
+}
 
 export interface McpServerConfig {
   /** stdio server：要执行的命令 */
@@ -21,6 +28,16 @@ export interface McpServerConfig {
   url?: string
   /** http server 的自定义头（比如 Authorization） */
   headers?: Record<string, string>
+  /**
+   * 允许在 401 时走 OAuth 授权流程。
+   *
+   * 默认关：授权会弹浏览器、要人点一下，一个 agent 不该在跑任务途中
+   * 突然把浏览器抢过去。要用的 server 显式打开。
+   */
+  oauth?: boolean
+  /** 已注册的 client_id；不给就尝试动态注册（RFC 7591） */
+  clientId?: string
+  clientSecret?: string
   /** 启动超时，默认 15s */
   timeoutMs?: number
 }
@@ -74,10 +91,22 @@ export class McpClient {
   private buffer = ''
   private disposed = false
 
+  readonly name: string
+  private readonly cfg: McpServerConfig
+  /** 需要用户去浏览器点一下时怎么告知；没有就只在终端打印地址 */
+  private readonly opts: { onOAuthNeeded?: (message: string, url: string) => void }
+
+  // 写成参数属性（`constructor(readonly name: string)`）会更短，
+  // 但 Node 的 type-stripping 不认这个语法，测试里直接 import .ts 就炸。
   constructor(
-    readonly name: string,
-    private readonly cfg: McpServerConfig,
-  ) {}
+    name: string,
+    cfg: McpServerConfig,
+    opts: { onOAuthNeeded?: (message: string, url: string) => void } = {},
+  ) {
+    this.name = name
+    this.cfg = cfg
+    this.opts = opts
+  }
 
   get isRemote(): boolean {
     return typeof this.cfg.url === 'string'
@@ -192,6 +221,53 @@ export class McpClient {
     }
   }
 
+  /**
+   * 401 之后的一次重试。
+   *
+   * 只在开了 `oauth` 且拿得到 token 时才重试一次——不重试第二次，
+   * 因为第二次 401 通常说明 token 不被接受，再试只是多打两枪。
+   */
+  private async retryWithOAuth(
+    id: number,
+    method: string,
+    params: Record<string, unknown> | undefined,
+    res: { headers: { get(n: string): string | null } },
+    timeoutMs: number,
+  ): Promise<unknown> {
+    const challenge = parseBearerChallenge(
+      splitAuthHeaders(res.headers.get('www-authenticate')),
+    )
+    const token = await ensureToken({
+      serverUrl: this.cfg.url as string,
+      challenge,
+      ...(this.cfg.clientId ? { clientId: this.cfg.clientId } : {}),
+      ...(this.cfg.clientSecret ? { clientSecret: this.cfg.clientSecret } : {}),
+      notify: (message, url) => this.opts?.onOAuthNeeded?.(message, url),
+    })
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      const again = await fetch(this.cfg.url as string, {
+        method: 'POST',
+        headers: { ...this.httpHeaders(), authorization: `${token.tokenType} ${token.accessToken}` },
+        body: JSON.stringify({ jsonrpc: '2.0', id, method, ...(params ? { params } : {}) }),
+        signal: controller.signal,
+      })
+      const text = await again.text()
+      if (!again.ok) {
+        throw new Error(
+          `E_MCP_HTTP ${again.status}（带上了 OAuth token 之后仍然被拒）: ${text.slice(0, 300)}`,
+        )
+      }
+      const parsed = this.parseHttpBody(again.headers.get('content-type') ?? '', text)
+      if (parsed?.error) throw new Error(`E_MCP: ${parsed.error.message}`)
+      return parsed?.result
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   async request(method: string, params?: Record<string, unknown>): Promise<unknown> {
     const id = this.nextId++
     const timeoutMs = this.cfg.timeoutMs ?? 30_000
@@ -207,7 +283,15 @@ export class McpClient {
           signal: controller.signal,
         })
         const text = await res.text()
-        if (!res.ok) throw new Error(`E_MCP_HTTP ${res.status}: ${text.slice(0, 300)}`)
+        if (!res.ok) {
+          // 401 = 这个 server 要授权。开了 oauth 就当场走一遍，
+          // 拿到 token 后重试一次；再失败就把原始状态码如实抛上去
+          if (res.status === 401 && this.cfg.oauth) {
+            const retried = await this.retryWithOAuth(id, method, params, res, timeoutMs)
+            if (retried !== undefined) return retried
+          }
+          throw new Error(`E_MCP_HTTP ${res.status}: ${text.slice(0, 300)}`)
+        }
         const parsed = this.parseHttpBody(res.headers.get('content-type') ?? '', text)
         if (parsed?.error) throw new Error(`E_MCP: ${parsed.error.message}`)
         return parsed?.result

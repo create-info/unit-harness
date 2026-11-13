@@ -83,3 +83,7 @@ export type { BudgetConfig, BudgetState, BudgetVerdict } from './agent/budget.ts
 // 文件监听：工作区变了，界面要知道（照 Codex 的三层结构）
 export { FileWatcher, DebouncedWatchReceiver, WatchManager } from './watch/index.ts'
 export type { WatchPath, WatchEvent, Subscription } from './watch/index.ts'
+
+// MCP 的 OAuth：401 → 发现 → PKCE → 回调 → token（含 mix-up 防御）
+export { parseBearerChallenge, authorize, ensureToken, loadToken, saveToken, forgetToken, isExpired, refreshToken } from './mcp/oauth.ts'
+export type { StoredToken, BearerChallenge, AuthorizationServerMeta } from './mcp/oauth.ts'
