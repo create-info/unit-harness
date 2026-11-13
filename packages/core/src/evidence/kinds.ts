@@ -6,7 +6,8 @@
  */
 
 export const SESSION_KINDS = [
-  'session/start', 'session/resumed', 'session/compacted', 'session/end',
+  'session/start', 'session/resumed', 'session/compacted',
+  'session/end',
   'session/interrupted',
   'checkpoint/created', 'checkpoint/restored', 'checkpoint/file',
   'turn/start', 'turn/end', 'step/start', 'step/end',

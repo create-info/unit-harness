@@ -1,5 +1,8 @@
 import esbuild from 'esbuild'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, unlinkSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 
@@ -10,6 +13,25 @@ const embedHelper =
   process.platform === 'linux' && existsSync(helperPath)
     ? readFileSync(helperPath).toString('base64')
     : ''
+
+// ui.html 的内联脚本没有任何工具会去查语法，缺一个括号就整个界面白屏，
+// 而且页面照样 200。构建时先用 node 解析一遍，坏在构建阶段而不是用户屏幕上。
+{
+  const ui = readFileSync('packages/cli/src/ui.html', 'utf8')
+  const m = /<script>([\s\S]*)<\/script>/.exec(ui)
+  if (m) {
+    const tmp = join(tmpdir(), `uh-ui-check-${process.pid}.mjs`)
+    writeFileSync(tmp, m[1])
+    try {
+      execFileSync(process.execPath, ['--check', tmp], { stdio: 'pipe' })
+    } catch (err) {
+      console.error('ui.html has a syntax error:\n' + String(err.stderr ?? err))
+      process.exit(1)
+    } finally {
+      try { unlinkSync(tmp) } catch { /* ignore */ }
+    }
+  }
+}
 
 await esbuild.build({
   entryPoints: ['packages/cli/src/main.ts'],

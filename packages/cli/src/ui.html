@@ -86,6 +86,18 @@
   .account .who i{font-style:normal;font-size:10px;color:var(--dim)}
   .account .mem{font-size:9.5px;border:1px solid #54431f;color:var(--warn);border-radius:999px;padding:1px 6px}
   .account .mem.free{border-color:var(--line);color:var(--dim)}
+  .run{border:1px solid var(--line);border-radius:9px;margin:8px 0;background:#11161d;overflow:hidden}
+  .rhead{display:flex;align-items:center;gap:9px;padding:7px 11px;cursor:pointer;font-size:11.5px;color:var(--dim);user-select:none}
+  .rhead:hover{color:var(--fg)}
+  .rhead .car{font-size:9px;color:#4d5769;width:10px}
+  .rhead .ttl{color:#8b95a6}
+  .rhead .sum{margin-left:auto;display:flex;gap:7px;font-family:var(--mono);font-size:10.5px}
+  .rhead .sum .add{color:var(--good)}
+  .rhead .sum .del{color:var(--bad)}
+  .rbody{padding:0 0 4px}
+  .run.fold .rbody{display:none}
+  .run.fold .car{transform:rotate(-90deg)}
+  .rbody .row{padding-left:10px}
   .think{border-left:2px solid #2f3a4a;padding:2px 0 2px 10px;margin:6px 0;color:#7d8798;font-size:11.5px;white-space:pre-wrap;line-height:1.6;max-height:260px;overflow:auto}
   .think .hd{display:flex;align-items:center;gap:6px;color:#5f6a7c;font-size:11px;cursor:pointer;user-select:none;margin-bottom:3px}
   .think.fold .bd{display:none}
@@ -590,6 +602,7 @@ $('#newChat').addEventListener('click', () => {
   delivEl.innerHTML = '';
   $('#sid').textContent = 'no session';
   started = Date.now();
+  runGrp = null;
   setRunning(false);
   $('#task').value = '';
   $('#task').focus();
@@ -1059,6 +1072,55 @@ $('#lgGo').addEventListener('click', async () => {
  * 切成上百个段落。step/start 和工具调用是新阶段的边界，此时收口。
  */
 let sayEl = null, thinkEl = null, sawText = false;
+/** 当前的过程分组：连续的思考和工具调用收在一张卡里，别让它们刷满整屏 */
+let runGrp = null;
+
+function openRun(){
+  if (runGrp) return runGrp;
+  const el = document.createElement('div');
+  el.className = 'run';
+  const head = document.createElement('div');
+  head.className = 'rhead';
+  head.innerHTML = '<span class="car">▾</span><span class="ttl">working…</span><span class="sum"></span>';
+  head.onclick = () => el.classList.toggle('fold');
+  const body = document.createElement('div');
+  body.className = 'rbody';
+  el.appendChild(head);
+  el.appendChild(body);
+  logEl.appendChild(el);
+  runGrp = { el, body, steps: 0, files: new Map() };
+  return runGrp;
+}
+
+function updateRunHead(){
+  if (!runGrp) return;
+  const { el, steps, files } = runGrp;
+  let added = 0, removed = 0;
+  for (const f of files.values()){ added += f.added; removed += f.removed; }
+  el.querySelector('.ttl').textContent =
+    (steps ? steps + (steps === 1 ? ' step' : ' steps') : 'working…')
+    + (files.size ? ' · ' + files.size + (files.size === 1 ? ' file' : ' files') : '');
+  el.querySelector('.sum').innerHTML = files.size
+    ? '<span class="add">+' + added + '</span><span class="del">−' + removed + '</span>'
+    : '';
+}
+
+/** 工具调用、文件卡片这些过程行进组；问答和结论留在组外 */
+function procRow(cls, text){
+  const g = openRun();
+  const el = row(cls, text);
+  el.remove();
+  g.body.appendChild(el);
+  logEl.scrollTop = logEl.scrollHeight;
+  return el;
+}
+
+function closeRun(){
+  if (!runGrp) return;
+  updateRunHead();
+  runGrp.el.classList.add('fold');
+  runGrp = null;
+}
 
 function closeStreams(){
   if (sayEl){ sayEl.classList.remove('typing'); sayEl = null; }
@@ -1102,7 +1164,10 @@ function fileCard(p, seq){
   el.innerHTML = '<span>✎</span><span class="fn">' + esc(p.path) + '</span>'
     + '<span class="st">' + size + ' B</span><span class="st">diff ▾</span>';
   el.onclick = () => toggleDiff(el, p.path, seq);
-  logEl.appendChild(el);
+  const g = openRun();
+  g.files.set(p.path, { added: p.added || 0, removed: p.removed || 0 });
+  g.body.appendChild(el);
+  updateRunHead();
 }
 
 async function toggleDiff(card, path, seq){
@@ -1210,42 +1275,62 @@ function setupMic(){
 
 function setRunning(on){
   RUNNING = on;
-  $('#go').style.display = on ? 'none' : '';
+  // 跑着的时候输入框不能锁：人看到它走偏了，得能立刻说一句
+  $('#go').textContent = on ? 'Steer' : 'Run';
+  $('#go').style.display = '';
   $('#stopBtn').style.display = on ? '' : 'none';
-  $('#task').disabled = on;
+  $('#task').disabled = false;
+  $('#task').placeholder = on
+    ? 'Add a note mid-run — it lands at the next step'
+    : 'Describe the task. It runs in a sandbox; every write is logged and undoable.';
 }
 
 function render(kind, p){
   if (p && typeof p._ts === 'number'){ lastTs = p._ts; if (!firstTs) firstTs = p._ts; }
   switch(kind){
     case 'turn/start':
-      sawText = false; row('step','turn start'); break;
-    case 'step/start': row('step','── step ' + p.step_index); break;
-    case 'llm/request': row('dim','→ ' + (p.provider||'') + ' ' + (p.model||'')); break;
-    case 'llm/response': row('dim','← ' + p.tool_calls + ' tool call(s), ' + ((p.usage&&p.usage.total_tokens)||0) + ' tokens'); break;
+      sawText = false;
+      closeRun();
+      openRun();
+      row('step','turn start');
+      break;
+    case 'llm/request': procRow('dim','→ ' + (p.provider||'') + ' ' + (p.model||'')); break;
+    case 'llm/response': procRow('dim','← ' + p.tool_calls + ' tool call(s), ' + ((p.usage&&p.usage.total_tokens)||0) + ' tokens'); break;
     case 'tool/call': {
       const d = p.argv ? p.argv.join(' ') : (p.args_preview || JSON.stringify(p.args||{}));
-      row('tool','⚙ ' + p.tool + ': ' + esc(String(d).slice(0,160)));
+      procRow('tool','⚙ ' + p.tool + ': ' + esc(String(d).slice(0,160)));
       break;
     }
     case 'tool/result':
-      row(p.status === 'ok' ? 'ok' : 'bad', (p.status === 'ok' ? '✓' : '✗') + ' ' + (p.exit_code !== undefined ? 'exit=' + p.exit_code : p.status));
+      procRow(p.status === 'ok' ? 'ok' : 'bad', (p.status === 'ok' ? '✓' : '✗') + ' ' + (p.exit_code !== undefined ? 'exit=' + p.exit_code : p.status));
+      break;
+    case 'steering/message':
+      row(p.status === 'applied' ? 'ok' : 'warn',
+        (p.status === 'applied' ? '↳ took it: ' : '↳ queued: ') + esc(p.text || ''));
       break;
     case 'plan/updated': {
-      row('dim','plan:');
-      for (const s of p.steps || []) row('dim','  ' + (s.status==='completed'?'✓':s.status==='in_progress'?'▸':' ') + ' ' + esc(s.step));
+      procRow('dim','plan:');
+      for (const st of p.steps || []) procRow('dim','  ' + (st.status==='completed'?'✓':st.status==='in_progress'?'▸':' ') + ' ' + esc(st.step));
       break;
     }
     case 'text/delta': pushSay(p.text || ''); break;
     case 'reasoning/delta': pushThink(p.text || ''); break;
-    case 'step/start': closeStreams(); break;
+    case 'step/start':
+      closeStreams();
+      openRun().steps = (p.step_index || ((runGrp && runGrp.steps) || 0) + 1);
+      updateRunHead();
+      break;
     case 'checkpoint/file': closeStreams(); fileCard(p, p.seq || 0); break;
     case 'approval/needs': void askApproval(p); break;
     case 'approval/requested': row('warn','⚠ approval needed: ' + esc(p.reason || '')); break;
     case 'approval/resolved': row(p.approved ? 'ok' : 'bad', (p.approved ? '✓ approved' : '✗ refused') + (p.auto ? ' (policy)' : '')); break;
     case 'session/compacted': row('warn','⟳ compacted: dropped ' + p.dropped_messages + ' msg(s), summary ~' + p.summary_chars + ' chars'); break;
     case 'artifact/emitted': row('ok','◆ artifact ' + esc(p.path) + '  ' + p.bytes + ' B'); break;
-    case 'turn/end': row('step','turn end (' + p.stop_reason + ', ' + p.steps + ' steps)'); break;
+    case 'turn/end':
+      closeStreams();
+      closeRun();
+      row('step','turn end (' + p.stop_reason + ', ' + p.steps + ' steps)');
+      break;
     // 已经流式显示过就不再贴一遍：同一段回答出现两次，看起来像模型说了两遍
     case 'answer':
       if (!sawText) row('answer','<div class="answer">' + esc(p.text || '(no text)') + '</div>');
@@ -1291,7 +1376,7 @@ function attach(id){
   CURRENT_SID = id;
   es = new EventSource('/api/stream?session=' + encodeURIComponent(id));
   for (const kind of ['turn/start','step/start','llm/request','llm/response','tool/call','tool/result','plan/updated',
-                      'text/delta','reasoning/delta','checkpoint/file','approval/needs','approval/requested','approval/resolved','session/compacted','artifact/emitted',
+                      'steering/message','text/delta','reasoning/delta','checkpoint/file','approval/needs','approval/requested','approval/resolved','session/compacted','artifact/emitted',
                       'turn/end','answer','deliverables','done','error']){
     es.addEventListener(kind, (e) => render(kind, JSON.parse(e.data)));
   }
@@ -1320,6 +1405,21 @@ $('#run').addEventListener('submit', async (e) => {
     $('#dMsg').textContent = 'pick a provider and paste a key first';
     return;
   }
+  // 正在跑：这句话是插进去，不是另起一次
+  if (RUNNING && CURRENT_SID){
+    $('#go').disabled = true;
+    try {
+      const r = await fetch('/api/steer', {
+        method: 'POST', headers: {'content-type':'application/json'},
+        body: JSON.stringify({ sessionId: CURRENT_SID, text: task }),
+      });
+      const j = await r.json();
+      if (j.error){ row('bad', 'ERROR: ' + j.error); return }
+      $('#task').value = '';  // 服务端会广播 queued，这里不用自己再写一遍
+    } finally { $('#go').disabled = false }
+    return;
+  }
+
   setRunning(true);
   try {
     const r = await fetch('/api/run', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ task }) });

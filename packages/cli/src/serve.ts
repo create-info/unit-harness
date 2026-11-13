@@ -666,6 +666,23 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     }
 
     // 停止：跑飞了要能按停，而不是等它把步数烧完
+    // 运行中追加指令：不新建 run，插到正在跑的那一次里
+    if (req.method === 'POST' && url.pathname === '/api/steer') {
+      let body: { sessionId?: string; text?: string } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const sid = (body.sessionId ?? '').trim()
+      const text = (body.text ?? '').trim()
+      if (!text) { json(res, 400, { error: 'nothing to add' }); return }
+      const h = running.get(sid)
+      if (!h) {
+        json(res, 404, { error: 'that run already finished — send it as a new task instead' })
+        return
+      }
+      h.steer(text)
+      json(res, 200, { ok: true, queued: true })
+      return
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/stop') {
       let body: { sessionId?: string } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
