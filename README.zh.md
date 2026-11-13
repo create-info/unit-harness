@@ -36,6 +36,16 @@ curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/main/insta
 irm https://raw.githubusercontent.com/create-info/unit-harness/main/install.ps1 | iex
 ```
 
+**别在 Releases 页面手点 `.dmg` 或二进制。** 浏览器会给每个下载文件打上 quarantine
+标记，macOS 于是拒绝运行没有公证的二进制——`.app` 报「已损坏，无法打开」，CLI 报
+「Apple 无法验证…」，**两句都不代表文件有问题**。上面两条命令用 `curl` 取，不带这个
+标记，二进制可以直接跑。已经手点下载过的：
+
+```bash
+xattr -d com.apple.quarantine ~/Downloads/uh-darwin-arm64   # CLI
+xattr -cr /Applications/UnitHarness.app                     # 桌面端
+```
+
 Linux 的二进制里**内嵌了 landlock helper**，首次运行时自动释放到 `~/.uh/bin/`，
 不需要再装任何东西。走源码也行：
 
