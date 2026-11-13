@@ -15,7 +15,7 @@ import {
   loadMcpServers, upsertMcpServer, removeMcpServer, McpRegistry,
   listRecipes, loadRecipe, resolveVars, renderTemplate, runRecipeChecks,
   loadHosts, upsertHost, removeHost, runRemote, classify, describeRisk,
-  latestResumable,
+  latestResumable, Checkpoints, checkpointDirFor, uhHome,
 } from '@unit-harness/core'
 import type { Message, ImageInput, ApprovalRequest } from '@unit-harness/core'
 import { readFileSync } from 'node:fs'
@@ -690,6 +690,48 @@ function loadImages(): ImageInput[] {
   return out
 }
 
+/** `uh checkpoints` —— 列工作区的历史点 */
+function cmdCheckpoints(): void {
+  const h = new Harness({ pluginDirs: [], logLevel: 'error' })
+  const cps = new Checkpoints(h.workspaceDir, checkpointDirFor(uhHome(), h.workspaceDir))
+  if (!cps.available()) fail('git is not installed, so there are no checkpoints')
+  const list = cps.list(20)
+  if (list.length === 0) {
+    console.log(`no checkpoints for ${h.workspaceDir}`)
+    console.log('they are created automatically on every run')
+    return
+  }
+  console.log(`checkpoints for ${h.workspaceDir} (newest first)`)
+  for (const c of list) {
+    const files = c.files === 0 ? 'no file changes' : `${c.files} file(s)`
+    console.log(`  ${c.hash.slice(0, 8)}  ${c.at.replace('T', ' ').slice(0, 19)}  ${files}  ${c.label}`)
+  }
+  console.log('')
+  console.log('undo the last run:  uh undo')
+  console.log('undo 2 runs back:   uh undo 2')
+}
+
+/** `uh undo [n]` —— 回到 n 个点之前 */
+function cmdUndo(raw?: string): void {
+  const n = raw ? Number(raw) : 1
+  if (!Number.isFinite(n) || n < 1) fail('usage: uh undo [n]  (n >= 1)')
+  const h = new Harness({ pluginDirs: [], logLevel: 'error' })
+  const cps = new Checkpoints(h.workspaceDir, checkpointDirFor(uhHome(), h.workspaceDir))
+  if (!cps.available()) fail('git is not installed, so there is nothing to rewind')
+  const before = cps.list(50)
+  if (before.length === 0) fail(`no checkpoints for ${h.workspaceDir}`)
+  if (n > before.length - 1) {
+    fail(`only ${before.length} checkpoint(s) exist; cannot rewind ${n} (the oldest one is the initial state)`)
+  }
+  const result = cps.undo(n)
+  if (!result) fail(`could not rewind ${n}`)
+  console.log(`rewound to ${result!.commit.slice(0, 8)} — ${result!.label}`)
+  console.log(`workspace: ${h.workspaceDir}`)
+  console.log('')
+  console.log('files are back to how they were before that run; anything created since is gone.')
+  console.log('the undone history is still in git (uh checkpoints shows what is left).')
+}
+
 async function cmdRun(task?: string): Promise<void> {
   const cont = argv.includes('--continue')
   let resumeFrom: Message[] | undefined
@@ -996,6 +1038,8 @@ function cmdHelp(): void {
 Usage:
   uh run "<task>"           run a task with the model agent (sandboxed)
   uh host [list|add|test]   manage remote hosts (ssh targets, key paths only)
+  uh checkpoints            list the workspace's restore points (one per run)
+  uh undo [n]               rewind the workspace n runs (default 1)
   uh run --continue [task]  resume the previous session instead of starting over
   uh run "..." --image f    attach an image (png/jpg/webp/gif) to the task
   --yes / --no-ask          approve every dangerous action / refuse them all
@@ -1077,6 +1121,10 @@ async function main(): Promise<void> {
       await cmdMcp(argv[1], argv.slice(2)); return
     case 'exec':
       await cmdExec(argv.slice(1)); return
+    case 'checkpoints':
+      cmdCheckpoints(); return
+    case 'undo':
+      cmdUndo(argv[1]); return
     case 'run':
       await cmdRun(argv.slice(1).filter((a) => !a.startsWith('--') && !isFlagValue(a)).join(' ')); return
     case 'help': case '--help': case '-h':

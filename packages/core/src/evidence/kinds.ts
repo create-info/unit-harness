@@ -8,6 +8,7 @@
 export const SESSION_KINDS = [
   'session/start', 'session/resumed', 'session/compacted', 'session/end',
   'session/interrupted',
+  'checkpoint/created', 'checkpoint/restored',
   'turn/start', 'turn/end', 'step/start', 'step/end',
   'steering/message',
   'assistant/chunk', 'assistant/message',
@@ -32,6 +33,7 @@ const REQUIRED: Partial<Record<SessionKind, string[]>> = {
   'session/start': ['workspace', 'harness_version'],
   'session/end': ['reason'],
   'session/interrupted': ['steps'],
+  'checkpoint/created': ['commit'],
   'tool/call': ['tool'],
   'tool/result': ['tool', 'status', 'isolation'],
   'verification/asserted': ['assertion', 'result'],
