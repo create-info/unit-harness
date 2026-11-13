@@ -119,6 +119,15 @@
   .diffbox .ln.del{background:#1d1113}
   .diffbox .ln.del .c{color:#e2999c}
   .diffbox .ln.hunk .c{color:#6b7688}
+  .qzone{display:none}
+  .qzone.on{display:block}
+  .qstate{font-size:11px;color:#5c6676;padding:0 4px 5px}
+  .qstate .blink{color:#7aa6e8}
+  .qitem{display:flex;align-items:center;gap:8px;background:#1a2029;border:1px solid #2a3240;
+    border-radius:8px;padding:6px 9px;margin-bottom:5px;font-size:11.5px;color:#c7cedb}
+  .qitem .ico{color:#6d7a8f;font-size:11px}
+  .qitem .txt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .qitem .tag{font-size:10px;color:#6d7a8f;border:1px solid #2f3846;border-radius:5px;padding:1px 5px}
   .mic{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:8px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;flex:0 0 36px}
   .mic:hover{border-color:#35507a;color:var(--fg)}
   .mic.rec{border-color:var(--bad);color:var(--bad);animation:pulse 1.2s ease-in-out infinite}
@@ -248,6 +257,10 @@
       <button class="modelbtn" id="modelPick" title="Switch model"><span id="mpName">no model</span><span class="caret">▾</span></button>
       <button class="appr" id="apprBtn" title="How runs are approved"><span id="apprIco">🛡</span><span id="apprName">Request approval</span></button>
       <span class="mbdim" id="mpWork"></span>
+    </div>
+    <div class="qzone" id="qzone">
+      <div class="qstate" id="qstate"></div>
+      <div class="qlist" id="qlist"></div>
     </div>
     <form id="run">
       <button class="mic" id="micBtn" type="button" title="Speak instead of typing">🎤</button>
@@ -1277,6 +1290,43 @@ function setupMic(){
   btn.onclick = () => (on ? stop() : start());
 }
 
+/** 待发队列：说出来但还没轮到它的那些话 */
+function addQueued(text){
+  $('#qzone').classList.add('on');
+  const el = document.createElement('div');
+  el.className = 'qitem';
+  el.dataset.text = text;
+  el.innerHTML = '<span class="ico">⏎</span><span class="txt">' + esc(text) + '</span>'
+    + '<span class="tag">queued</span>';
+  $('#qlist').appendChild(el);
+  paintQueueState();
+}
+
+function dropQueued(text){
+  for (const el of [...document.querySelectorAll('#qlist .qitem')]){
+    if (el.dataset.text === text) el.remove();
+  }
+  paintQueueState();
+}
+
+function clearQueue(){
+  $('#qlist').innerHTML = '';
+  paintQueueState();
+}
+
+function paintQueueState(){
+  const left = document.querySelectorAll('#qlist .qitem').length;
+  const st = $('#qstate');
+  if (RUNNING){
+    st.innerHTML = '<span class="blink">●</span> working'
+      + (left ? ' · ' + left + ' note' + (left === 1 ? '' : 's') + ' will land at the next step' : '');
+  } else {
+    st.textContent = '';
+  }
+  const box = $('#qzone');
+  box.classList.toggle('on', RUNNING || left > 0);
+}
+
 function setRunning(on){
   RUNNING = on;
   // 跑着的时候输入框不能锁：人看到它走偏了，得能立刻说一句
@@ -1287,6 +1337,8 @@ function setRunning(on){
   $('#task').placeholder = on
     ? 'Add a note mid-run — it lands at the next step'
     : 'Describe the task. It runs in a sandbox; every write is logged and undoable.';
+  if (!on) clearQueue();
+  paintQueueState();
 }
 
 function render(kind, p){
@@ -1307,8 +1359,14 @@ function render(kind, p){
       procRow(p.status === 'ok' ? 'ok' : 'bad', (p.status === 'ok' ? '✓' : '✗') + ' ' + (p.exit_code !== undefined ? 'exit=' + p.exit_code : p.status));
       break;
     case 'steering/message':
-      row(p.status === 'applied' ? 'ok' : 'warn',
-        (p.status === 'applied' ? '↳ took it: ' : '↳ queued: ') + esc(p.text || ''));
+      // 排队时只进输入框上方的暂存区，应用了才落到对话里——这样「还没轮到」
+      // 和「已经照做了」在屏幕上是两个地方，不会混在一起
+      if (p.status === 'applied'){
+        dropQueued(p.text || '');
+        row('ok', '↳ took it: ' + esc(p.text || ''));
+      } else {
+        addQueued(p.text || '');
+      }
       break;
     case 'plan/updated': {
       procRow('dim','plan:');
@@ -1339,6 +1397,8 @@ function render(kind, p){
       break;
     case 'deliverables': renderDeliverables(p.items || [], p.verifications || []); break;
     case 'done':
+      // 跑完了左栏那个 running 点要消掉——列表只在启动时拉过一次
+      loadProjects();
       row('dim','— done —');
       setRunning(false);
       break;
@@ -1417,7 +1477,7 @@ $('#run').addEventListener('submit', async (e) => {
       });
       const j = await r.json();
       if (j.error){ row('bad', 'ERROR: ' + j.error); return }
-      $('#task').value = '';  // 服务端会广播 queued，这里不用自己再写一遍
+      $('#task').value = '';  // 服务端会广播 queued，队列区自己会加
     } finally { $('#go').disabled = false }
     return;
   }
