@@ -31,6 +31,13 @@ export interface UhConfig {
   disabledPlugins?: string[]
   /** 钩子：事件名 → 命令 */
   hooks?: Record<string, string>
+  /** 电脑操控：这一层直接操作真实桌面，沙箱管不到，所以开关要显式 */
+  computer?: {
+    enabled?: boolean
+    screenshots?: boolean
+    control?: boolean
+    allowedApps?: string[]
+  }
 }
 
 export interface UiPrefs {

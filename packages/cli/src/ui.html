@@ -690,6 +690,7 @@ for (const it of document.querySelectorAll('.setitem')) {
   it.addEventListener('click', async () => {
     SETPAGE = it.dataset.p;
     if (SETPAGE === 'plugins') await loadPlugins();
+    if (SETPAGE === 'computer') await loadComputer();
     renderSettings();
   });
 }
@@ -826,9 +827,30 @@ function openApprovalMenu(){
  * 「允许读 home」比「allowHome」有用得多，因为前者能让人想到 .ssh。
  */
 let SETPAGE = 'general';
+let COMPUTER = null;       // /api/computer 的快照
 let PLUGINS = null;        // /api/plugins 的快照
 let PTAB = 'all';          // 全部 / MCP / 技能 / 钩子
 let PFIND = '';            // 搜索框内容
+
+async function loadComputer() {
+  try {
+    COMPUTER = await fetch('/api/computer').then((r) => r.json());
+  } catch {
+    COMPUTER = { screenshots: {}, control: {} };
+  }
+  return COMPUTER;
+}
+
+async function saveComputer(patch) {
+  const r = await fetch('/api/computer/toggle', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch),
+  }).then((x) => x.json());
+  if (r.ok) {
+    COMPUTER = r;
+    setMsg('saved');
+    renderSettings();
+  } else setMsg(r.error || 'failed', true);
+}
 
 async function loadPlugins() {
   try {
@@ -870,9 +892,11 @@ function section(title, rows) {
   return sec;
 }
 
-function toggle(on, onChange) {
+function toggle(on, onChange, disabled) {
   const sw = document.createElement('div');
-  sw.className = 'sw' + (on ? ' on' : '');
+  sw.className = 'sw' + (on ? ' on' : '') + (disabled ? ' off' : '');
+  // 不可用时就别装成一个能按的开关：点一下没反应，比一个灰色的开关更让人困惑
+  if (disabled) { sw.title = 'this machine cannot do it'; return sw; }
   sw.onclick = async () => {
     const next = !sw.classList.contains('on');
     sw.classList.toggle('on', next);
@@ -903,6 +927,7 @@ function setMsg(text, bad) {
 async function openSettings(page) {
   SETPAGE = page || SETPAGE;
   if (SETPAGE === 'plugins' && !PLUGINS) await loadPlugins();
+  if (SETPAGE === 'computer' && !COMPUTER) await loadComputer();
   $('#setModal').classList.add('on');
   await loadSettings();
   await loadAccount();
@@ -921,6 +946,72 @@ function renderSettings() {
   body.innerHTML = '';
   const S = SETTINGS || {};
   const SB = S.sandbox || {};
+
+  if (SETPAGE === 'computer') {
+    const C = COMPUTER || {};
+    const shot = C.screenshots || {};
+    const input = C.control || {};
+
+    const badge = (ok, text) => '<span class="cstat ' + (ok ? 'cok' : 'cno') + '">●  ' + esc(text) + '</span>';
+    // 状态牌子是字符串，开关是元素。字符串 + 元素 会变成 "[object HTMLDivElement]"，
+    // 所以必须先在 DOM 里拼，不能靠加号。
+    const cell = (statusHtml, sw) => {
+      const d = document.createElement('span');
+      d.className = 'ctlwrap';
+      d.innerHTML = statusHtml;
+      d.appendChild(sw);
+      return d;
+    };
+
+    const shotOn = C.enabled !== false && C.screenshotsEnabled !== false && shot.available;
+    const inputOn = C.enabled !== false && input.available && C.controlEnabled !== false;
+
+    body.appendChild(section('控制', [
+      srow('屏幕读取',
+        shot.available
+          ? '可以截屏看到屏幕上的内容（' + shot.tool + '）。'
+          : '这台机器上没有可用的截屏工具。',
+        cell(badge(shot.available, shot.available ? '可用' : '不可用'),
+          toggle(shotOn, async (on) => {
+            await saveComputer({ field: 'screenshots', value: on });
+          }, !shot.available))),
+      srow('输入控制',
+        input.available
+          ? '可以移动鼠标、点击和按键（' + input.tool + '）。'
+          : '需要先安装 ' + (input.need || '输入工具') + '，目前只能看不能动。',
+        cell(badge(input.available, input.available ? '可用' : '不可用'),
+          toggle(inputOn, async (on) => {
+            await saveComputer({ field: 'control', value: on });
+          }, !input.available))),
+    ]));
+
+    // 边界说清楚。这一层不进沙箱，用户必须知道自己在放开什么。
+    body.appendChild(el('<div class="cbound">'
+      + '这一层直接操作真实桌面：<b>不受沙箱限制</b>，和 run_command 不是一回事。'
+      + '每次调用都会记进会话日志（<code>isolation: none · external</code>），'
+      + '但日志只保证看得见，不保证拦得住。'
+      + '</div>'));
+
+    const shotBox = el('<div class="cshot"><div class="cshotph">'
+      + (shotOn ? '正在截屏…' : (shot.available ? '截屏已关闭' : '这台机器截不了屏')) + '</div></div>');
+    body.appendChild(shotBox);
+    if (shotOn) {
+      const img = new Image();
+      img.onload = () => { shotBox.innerHTML = ''; shotBox.appendChild(img); };
+      img.onerror = () => {
+        shotBox.innerHTML = '<div class="cshotph">截屏失败：屏幕锁定，或显示服务不允许抓屏。</div>';
+      };
+      // 带时间戳防缓存，否则同一条 URL 永远是启动时那张图
+      img.src = '/api/computer/shot.png?t=' + Date.now();
+    }
+
+    const apps = C.allowedApps || [];
+    body.appendChild(section('始终允许的应用', [
+      srow(apps.length ? apps.join('、') : '暂无',
+        apps.length ? '' : '还没有应用被永久放行。',
+        el('<span></span>')),
+    ]));
+  }
 
   if (SETPAGE === 'plugins') {
     const P = PLUGINS || { mcp: [], skills: [], hooks: [], counts: {} };
