@@ -16,6 +16,44 @@ interface RawResponse {
   error?: { message?: string }
 }
 
+/**
+ * 把 fetch 的失败翻译成能查的话。
+ *
+ * Node 的 fetch 在几乎所有网络层失败上都只抛 TypeError: fetch failed,
+ * 具体原因藏在 err.cause.code 里。不把它带出来，用户看到的就是一句
+ * "fetch failed"——既不知道是服务没开、还是地址错了、还是 key 里有脏字符。
+ *
+ * UND_ERR_INVALID_ARG 特别值得一提：它不是网络问题，是**请求本身非法**。
+ * 最常见的原因是 API key 里混进了换行或 ESC（终端 raw mode 下按方向键就会
+ * 把 ESC 序列插进去）。这种情况重启服务、重试都没用。
+ */
+function explainFetchError(err: unknown, url: string, cfg: { model: string; apiKey?: string }): string {
+  const cause = (err as { cause?: { code?: string; message?: string } }).cause
+  const code = cause?.code ?? cause?.message ?? (err instanceof Error ? err.message : String(err))
+  const host = (() => { try { return new URL(url).host } catch { return url } })()
+
+  if (code === 'UND_ERR_INVALID_ARG') {
+    const dirty = cfg.apiKey
+      ? [...cfg.apiKey].some((c) => c.charCodeAt(0) < 0x21 || c.charCodeAt(0) > 0x7e)
+      : false
+    return dirty
+      ? 'E_LLM_KEY: 这个 provider 的 apiKey 里有控制字符（换行 / ESC 等），请求根本发不出去。' +
+        ' 重新设置一次：uh config set <provider>'
+      : 'E_LLM_REQUEST: 请求参数非法（' + code + '），检查 baseUrl 与 apiKey'
+  }
+  if (code === 'ECONNREFUSED') {
+    return 'E_LLM_CONNECT: ' + host + ' 上没有服务在监听。本地模型要先启动（LM Studio / Ollama），' +
+      '或者 uh provider list 看有哪些可用'
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+    return 'E_LLM_DNS: 解析不了 ' + host + '——检查 baseUrl 的拼写和网络'
+  }
+  if (code === 'ABORT_ERR' || code === 'UND_ERR_ABORTED') {
+    return 'E_LLM_TIMEOUT: 等 ' + host + ' 响应超时（模型可能正在加载，或提示词太长）'
+  }
+  return 'E_LLM_FETCH: 连不上 ' + host + '（' + code + '）'
+}
+
 export interface StreamHandlers {
   /** 文本增量 */
   onText?: (delta: string) => void
@@ -107,6 +145,10 @@ export async function chatComplete(
       finishReason: choice?.finish_reason ?? 'stop',
       model: data.model ?? cfg.model,
     }
+  } catch (err) {
+    // 裸的 fetch failed 什么也说明不了：连不上、DNS、header 非法、超时
+    // 都是这一句。真实原因在 err.cause 里，必须带出来。
+    throw new Error(explainFetchError(err, url, cfg), { cause: err })
   } finally {
     clearTimeout(timer)
   }

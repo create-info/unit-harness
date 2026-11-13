@@ -19,6 +19,7 @@ import {
   readSessionEvents, editsForLastTurn, applyUndo, isRestorable, isTurnUndone, markTurnUndone,
   hydrateEdits,
 } from '@unit-harness/core'
+import { sanitizeSecret } from '@unit-harness/core'
 import type { Message, ImageInput, ApprovalRequest } from '@unit-harness/core'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import * as readline from 'node:readline'
@@ -945,7 +946,8 @@ async function readSecret(prompt: string): Promise<string> {
     // 管道输入：uh config set deepseek < key.txt
     const chunks: Buffer[] = []
     for await (const c of process.stdin) chunks.push(Buffer.from(c))
-    return Buffer.concat(chunks).toString('utf8').trim()
+    // 文件里常见的 \r 和 BOM 都不属于 token；混进去同样会让请求失败
+    return sanitizeSecret(Buffer.concat(chunks).toString('utf8'))
   }
   return await new Promise<string>((resolve) => {
     process.stdout.write(prompt)
@@ -959,13 +961,32 @@ async function readSecret(prompt: string): Promise<string> {
       stdin.pause()
       stdin.removeListener('data', onData)
       process.stdout.write('\n')
-      resolve(v)
+      resolve(sanitizeSecret(v))
     }
+    // raw mode 下方向键会以 ESC 开头的转义序列送进来（按一次「上」是 \x1b[A）。
+    // 不认出来就会把这三个字节存进 key 里，之后每个请求都因为 header 里有控制字符
+    // 而失败，用户看到的只是一句 "fetch failed"——查半天查不到 key 是脏的。
+    let esc = 0   // 0=普通 1=刚见到 ESC 2=在 CSI 序列里
     const onData = (chunk: string) => {
       for (const c of chunk) {
+        if (esc === 1) {
+          if (c === '[' || c === 'O') { esc = 2; continue }
+          // 不是 CSI（比如 Alt+某键），整个丢掉
+          esc = 0
+          continue
+        }
+        if (esc === 2) {
+          // CSI 的终止字节在 0x40–0x7E 之间；参数字节继续吞掉
+          if (c >= '\x40' && c <= '\x7e') esc = 0
+          continue
+        }
+        if (c === '\x1b') { esc = 1; continue }
         if (c === '\r' || c === '\n') return finish(buf)
         if (c === '\u0003') { process.stdout.write('\n'); process.exit(130) }
         if (c === '\u007f' || c === '\b') { buf = buf.slice(0, -1); continue }
+        // 其余控制字符一律忽略：它们不可能属于一个 token，
+        // 留下来只会让后面某次请求以看不懂的方式失败
+        if (c < '\x20' && c !== '\t') continue
         buf += c
       }
     }
