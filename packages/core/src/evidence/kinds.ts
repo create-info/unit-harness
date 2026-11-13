@@ -37,7 +37,8 @@ const REQUIRED: Partial<Record<SessionKind, string[]>> = {
   'session/start': ['workspace', 'harness_version'],
   'session/end': ['reason'],
   'session/interrupted': ['steps'],
-  'checkpoint/created': ['commit'],
+  // 日志式 checkpoint：没有 commit。这里的 label 说明这一批改动是怎么来的
+  'checkpoint/created': ['label', 'files'],
   'checkpoint/file': ['path'],
   'recipe/started': ['name'],
   'recipe/checked': ['name', 'passed', 'failed'],
