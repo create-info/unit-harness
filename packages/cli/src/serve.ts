@@ -471,6 +471,28 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       const task = (body.task ?? '').trim()
       if (!task) { json(res, 400, { error: 'task is empty' }); return }
 
+      // 没有可用的模型就别返回 200：那样前端会以为接下了任务，用户盯着空白的
+      // 日志等一个根本不会开始的 run。
+      //
+      // 注意别用 resolveProvider() 判断——它只回答「该用哪家」，没 key 也照样返回，
+      // 于是这里永远放行。要看的是「这家到底能不能发请求」：本地服务不需要 key，
+      // 云服务没有 key 就发不出去。
+      const cfg0 = readConfig()
+      const pid = cfg0.defaultProvider ?? 'deepseek'
+      const pdef = findProvider(pid)
+      const entry = cfg0.providers[pid]
+      const hasModel = Boolean(entry?.model)
+      const hasKey = Boolean(entry?.apiKey || (pdef?.envKey ? process.env[pdef.envKey] : ''))
+      if (!hasModel || (!hasKey && pdef?.local !== true)) {
+        json(res, 428, {
+          error: !hasModel
+            ? `no model set for ${pdef?.label ?? pid} — pick one in settings`
+            : `${pdef?.label ?? pid} has no API key — paste one in settings`,
+          needsSetup: true,
+        })
+        return
+      }
+
       let sid = ''
       const sidRef = { id: '' }
       const h = new Harness({

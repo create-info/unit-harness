@@ -149,6 +149,8 @@ test('sessions are grouped under their project, which is what the sidebar draws'
   const b = join(home, 'proj-b')
 
   try {
+    // 现在没有可用模型时 /api/run 会直接拒绝（不创建空会话），所以先配一个
+    await post('/api/settings', { provider: 'ollama', model: 'qwen3:8b' })
     await post('/api/project', { path: a })
     const ra = await post('/api/run', { task: 'task in a' })
     await new Promise((r) => setTimeout(r, 400))
