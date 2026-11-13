@@ -189,6 +189,8 @@ export class Harness {
   private readonly toolRegistry = new Map<string, ToolDefinition>()
   private readonly hookRegistry: HookRegistration[] = []
   private readonly services = new Map<string, unknown>()
+  /** 这一轮写过的文件，等轮末封成一条 checkpoint/created */
+  private pendingEdits: string[] = []
   private readonly helper: LandlockHelper | null
   private readonly bwrap: { path: string } | null
   /** 本会话已批准的命令指纹（cwd + argv）。进程退出即失效，不落盘。 */
@@ -264,6 +266,23 @@ export class Harness {
     // 大正文外置：事件行要能一眼看完，日志不该被一个文件原文糊住
     const dir = this.session ? this.store.sessionDir(this.session.id) : null
     this.ev('checkpoint/file', toPayload(edit, dir), 'agent')
+    // 攒着，等这一轮结束时发一条边界事件。
+    // 一堆散落的 checkpoint/file 让人只能靠 turn 号去猜"哪些是同一批"；
+    // 有明确的 created，回滚和审计都有边界可依
+    if (!this.pendingEdits.includes(edit.path)) this.pendingEdits.push(edit.path)
+  }
+
+  /**
+   * 一轮结束时把这一批改动封成一个 checkpoint。
+   *
+   * 没有改动就不发——空跑一轮不该在日志里留一个空 checkpoint，
+   * 那会让 `uh undo` 以为"这一轮改过东西"。
+   */
+  private sealCheckpoint(label: string): void {
+    if (!this.pendingEdits.length) return
+    const files = this.pendingEdits.slice()
+    this.pendingEdits.length = 0
+    this.ev('checkpoint/created', { label, files, file_count: files.length }, 'agent')
   }
 
   /** 审批门：显式 gate 优先，否则按策略挑 */
@@ -1244,6 +1263,11 @@ export class Harness {
           : {}),
       },
     )
+
+    // 封这一轮的 checkpoint。放在这里而不是 recordEdit 里：
+    // 一次改动属于哪一轮由外层决定，编辑器自己不知道 turn 的边界。
+    // 中断和预算停下也要封——已经写下去的文件必须能回滚。
+    this.sealCheckpoint(`turn ${result.steps} steps, ${result.stoppedBy}`)
 
     // 落盘对话状态：这是 --continue 的唯一依据。
     // 只写最后一个会话就够了，但每次覆盖写，保证「最后的状态」永远是最新的。
