@@ -274,6 +274,10 @@ things that decide whether an agent finishes a real task:
 - **Resume.** `uh run --continue` restores the previous conversation from
   `state.json` and carries on; with no new instruction it supplies one rather than
   sending an empty turn.
+- **Real file tools.** `read_file` (numbered lines, offset/limit), `list_dir`, `grep`.
+  Before this the model had to shell out to `cat`: no line numbers to point at, and a
+  big file would flood the context in one go. They run in-process, read-only, and every
+  path goes through the same escape check as `apply_patch`.
 - **Images.** `uh run "..." --image shot.png` — sent as a data URL (OpenAI) or a
   base64 image block (Anthropic). Verified against a local vision model: asked what
   was in a screenshot of this very UI, it named the session list correctly.
