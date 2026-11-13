@@ -826,7 +826,7 @@ function cmdSessions(raw?: string): void {
   for (const m of metas) {
     const dir = store.sessionDir(m.id) ?? ''
     const where = dir.includes(`${sep}archived_sessions${sep}`) ? 'archived' : ''
-    const when = (m.updated_at || m.created_at).replace('T', ' ').slice(0, 19)
+    const when = localTime(m.updated_at || m.created_at)
     console.log(`  ${m.id}  ${when}  ${String(m.last_seq).padStart(4)} events  ${m.status.padEnd(6)} ${where}`)
   }
   console.log('')
