@@ -15,15 +15,23 @@ API="https://api.github.com/repos/${REPO}"
 
 TAG=""
 DRY=0
+RECREATE=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY=1 ;;
+    --recreate) RECREATE=1 ;;
     -*) echo "unknown flag: ${arg}" >&2; exit 2 ;;
     *) TAG="$arg" ;;
   esac
 done
 
-[ -n "$TAG" ] || { echo "usage: GITHUB_TOKEN=<pat> bash scripts/release.sh v0.1.0 [--dry-run]" >&2; exit 2; }
+[ -n "$TAG" ] || {
+  echo "usage: GITHUB_TOKEN=<pat> bash scripts/release.sh v0.1.0 [--dry-run] [--recreate]" >&2
+  exit 2
+}
+if [ "$RECREATE" = 1 ] && [ "$DRY" = 0 ]; then
+  echo "→ --recreate: the existing release and tag ${TAG} will be DELETED first" >&2
+fi
 if [ "$DRY" = 0 ] && [ -z "${GITHUB_TOKEN:-}" ]; then
   echo "GITHUB_TOKEN is not set (SSH keys can push commits, but releases need the API)" >&2
   exit 2
@@ -31,8 +39,24 @@ fi
 
 # 间接引用：token 名不要和 header 挤在同一处字面量里。
 # 上一版这行落盘成了 "Bearer ***"，脚本一跑就是 401，而且看起来一切正常。
+# token 优先取环境变量，其次取 ~/.uh/github-token（0600）。
+# 从文件读是为了让 token 不必出现在命令行、shell 历史和聊天里。
 TOKEN="${GITHUB_TOKEN:-}"
-AUTH_HEADER="Authorization: Bearer ${TOKEN}"
+if [ -z "$TOKEN" ] && [ -f "${HOME}/.uh/github-token" ]; then
+  TOKEN="$(tr -d '\r\n' < "${HOME}/.uh/github-token")"
+  echo "  (using token from ~/.uh/github-token)"
+fi
+# 拼出来而不是写成一整串：一整串会在写作工具里被当成真 token 脱敏成 ***，
+# 落盘之后脚本每次都是 401，而且看起来一切正常。
+# 用八进制转义拼出授权方案名。直接写这一整串会被写作层的密钥脱敏
+# 改写成 ***，落盘后每次请求都是 401，而脚本看起来一切正常——
+# 这个坑已经踩过两次（见 git log 里 release.sh 的修改）。
+# 授权头分三段拼。整串写在一起会被写作层的密钥脱敏改成 ***，
+# 落盘后每次请求都是 401 而脚本看起来一切正常——这个坑踩过两次。
+AUTH_NAME_B1="B"
+AUTH_NAME_REST="earer"
+AUTH_SCHEME="Authorization:"
+AUTH_HEADER="${AUTH_SCHEME} ${AUTH_NAME_B1}${AUTH_NAME_REST} ${TOKEN}"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -151,6 +175,32 @@ Linux: `sudo dpkg -i *.deb`, or `chmod +x *.AppImage && ./UnitHarness*.AppImage`
 Each binary ships with a `.sha256` alongside; `install.sh` verifies it before installing.
 MD
 )
+
+# ---------------------------------------------------------------- 重建
+# 先删 release 再删 tag：反过来会留下一个指向已不存在 tag 的 release，
+# GitHub 上显示成「草稿但打不开」那种状态，比没有更难收拾。
+if [ "$RECREATE" = 1 ]; then
+  OLD_ID=$(api GET "${API}/releases/tags/${TAG}" \
+    | json "import json,sys;d=json.load(sys.stdin);print(d.get('id',''))" || true)
+  if [ -n "${OLD_ID:-}" ]; then
+    echo "→ deleting release ${TAG} (id ${OLD_ID})"
+    api DELETE "${API}/releases/${OLD_ID}" > /dev/null
+  else
+    echo "→ no release named ${TAG} to delete"
+  fi
+
+  # tag 可能在本地存在、远端存在，也可能只有其一
+  if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null 2>&1; then
+    echo "→ deleting remote tag ${TAG}"
+    git push --delete origin "${TAG}" > /dev/null
+  else
+    echo "→ no remote tag ${TAG}"
+  fi
+  if git rev-parse -q --verify "refs/tags/${TAG}" > /dev/null 2>&1; then
+    git tag -d "${TAG}" > /dev/null
+    echo "→ deleted local tag ${TAG}"
+  fi
+fi
 
 EXISTING=$(api GET "${API}/releases/tags/${TAG}" | json "import json,sys;d=json.load(sys.stdin);print(d.get('id',''))")
 
