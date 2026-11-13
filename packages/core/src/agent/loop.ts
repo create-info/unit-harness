@@ -14,6 +14,7 @@ import { compactMessages, shouldCompact } from './compact.ts'
 import { prepareToolOutput } from './output.ts'
 import { sliceLines, formatEntry, formatHits, looksBinary } from './tools/fs.ts'
 import type { ReadResult } from './tools/fs.ts'
+import type { HookEvent, HookOutcome } from '../hook/hooks.ts'
 import type { Skill } from '../skill/registry.ts'
 import type { ImageInput } from '../llm/types.ts'
 
@@ -47,6 +48,8 @@ export interface AgentDeps {
   grep: (rel: string, pattern: string, opts: { glob?: string | undefined; max: number }) => { text: string; count: number } | null
   /** 起一个子 agent 干活，返回它的最终文本（不给就是禁用了子 agent） */
   spawnSubAgent?: (task: string, opts: { maxSteps?: number }) => Promise<string>
+  /** 跑某个挂点的 hook；返回被挡下的那些 */
+  runHooks?: (event: HookEvent, ctx: { tool?: string; command?: string }) => Promise<HookOutcome[]>
   writeFile: (rel: string, content: string) => void
   deleteFile: (rel: string) => void
   ev: (
@@ -341,6 +344,16 @@ export async function runAgent(
       return `ERROR: arguments are not valid JSON: ${call.function.arguments.slice(0, 200)}`
     }
 
+    // ---- pre_tool hooks：挡在真正执行之前 ----
+    if (deps.runHooks) {
+      const cmd = name === 'run_command' && Array.isArray(args.argv) ? (args.argv as string[]).join(' ') : undefined
+      const blocked = await deps.runHooks('pre_tool', { tool: name, ...(cmd === undefined ? {} : { command: cmd }) })
+      if (blocked.length > 0) {
+        finish('error', { error: 'blocked by hook', hook: blocked[0]?.name })
+        return `BLOCKED by hook ${blocked[0]?.name}:\n${blocked.map((b) => b.output.slice(0, 500)).join('\n')}`
+      }
+    }
+
     try {
       if (name === 'run_command') {
         const a = args as unknown as RunCommandArgs
@@ -475,6 +488,24 @@ export async function runAgent(
 
 
     if (res.toolCalls.length === 0) {
+      // ---- pre_finish hooks：把「做完了」这句话打回去重做 ----
+      // 提示词说「验证后再声称完成」，模型可以不理；hook 的退出码不行
+      if (deps.runHooks) {
+        const failed = await deps.runHooks('pre_finish', {})
+        if (failed.length > 0) {
+          deps.ev('step/end', { step_index: steps, status: 'ok', kind: 'hook-rejected' })
+          messages.push({ role: 'assistant', content: res.content })
+          messages.push({
+            role: 'user',
+            content:
+              `Your finish was rejected by a hook:\n\n` +
+              failed.map((f) => `[${f.name}]\n${f.output.slice(0, 1500)}`).join('\n\n') +
+              `\n\nFix the problem, then report again. Do not just restate the summary.`,
+          })
+          continue
+        }
+      }
+
       // 最终回答也要进历史：否则 --continue 拿到的是「用户说了什么、模型没回过话」，
       // 续跑时模型等于失忆；压缩估算也会少算这一段
       messages.push({ role: 'assistant', content: res.content })

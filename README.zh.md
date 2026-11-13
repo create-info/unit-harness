@@ -306,6 +306,25 @@ $ bash scripts/release.sh v0.1.0 --dry-run
 > Web UI（`uh serve`）目前对危险动作是直接拒绝而不是弹窗——审批控件还没接。
 > 这个失败是响的，不是静默的。
 
+## Hooks
+
+工作区里的 `.uh/hooks.json`，改完不用重启：
+
+```json
+{
+  "pre_finish": [{ "run": "npm test" }],
+  "pre_tool":   [{ "tool": "run_command", "match": "deploy", "run": "echo 这里不许部署 >&2; exit 2" }]
+}
+```
+
+- `pre_tool` —— 非 0 退出挡下调用，stderr 回给模型
+- `post_tool` —— 只观察
+- `pre_finish` —— 模型说「做完了」时跑，非 0 **直接驳回这次完成**，把输出当成新指令塞回去，
+  它必须接着改
+
+最后这个是重点。提示词可以写「验证后再声称完成」，模型可以不理；退出码不行。
+每次 hook 执行都记成 `hook/execution`，带决定。
+
 ## 远端主机
 
 ```console
