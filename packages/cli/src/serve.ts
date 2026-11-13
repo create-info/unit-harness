@@ -515,6 +515,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         keyMasked: entry.apiKey ? maskKey(entry.apiKey) : '',
         modelHint: def?.modelHint ?? '',
         protocol: def?.protocol ?? 'openai',
+        ui: cfg.ui ?? {},
         approval: approvalMode(),
         // 三个沙箱开关必须落到 Harness 上，否则设置面板就是个备忘录
         allowHome: sandboxPrefs().allowHome,
@@ -569,6 +570,29 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       writeConfig(cfg)
       json(res, 200, { ok: true, sandbox: sandboxPrefs() })
       return
+    }
+
+    // 外观单独一个口子：它和"用哪个模型"没有关系，混在一起会让保存语义变糊——
+    // 改个背景色不该顺带把 API key 重写一遍。
+    if (url.pathname === '/api/ui') {
+      if (req.method === 'GET') {
+        json(res, 200, { ui: readConfig().ui ?? {} })
+        return
+      }
+      if (req.method === 'POST') {
+        const body = JSON.parse(await readBody(req) || '{}') as Record<string, unknown>
+        const cfg = readConfig()
+        const next: Record<string, unknown> = { ...(cfg.ui ?? {}) }
+        for (const [k, v] of Object.entries(body)) {
+          // null 表示"恢复默认"，删掉这个键，而不是存一个 null
+          if (v === null || v === '') delete next[k]
+          else next[k] = v
+        }
+        cfg.ui = next as typeof cfg.ui
+        writeConfig(cfg)
+        json(res, 200, { ok: true, ui: cfg.ui })
+        return
+      }
     }
 
     if (req.method === 'POST' && url.pathname === '/api/settings') {

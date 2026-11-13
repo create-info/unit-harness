@@ -25,6 +25,20 @@ export interface UhConfig {
   approval?: 'ask' | 'auto' | 'allow'
   /** 沙箱开关。默认全关：默认值要能兜住，不能靠人记得去打开 */
   sandbox?: SandboxPrefs
+  /** 界面外观。默认浅色（白底 #FFFFFF / 正文 #1A1C1F），和桌面端一致 */
+  ui?: UiPrefs
+}
+
+export interface UiPrefs {
+  /** light（默认）/ dark / system */
+  mode?: 'light' | 'dark' | 'system'
+  /** 背景色，不填用主题默认的 #ffffff */
+  bg?: string
+  /** 正文/边框色，不填用 #1a1c1f */
+  fg?: string
+  /** 强调色 */
+  accent?: string
+  font?: 'system' | 'mono'
 }
 
 export interface SandboxPrefs {
@@ -46,13 +60,21 @@ export function readConfig(): UhConfig {
   try {
     const raw = fs.readFileSync(CONFIG_PATH(), 'utf8')
     const parsed = JSON.parse(raw) as Partial<UhConfig>
+    // 先把文件里有的全带上，再补默认值。
+    // 之前是白名单式地一个一个抄字段，于是每加一个设置都要记得改这里，
+    // 忘了就是"存得进去、读不回来"——approval 和 ui 各栽过一次。
     return {
+      ...parsed,
       providers: parsed.providers ?? {},
       ...(parsed.defaultProvider ? { defaultProvider: parsed.defaultProvider } : {}),
       // 不带上这个字段，写进去的档位下次读就没了：writeConfig(approval:'allow')
       // 之后 readConfig().approval === undefined，于是静默退回 'ask'
       ...(parsed.approval ? { approval: parsed.approval } : {}),
       ...(parsed.sandbox && typeof parsed.sandbox === 'object' ? { sandbox: parsed.sandbox } : {}),
+      // 同一个坑踩过第二次：这里不显式带上的字段，写进文件的下一秒就被读没了。
+      // 与其每加一个设置就记得改这行，不如把"未知字段"原样留着——
+      // 老版本读新文件时不该把它不认识的东西删掉。
+      ...(parsed.ui && typeof parsed.ui === 'object' ? { ui: parsed.ui } : {}),
     }
   } catch {
     return { providers: {} }
