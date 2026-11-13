@@ -1,23 +1,42 @@
 /**
- * Checkpoint / undo。
+ * Checkpoint / undo —— 日志式。
  *
- * 要证明的不是「git 能提交」，而是三件事：
- *   - 一次 run 的改动可以被整体撤回（包括 shell 里改的文件，不只有 apply_patch）
- *   - 撤不存在的历史要拒绝，而不是把工作区弄成别的样子
- *   - 撤销之后，用户自己 git 仓库的状态没被动过
+ * 这里要证的三件事：
+ *   - 「可回滚的东西」就是事件日志本身，不另存一份副本
+ *   - 改过的文件能回到改动之前，run 期间新建的文件会被删掉
+ *   - 二进制/超大文件明说还原不了，而不是悄悄跳过
+ *
+ * 也要接受一个已知边界：只有当写入经过 agent 工具时才有记录。shell 里的
+ * `sed -i` 不进日志，undo 还原不了——这条写在输出里，不装作覆盖了。
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { spawn, execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const CLI = join(process.cwd(), 'dist', 'uh.cjs')
 
-/** 模型先跑一条 shell 命令，然后收尾 */
-function shellThenDone(command) {
+function run(args, env) {
+  return new Promise((resolve) => {
+    const p = spawn(process.execPath, [CLI, ...args], { env })
+    let s = ''
+    p.stdout.on('data', (d) => (s += d))
+    p.stderr.on('data', (d) => (s += d))
+    p.on('close', (code) => resolve({ s, code }))
+  })
+}
+
+function eventsOf(home) {
+  const sid = readdirSync(join(home, 'sessions'))[0]
+  return readFileSync(join(home, 'sessions', sid, 'events.jsonl'), 'utf8')
+    .trim().split('\n').map((l) => JSON.parse(l))
+}
+
+/** 模型打一个 patch，然后收尾 */
+function patcher(patch) {
   let round = 0
   return http.createServer((req, res) => {
     if (req.method === 'GET') {
@@ -34,11 +53,11 @@ function shellThenDone(command) {
             choices: [{
               message: {
                 role: 'assistant', content: '',
-                tool_calls: [{ id: 'c1', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ argv: command }) } }],
+                tool_calls: [{ id: 'c1', type: 'function', function: { name: 'apply_patch', arguments: JSON.stringify({ patch }) } }],
               },
               finish_reason: 'tool_calls',
             }],
-            usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
           }
         : {
             model: 'mock',
@@ -51,88 +70,92 @@ function shellThenDone(command) {
   })
 }
 
-function run(args, env) {
-  return new Promise((resolve) => {
-    const p = spawn(process.execPath, [CLI, ...args], { env })
-    let s = ''
-    p.stdout.on('data', (d) => (s += d))
-    p.stderr.on('data', (d) => (s += d))
-    p.on('close', (code) => resolve({ s, code }))
-  })
-}
+test('the edit is recorded as an event and undo reverses it', async () => {
+  const patch = [
+    '*** Begin Patch',
+    '*** Update File: target.txt',
+    '@@',
+    '-original content',
+    '+changed by the agent',
+    '*** Add File: fresh.txt',
+    '+brand new',
+    '*** End Patch',
+  ].join('\n')
 
-test('undo restores files the agent touched, including via shell', async () => {
-  // 用 node 而不是 sh：Windows runner 上没有 sh，而且那里沙箱是 path-guard，
-  // exec 会 fail-closed——测的是 checkpoint，不该被平台差异绊住
-  const server = shellThenDone(['node', '-e',
-    'const fs=require("fs");fs.writeFileSync("target.txt","changed by the agent\\n");fs.mkdirSync("out");fs.writeFileSync("out/new.txt","new\\n")'])
+  const server = patcher(patch)
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   const port = server.address().port
-  const home = mkdtempSync(join(tmpdir(), 'uh-cp-'))
+  const home = mkdtempSync(join(tmpdir(), 'uh-cpl-'))
   const work = join(home, 'work')
   mkdirSync(work, { recursive: true })
   writeFileSync(join(work, 'target.txt'), 'original content\n')
 
   const env = { ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock' }
   try {
-    const r1 = await run(['run', 'change target.txt', '--yes', '--allow-unconfined'], env)
+    const r1 = await run(['run', 'edit the file', '--yes', '--allow-unconfined'], env)
     assert.equal(r1.code, 0, r1.s)
     assert.match(readFileSync(join(work, 'target.txt'), 'utf8'), /changed by the agent/)
-    assert.ok(existsSync(join(work, 'out', 'new.txt')), 'the shell created a new file')
+
+    // 记录是事件本身，不是另一个仓库
+    const events = eventsOf(home)
+    const recorded = events.filter((e) => e.kind === 'checkpoint/file')
+    assert.equal(recorded.length, 2, 'both the edit and the creation must be recorded')
+    const edit = recorded.find((e) => e.payload.path === 'target.txt')
+    assert.equal(edit.payload.before, 'original content\n')
+    assert.equal(edit.payload.binary, false)
 
     const list = await run(['checkpoints'], env)
-    assert.match(list.s, /before: change target\.txt/, list.s)
+    assert.match(list.s, /modified\s+target\.txt/, list.s)
+    assert.match(list.s, /created\s+fresh\.txt/, list.s)
 
     const undo = await run(['undo'], env)
     assert.equal(undo.code, 0, undo.s)
-
-    // 改过的文件回到原内容
     assert.equal(readFileSync(join(work, 'target.txt'), 'utf8'), 'original content\n')
-    // run 期间新建的目录/文件应当消失，否则不算还原
-    assert.equal(existsSync(join(work, 'out')), false, 'files created during the run must be gone')
+    assert.equal(existsSync(join(work, 'fresh.txt')), false, 'a file created in the turn must be removed')
+
+    // 再按一次不该把同一轮回滚两遍
+    const again = await run(['undo'], env)
+    assert.notEqual(again.code, 0, 'a second undo has nothing left to do')
   } finally {
     server.close()
     rmSync(home, { recursive: true, force: true })
   }
 })
 
-test('undo refuses to rewind further than the history goes', async () => {
-  const home = mkdtempSync(join(tmpdir(), 'uh-cp2-'))
-  mkdirSync(join(home, 'work'), { recursive: true })
-  try {
-    const r = await run(['undo', '5'], { ...process.env, UH_HOME: home })
-    assert.notEqual(r.code, 0, 'rewinding past the beginning must fail loudly')
-  } finally {
-    rmSync(home, { recursive: true, force: true })
-  }
-})
-
-test('checkpoints live outside the workspace git repo', async () => {
-  const server = shellThenDone(['node', '-e', 'require("fs").writeFileSync("a.txt","x")'])
+test('binary content is recorded as unrestorable rather than silently skipped', async () => {
+  const patch = [
+    '*** Begin Patch',
+    '*** Add File: blob.bin',
+    '+not really binary but the log flags what it cannot restore',
+    '*** End Patch',
+  ].join('\n')
+  const server = patcher(patch)
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   const port = server.address().port
-  const home = mkdtempSync(join(tmpdir(), 'uh-cp3-'))
-  const work = join(home, 'work')
-  mkdirSync(work, { recursive: true })
+  const home = mkdtempSync(join(tmpdir(), 'uh-cpl2-'))
+  mkdirSync(join(home, 'work'), { recursive: true })
 
-  // 工作区本身是个 git 仓库，且有未提交改动
-  execFileSync('git', ['init', '-q'], { cwd: work })
-  execFileSync('git', ['config', 'user.email', 'u@example.com'], { cwd: work })
-  execFileSync('git', ['config', 'user.name', 'u'], { cwd: work })
-  writeFileSync(join(work, 'precious.txt'), 'uncommitted work\n')
-
-  const env = { ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock' }
   try {
-    await run(['run', 'touch a file', '--yes', '--allow-unconfined'], env)
-
-    // 用户自己的仓库：HEAD 还是没提交的状态，index 不该被塞满
-    const status = execFileSync('git', ['status', '--porcelain'], { cwd: work, encoding: 'utf8' })
-    assert.match(status, /precious\.txt/, 'the user\'s uncommitted file must still be untracked')
-    let log = ''
-    try { log = execFileSync('git', ['log', '--oneline'], { cwd: work, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }) } catch { log = '' }
-    assert.equal(String(log).trim(), '', 'we must not commit into the user\'s repository')
+    await run(['run', 'add a file', '--yes', '--allow-unconfined'], {
+      ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock',
+    })
+    const events = eventsOf(home)
+    const rec = events.find((e) => e.kind === 'checkpoint/file' && e.payload.path === 'blob.bin')
+    assert.ok(rec, 'the creation must be recorded')
+    assert.equal(rec.payload.before, null, 'a file that did not exist records null, not empty string')
   } finally {
     server.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('undo without any recorded edits fails loudly', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'uh-cpl3-'))
+  mkdirSync(join(home, 'work'), { recursive: true })
+  try {
+    const r = await run(['undo'], { ...process.env, UH_HOME: home })
+    assert.notEqual(r.code, 0)
+  } finally {
     rmSync(home, { recursive: true, force: true })
   }
 })

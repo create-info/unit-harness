@@ -15,10 +15,11 @@ import {
   loadMcpServers, upsertMcpServer, removeMcpServer, McpRegistry,
   listRecipes, loadRecipe, resolveVars, renderTemplate, runRecipeChecks,
   loadHosts, upsertHost, removeHost, runRemote, classify, describeRisk,
-  latestResumable, Checkpoints, checkpointDirFor, uhHome,
+  latestResumable, uhHome, sessionsDir,
+  readSessionEvents, editsForLastTurn, applyUndo, isRestorable, isTurnUndone, markTurnUndone,
 } from '@unit-harness/core'
 import type { Message, ImageInput, ApprovalRequest } from '@unit-harness/core'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import * as readline from 'node:readline'
 
 import { VERSION } from './version.ts'
@@ -690,46 +691,73 @@ function loadImages(): ImageInput[] {
   return out
 }
 
-/** `uh checkpoints` —— 列工作区的历史点 */
-function cmdCheckpoints(): void {
-  const h = new Harness({ pluginDirs: [], logLevel: 'error' })
-  const cps = new Checkpoints(h.workspaceDir, checkpointDirFor(uhHome(), h.workspaceDir))
-  if (!cps.available()) fail('git is not installed, so there are no checkpoints')
-  const list = cps.list(20)
-  if (list.length === 0) {
-    console.log(`no checkpoints for ${h.workspaceDir}`)
-    console.log('they are created automatically on every run')
-    return
-  }
-  console.log(`checkpoints for ${h.workspaceDir} (newest first)`)
-  for (const c of list) {
-    const files = c.files === 0 ? 'no file changes' : `${c.files} file(s)`
-    console.log(`  ${c.hash.slice(0, 8)}  ${c.at.replace('T', ' ').slice(0, 19)}  ${files}  ${c.label}`)
-  }
-  console.log('')
-  console.log('undo the last run:  uh undo')
-  console.log('undo 2 runs back:   uh undo 2')
+/** 最近动过的那个 session（undo / checkpoints 都看它） */
+function latestSessionDir(): { id: string; dir: string } | null {
+  try {
+    const root = sessionsDir()
+    const names = readdirSync(root).filter((n) => statSync(join(root, n)).isDirectory())
+    names.sort((a, b) => statSync(join(root, b)).mtimeMs - statSync(join(root, a)).mtimeMs)
+    const id = names[0]
+    return id ? { id, dir: join(root, id) } : null
+  } catch { return null }
 }
 
-/** `uh undo [n]` —— 回到 n 个点之前 */
-function cmdUndo(raw?: string): void {
-  const n = raw ? Number(raw) : 1
-  if (!Number.isFinite(n) || n < 1) fail('usage: uh undo [n]  (n >= 1)')
-  const h = new Harness({ pluginDirs: [], logLevel: 'error' })
-  const cps = new Checkpoints(h.workspaceDir, checkpointDirFor(uhHome(), h.workspaceDir))
-  if (!cps.available()) fail('git is not installed, so there is nothing to rewind')
-  const before = cps.list(50)
-  if (before.length === 0) fail(`no checkpoints for ${h.workspaceDir}`)
-  if (n > before.length - 1) {
-    fail(`only ${before.length} checkpoint(s) exist; cannot rewind ${n} (the oldest one is the initial state)`)
+/** `uh checkpoints` —— 列出最近一轮改了什么（它就是日志，不是另存的一份东西） */
+function cmdCheckpoints(): void {
+  const session = latestSessionDir()
+  if (!session) { console.log('no sessions yet'); return }
+  const events = readSessionEvents(session.dir)
+  const { turn, edits } = editsForLastTurn(events)
+
+  if (edits.length === 0) {
+    console.log(`last turn in ${session.id} did not change any files`)
+    return
   }
-  const result = cps.undo(n)
-  if (!result) fail(`could not rewind ${n}`)
-  console.log(`rewound to ${result!.commit.slice(0, 8)} — ${result!.label}`)
-  console.log(`workspace: ${h.workspaceDir}`)
+  if (isTurnUndone(session.dir, turn)) {
+    console.log(`turn ${turn} of ${session.id} has already been undone`)
+    return
+  }
+  console.log(`last turn in ${session.id} — ${edits.length} file(s), recorded as events:`)
+  for (const e of edits) {
+    const verb = e.before === null ? 'created' : e.after === null ? 'deleted' : 'modified'
+    const size = e.after !== null ? Buffer.byteLength(e.after, 'utf8') : 0
+    const note = isRestorable(e) ? '' : e.binary ? '  [binary — undo will skip]' : '  [too large — undo will skip]'
+    console.log(`  ${verb.padEnd(8)} ${e.path}  (${size} B)${note}`)
+  }
   console.log('')
-  console.log('files are back to how they were before that run; anything created since is gone.')
-  console.log('the undone history is still in git (uh checkpoints shows what is left).')
+  console.log('undo this turn:  uh undo')
+}
+
+/** `uh undo` —— 照日志反着走一遍 */
+function cmdUndo(_raw?: string): void {
+  const session = latestSessionDir()
+  if (!session) fail('no sessions yet — nothing to undo')
+  const events = readSessionEvents(session.dir)
+  const { turn, edits } = editsForLastTurn(events)
+  if (edits.length === 0) fail(`the last turn in ${session.id} did not change any files`)
+  if (isTurnUndone(session.dir, turn)) fail(`turn ${turn} of ${session.id} has already been undone`)
+
+  const h = new Harness({ pluginDirs: [], logLevel: 'error' })
+  const result = applyUndo(h.workspaceDir, edits)
+  // 事件日志是 append-only，撤销状态单独记
+  markTurnUndone(session.dir, turn)
+
+  for (const p of result.restored) console.log(`  restored  ${p}`)
+  for (const p of result.removed) console.log(`  removed   ${p}`)
+  for (const s of result.skipped) console.log(`  skipped   ${s.path} — ${s.why}`)
+
+  if (result.restored.length + result.removed.length === 0 && result.skipped.length > 0) {
+    console.log('')
+    console.log('nothing could be restored.')
+  } else {
+    console.log('')
+    console.log(
+      `${result.restored.length} restored, ${result.removed.length} removed` +
+      (result.skipped.length ? `, ${result.skipped.length} skipped` : '') +
+      ` — workspace: ${h.workspaceDir}`,
+    )
+    console.log('only writes made through the agent are recorded; edits from a shell command are not in the log.')
+  }
 }
 
 async function cmdRun(task?: string): Promise<void> {

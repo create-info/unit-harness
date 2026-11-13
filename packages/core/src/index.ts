@@ -16,8 +16,11 @@ export type { UhConfig } from './llm/config.ts'
 export { LlmGateway } from './llm/gateway.ts'
 export { runAgent } from './agent/loop.ts'
 export { needsApproval, denyAll, allowAll } from './approval/gate.ts'
-export { Checkpoints, checkpointDirFor } from './checkpoint/store.ts'
-export type { CheckpointEntry } from './checkpoint/store.ts'
+export {
+  makeEdit, applyUndo, editsForLastTurn, readSessionEvents,
+  readMaybeFile, isRestorable, MAX_INLINE_BYTES, isTurnUndone, markTurnUndone,
+} from './checkpoint/store.ts'
+export type { FileEdit, UndoResult } from './checkpoint/store.ts'
 export type { ApprovalGate, ApprovalPolicy, ApprovalRequest, ApprovalDecision } from './approval/gate.ts'
 export { buildSystemPrompt, findProjectInstructions } from './agent/prompt.ts'
 export { compactMessages, shouldCompact, safeCutIndex } from './agent/compact.ts'
