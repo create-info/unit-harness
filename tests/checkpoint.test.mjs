@@ -75,7 +75,7 @@ test('undo restores files the agent touched, including via shell', async () => {
 
   const env = { ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock' }
   try {
-    const r1 = await run(['run', 'change target.txt', '--yes'], env)
+    const r1 = await run(['run', 'change target.txt', '--yes', '--allow-unconfined'], env)
     assert.equal(r1.code, 0, r1.s)
     assert.match(readFileSync(join(work, 'target.txt'), 'utf8'), /changed by the agent/)
     assert.ok(existsSync(join(work, 'out', 'new.txt')), 'the shell created a new file')
@@ -123,7 +123,7 @@ test('checkpoints live outside the workspace git repo', async () => {
 
   const env = { ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock' }
   try {
-    await run(['run', 'touch a file', '--yes'], env)
+    await run(['run', 'touch a file', '--yes', '--allow-unconfined'], env)
 
     // 用户自己的仓库：HEAD 还是没提交的状态，index 不该被塞满
     const status = execFileSync('git', ['status', '--porcelain'], { cwd: work, encoding: 'utf8' })
