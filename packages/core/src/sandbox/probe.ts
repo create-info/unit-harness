@@ -14,6 +14,7 @@ import path from 'node:path'
 import type { IsolationLevel, IsolationReport } from '../types.ts'
 import { findLandlockHelper } from './landlock.ts'
 import { findSeatbelt } from './seatbelt.ts'
+import { probeWindows } from './windows.ts'
 
 /** P0 的诚实声明：能探测到能力，但还没有施加隔离的代码 */
 const SANDBOX_ENFORCED_IN_P0: IsolationLevel = 'none'
@@ -104,7 +105,11 @@ export function probeIsolation(): IsolationReport {
   } else if (process.platform === 'darwin') {
     available = seatbelt.available ? 'seatbelt' : 'path-guard'
   } else if (process.platform === 'win32') {
-    notes.push('windows: restricted-token not implemented yet')
+    // Windows 上没有内核级隔离，只有路径检查。把这件事说清楚，
+    // 而不是让 "--allow-unconfined" 看起来像个可选参数
+    const win = probeWindows(process.env, os.release())
+    notes.push(`windows: ${win.reason}`)
+    if (win.hint) notes.push(`windows: ${win.hint}`)
     available = 'path-guard'
   } else {
     available = 'path-guard'
