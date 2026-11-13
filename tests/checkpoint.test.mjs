@@ -62,7 +62,10 @@ function run(args, env) {
 }
 
 test('undo restores files the agent touched, including via shell', async () => {
-  const server = shellThenDone(['sh', '-c', 'echo "changed by the agent" > target.txt && mkdir -p out && echo new > out/new.txt'])
+  // 用 node 而不是 sh：Windows runner 上没有 sh，而且那里沙箱是 path-guard，
+  // exec 会 fail-closed——测的是 checkpoint，不该被平台差异绊住
+  const server = shellThenDone(['node', '-e',
+    'const fs=require("fs");fs.writeFileSync("target.txt","changed by the agent\\n");fs.mkdirSync("out");fs.writeFileSync("out/new.txt","new\\n")'])
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   const port = server.address().port
   const home = mkdtempSync(join(tmpdir(), 'uh-cp-'))
@@ -105,7 +108,7 @@ test('undo refuses to rewind further than the history goes', async () => {
 })
 
 test('checkpoints live outside the workspace git repo', async () => {
-  const server = shellThenDone(['sh', '-c', 'echo x > a.txt'])
+  const server = shellThenDone(['node', '-e', 'require("fs").writeFileSync("a.txt","x")'])
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   const port = server.address().port
   const home = mkdtempSync(join(tmpdir(), 'uh-cp3-'))
