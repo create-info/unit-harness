@@ -1,55 +1,54 @@
 """
-用 unitai.site 自己的品牌 mark 生成桌面端全套图标。
+用 unitai.site 自己的品牌图标生成桌面端全套图标。
 
-之前桌面端用的是另一套标记（深色圆角方块 + 绿勾），和站上的五边形网络图标不一致。
-这里以站上 header 实际使用的 logo-mark.png 为准。
+源用站上的 icon-512.png（512×512，透明底）。有个教训值得写下来：
+同一个站上有三个"logo"，长得像但不是一回事——
 
-两条实测结论决定了实现方式：
+  icon-512.png   512px，五圆点 **带连线** + 立体六边形   ← 桌面图标用这个
+  logo-mark.png   96px，同样带连线，但只有 96px
+  logo-tile.png   96px，同上，外加一块白色圆角底
 
-1) 站上只有 96px 的 PNG，其中真实图形只占 77×77（四周约 20px 透明留白）。
-   必须按 alpha 收紧后再放大，否则留白跟着一起放大，图标在 dock 里会显得小一圈。
-2) 不要试图按几何重画。五个圆点和连线是连通的，连通域只会返回一整块，无法
-   反推圆心；按"标准五边形"硬解方程会得到互相重叠的圆。直接用原图放大更忠实。
+前两次都用了 96px 那两个，等于把 logo 放大 6 倍，结果线条发糊。真源是 icon-512，
+不需要放大，也不需要锐化。
 
-放大后的细线会发虚，所以 128px 以上过一遍轻微 unsharp，半径小、强度低，避免出白边。
+图形在 512 画布里偏上偏左（bbox 14,71 - 500,441），所以按 alpha 收紧后放进正方形
+画布居中，留 8% 边距——不裁的话四周空白会让图标在 dock 里显得小一圈。
 
-icns 没有现成工具可用（没装 tauri CLI / icnsutil），按容器格式手写：ICNS 支持直接嵌 PNG 块。
+icns 没有现成工具可用（没装 tauri CLI / icnsutil），按容器格式手写：
+ICNS 支持直接嵌 PNG 块。
 """
 import struct
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageFilter
+from PIL import Image
 
-SRC = Path("/home/yanguogx10/Applications/ai-workplace/frontend/public/logo-mark.png")
+SRC = Path("/home/yanguogx10/Applications/ai-workplace/frontend/public/icon-512.png")
 OUT = Path("/home/yanguogx10/Applications/unit-harness/src-tauri/icons")
 OUT.mkdir(parents=True, exist_ok=True)
 
 src = Image.open(SRC).convert("RGBA")
-print("source:", src.size)
+print("source:", src.size, src.mode)
 
-# 按 alpha 收紧到真实图形边界。阈值 150 而不是 0：alpha>0 会把极淡的抗锯齿像素
-# 也算进 bbox，四周白白多出 20px。
+# 按 alpha 收紧。阈值 24 而不是 0：全透明之外还要排掉极淡的边缘残留，
+# 否则 bbox 会被抗锯齿光晕撑大。
 alpha = src.split()[3]
-bbox = alpha.point(lambda v: 255 if v > 150 else 0).getbbox()
+bbox = alpha.point(lambda v: 255 if v > 24 else 0).getbbox()
 if not bbox:
     sys.exit("source image is fully transparent")
-print("tight bbox:", bbox)
+print("tight bbox:", bbox, "->", (bbox[2] - bbox[0], bbox[3] - bbox[1]))
 
 crop = src.crop(bbox)
 w, h = crop.size
-side = int(max(w, h) * 1.10)          # 留 5% 边距，图标不顶边
+side = int(round(max(w, h) / 0.84))        # 图形占 84%，四周各 8% 边距
 square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
 square.paste(crop, ((side - w) // 2, (side - h) // 2), crop)
 print("square canvas:", square.size)
 
 
 def render(size: int) -> Image.Image:
-    """直接从正方形源缩到目标尺寸，不经过中间放大——少一次重采样就少一次糊"""
-    im = square.resize((size, size), Image.LANCZOS)
-    if size >= 128:
-        im = im.filter(ImageFilter.UnsharpMask(radius=0.8, percent=55, threshold=0))
-    return im
+    """源 512，往下缩是主力路径。不做锐化：源本身够清晰，锐化只会让边缘出白边。"""
+    return square.resize((size, size), Image.LANCZOS)
 
 
 def png_at(size: int) -> bytes:
@@ -99,12 +98,14 @@ icns = b"icns" + struct.pack(">I", len(chunks) + 8) + chunks
 (OUT / "icon.icns").write_bytes(icns)
 print(f"  wrote icon.icns ({len(icns)} bytes, {len(ICNS_BLOCKS)} blocks)")
 
-# 白底预览，方便肉眼确认
-white = Image.new("RGBA", (384, 384), (255, 255, 255, 255))
-big = render(384)
-white.paste(big, (0, 0), big)
-white.convert("RGB").save("/tmp/icon-preview-white.png")
-print("  preview: /tmp/icon-preview-white.png")
+# 透明底分别放在白底和深色底上看一遍——dock 里是深色，文件管理器里可能是浅色
+for bg, name in [((255, 255, 255, 255), "/tmp/icon-preview-white.png"),
+                 ((28, 30, 34, 255), "/tmp/icon-preview-dark.png")]:
+    canvas = Image.new("RGBA", (384, 384), bg)
+    big = render(384)
+    canvas.paste(big, (0, 0), big)
+    canvas.convert("RGB").save(name)
+print("  previews: /tmp/icon-preview-white.png, /tmp/icon-preview-dark.png")
 
 # --- 验收：读回来确认不是空壳 ---
 ok = True
@@ -113,6 +114,8 @@ for f, expect in [("icon.png", 512), ("32x32.png", 32), ("128x128.png", 128), ("
     if im.size != (expect, expect):
         print(f"  FAIL {f}: {im.size} != {expect}")
         ok = False
+    if im.mode != "RGBA":
+        print(f"  WARN {f}: mode {im.mode} (expected RGBA — a flattened icon loses its transparency)")
 ico = Image.open(OUT / "icon.ico")
 print("  ico sizes:", sorted(ico.info.get("sizes", [])))
 head = (OUT / "icon.icns").read_bytes()[:8]
