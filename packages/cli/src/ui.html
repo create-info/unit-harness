@@ -31,6 +31,24 @@
   .modelbtn.bad{color:var(--bad);border-color:#4a2020}
   .modelbtn .caret{color:var(--dim);font-size:9px}
   .mbdim{color:#4d5769;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #search{width:calc(100% - 20px);margin:4px 10px 8px;background:#0c0f14;border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 9px;font:11.5px var(--mono);outline:none}
+  #search:focus{border-color:#35507a}
+  .newchat{display:flex;align-items:center;gap:7px;width:calc(100% - 20px);margin:10px 10px 2px;padding:7px 10px;background:#1d232c;border:1px solid var(--line);border-radius:7px;color:var(--fg);font-size:12px;cursor:pointer}
+  .newchat:hover{border-color:#35507a}
+  button.stop{background:var(--bad);color:#150a0a;border:0;border-radius:8px;padding:0 18px;font-weight:600;cursor:pointer}
+  #apModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.6);z-index:20}
+  #apModal.on{display:flex}
+  .apcard{width:520px;max-width:94vw;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .aphead{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:9px}
+  .aphead .ico{font-size:16px}
+  .aphead b{flex:1;font-size:13px}
+  .aphead .risk{font-size:10px;text-transform:uppercase;letter-spacing:.06em;padding:2px 8px;border-radius:999px;border:1px solid #4a2020;color:var(--bad)}
+  .aphead .risk.write{border-color:#54431f;color:var(--warn)}
+  .apbody{padding:16px 18px;font-size:12.5px}
+  .apbody .why{color:var(--dim);margin-bottom:10px;line-height:1.5}
+  .apbody pre{margin:0;background:#0c0f14;border:1px solid var(--line);border-radius:8px;padding:11px 12px;font:11.5px/1.55 var(--mono);color:#cfd6e4;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto}
+  .apfoot{border-top:1px solid var(--line);padding:11px 18px;display:flex;gap:8px;justify-content:flex-end}
+  .btn.danger{background:var(--bad);color:#150a0a;border:0;font-weight:600}
   #mpMenu{position:absolute;bottom:96px;left:20px;min-width:300px;max-height:60vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:9px;box-shadow:0 8px 28px rgba(0,0,0,.5);display:none;z-index:6;padding:5px}
   #mpMenu.on{display:block}
   .mpitem{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:6px;cursor:pointer;font-size:12px}
@@ -107,6 +125,8 @@
 </head>
 <body>
 <aside>
+  <button class="newchat" id="newChat"><span>＋</span> New task</button>
+  <input id="search" placeholder="Search sessions…" spellcheck="false">
   <h1>Projects <button class="icon" id="projBtn" title="Add or switch project">+</button></h1>
   <div id="sessions"></div>
   <button class="side-foot" id="settingsBtn">⚙ Settings · model &amp; keys</button>
@@ -128,10 +148,28 @@
     <form id="run">
       <textarea id="task" placeholder="Describe the task. It runs in a sandbox; every write is logged and undoable."></textarea>
       <button class="go" id="go" type="submit">Run</button>
+      <button class="stop" id="stopBtn" type="button" style="display:none">Stop</button>
     </form>
   </footer>
 </main>
 
+<div id="apModal">
+  <div class="apcard">
+    <div class="aphead">
+      <span class="ico">⚠</span>
+      <b id="apTitle">Approval needed</b>
+      <span class="risk" id="apRisk">destructive</span>
+    </div>
+    <div class="apbody">
+      <div class="why" id="apWhy"></div>
+      <pre id="apDetail"></pre>
+    </div>
+    <div class="apfoot">
+      <button class="btn" id="apDeny">Deny</button>
+      <button class="btn danger" id="apAllow">Run it</button>
+    </div>
+  </div>
+</div>
 <div id="veil"></div>
 <div id="drawer">
   <div class="dhead">
@@ -191,6 +229,7 @@ const $ = (s) => document.querySelector(s);
 const logEl = $('#log'), delivEl = $('#deliverables');
 let es = null, started = Date.now();
 let SETTINGS = null, PROVIDERS = [], drawerMode = 'settings';
+let CURRENT_SID = '', RUNNING = false, ALL_PROJECTS = [];
 
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function row(cls, text){
@@ -213,6 +252,7 @@ async function boot(){
 /** 左栏：项目 → 会话。跟 Codex 一样，会话属于某个工作区，不是一锅平铺 */
 async function loadProjects(){
   const r = await fetch('/api/projects').then(x => x.json());
+  ALL_PROJECTS = r.projects || [];
   const box = $('#sessions');
   box.innerHTML = '';
   const projects = r.projects || [];
@@ -258,6 +298,27 @@ async function loadProjects(){
     }
     grp.appendChild(wrap);
     box.appendChild(grp);
+  }
+}
+
+function applySearch(){
+  const q = $('#search').value.trim().toLowerCase();
+  for (const grp of document.querySelectorAll('.grp')){
+    const head = grp.querySelector('.grphead');
+    const path = head ? (head.title || '') + ' ' + (head.textContent || '') : '';
+    const sess = [...grp.querySelectorAll('.sess')];
+    let hit = q === '' || path.toLowerCase().includes(q);
+    for (const d of sess){
+      const m = q === '' || d.textContent.toLowerCase().includes(q) || path.toLowerCase().includes(q);
+      d.style.display = m ? '' : 'none';
+      if (m) hit = true;
+    }
+    grp.style.display = hit ? '' : 'none';
+    // 搜到东西就展开，否则结果藏在折叠的项目里
+    if (q && hit){
+      const wrap = grp.querySelector('.grpsess');
+      if (wrap) { wrap.classList.add('on'); const car = grp.querySelector('.car'); if (car) car.textContent = '▾'; }
+    }
   }
 }
 
@@ -418,6 +479,29 @@ document.addEventListener('click', (e) => {
   const m = document.getElementById('mpMenu');
   if (m && m.classList.contains('on') && !m.contains(e.target) && e.target.id !== 'modelPick') m.classList.remove('on');
 });
+$('#stopBtn').addEventListener('click', async () => {
+  if (!CURRENT_SID) return;
+  $('#stopBtn').disabled = true;
+  try {
+    const r = await fetch('/api/stop', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ sessionId: CURRENT_SID }) });
+    const j = await r.json();
+    row(j.error ? 'bad' : 'warn', j.error ? 'ERROR: ' + j.error : 'stopping…');
+  } finally { $('#stopBtn').disabled = false; }
+});
+
+$('#newChat').addEventListener('click', () => {
+  if (es) { es.close(); es = null; }
+  CURRENT_SID = '';
+  logEl.innerHTML = '';
+  delivEl.innerHTML = '';
+  $('#sid').textContent = 'no session';
+  started = Date.now();
+  setRunning(false);
+  $('#task').value = '';
+  $('#task').focus();
+});
+
+$('#search').addEventListener('input', applySearch);
 $('#closeDrawer').addEventListener('click', closeDrawer);
 $('#dCancel').addEventListener('click', closeDrawer);
 $('#veil').addEventListener('click', closeDrawer);
@@ -470,6 +554,43 @@ $('#dSave').addEventListener('click', async () => {
   }
 });
 
+/** 网页里的审批：后端挂了个 promise 等人点，这里是那个「点」 */
+function askApproval(req){
+  return new Promise((resolve) => {
+    const modal = $('#apModal');
+    $('#apTitle').textContent = req.kind === 'exec' ? 'Run this command?' : 'Allow this action?';
+    $('#apRisk').textContent = req.risk;
+    $('#apRisk').className = 'risk' + (req.risk === 'write' ? ' write' : '');
+    $('#apWhy').textContent = req.reason || '';
+    $('#apDetail').textContent = req.detail || req.summary || '';
+    modal.classList.add('on');
+
+    const done = (approved) => {
+      modal.classList.remove('on');
+      $('#apAllow').onclick = null;
+      $('#apDeny').onclick = null;
+      fetch('/api/approve', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: req.id, approved }),
+      }).catch(() => {});
+      resolve(approved);
+    };
+    $('#apAllow').onclick = () => done(true);
+    $('#apDeny').onclick = () => done(false);
+    // Esc = 拒绝。默认不批准
+    const esc = (e) => { if (e.key === 'Escape') { document.removeEventListener('keydown', esc); done(false); } };
+    document.addEventListener('keydown', esc);
+  });
+}
+
+function setRunning(on){
+  RUNNING = on;
+  $('#go').style.display = on ? 'none' : '';
+  $('#stopBtn').style.display = on ? '' : 'none';
+  $('#task').disabled = on;
+}
+
 function render(kind, p){
   switch(kind){
     case 'turn/start': row('step','turn start'); break;
@@ -490,6 +611,7 @@ function render(kind, p){
       break;
     }
     case 'checkpoint/file': row('warn','⟲ ' + esc(p.path) + '  (' + (p.after_size || 0) + ' B, undoable)'); break;
+    case 'approval/needs': void askApproval(p); break;
     case 'approval/requested': row('warn','⚠ approval needed: ' + esc(p.reason || '')); break;
     case 'approval/resolved': row(p.approved ? 'ok' : 'bad', (p.approved ? '✓ approved' : '✗ refused') + (p.auto ? ' (policy)' : '')); break;
     case 'session/compacted': row('warn','⟳ compacted: dropped ' + p.dropped_messages + ' msg(s), summary ~' + p.summary_chars + ' chars'); break;
@@ -497,7 +619,10 @@ function render(kind, p){
     case 'turn/end': row('step','turn end (' + p.stop_reason + ', ' + p.steps + ' steps)'); break;
     case 'answer': row('answer','<div class="answer">' + esc(p.text || '(no text)') + '</div>'); break;
     case 'deliverables': renderDeliverables(p.items || [], p.verifications || []); break;
-    case 'done': row('dim','— done —'); break;
+    case 'done':
+      row('dim','— done —');
+      setRunning(false);
+      break;
     case 'error': row('bad','ERROR: ' + esc(p.message)); break;
   }
 }
@@ -530,9 +655,10 @@ function attach(id){
   delivEl.innerHTML = '';
   $('#sid').textContent = id;
   started = Date.now();
+  CURRENT_SID = id;
   es = new EventSource('/api/stream?session=' + encodeURIComponent(id));
   for (const kind of ['turn/start','step/start','llm/request','llm/response','tool/call','tool/result','plan/updated',
-                      'checkpoint/file','approval/requested','approval/resolved','session/compacted','artifact/emitted',
+                      'checkpoint/file','approval/needs','approval/requested','approval/resolved','session/compacted','artifact/emitted',
                       'turn/end','answer','deliverables','done','error']){
     es.addEventListener(kind, (e) => render(kind, JSON.parse(e.data)));
   }
@@ -561,16 +687,17 @@ $('#run').addEventListener('submit', async (e) => {
     $('#dMsg').textContent = 'pick a provider and paste a key first';
     return;
   }
-  $('#go').disabled = true;
+  setRunning(true);
   try {
     const r = await fetch('/api/run', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ task }) });
     const j = await r.json();
-    if (j.error){ row('bad', 'ERROR: ' + j.error); return; }
+    if (j.error){ row('bad', 'ERROR: ' + j.error); setRunning(false); return; }
     $('#task').value = '';
     attach(j.sessionId);
-    boot();
-  } finally {
-    $('#go').disabled = false;
+    loadProjects();
+  } catch (err) {
+    row('bad','ERROR: ' + (err.message || err));
+    setRunning(false);
   }
 });
 
