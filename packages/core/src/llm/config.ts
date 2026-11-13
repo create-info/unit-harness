@@ -27,6 +27,10 @@ export interface UhConfig {
   sandbox?: SandboxPrefs
   /** 界面外观。默认浅色（白底 #FFFFFF / 正文 #1A1C1F），和桌面端一致 */
   ui?: UiPrefs
+  /** 被关掉的插件，形如 "mcp:github" / "skill:deploy-check"，跨会话生效 */
+  disabledPlugins?: string[]
+  /** 钩子：事件名 → 命令 */
+  hooks?: Record<string, string>
 }
 
 export interface UiPrefs {
@@ -79,6 +83,25 @@ export function readConfig(): UhConfig {
   } catch {
     return { providers: {} }
   }
+}
+
+/**
+ * 某个插件是不是被关掉了。
+ *
+ * 开关写在配置里，就必须在读的地方真的被读到——否则它只是界面上的一个装饰，
+ * 而"我明明关了它"是最难排查的一类问题。
+ */
+export function isPluginEnabled(id: string): boolean {
+  return !(readConfig().disabledPlugins ?? []).includes(id)
+}
+
+export function enabledMcpServers(servers: Record<string, unknown>): Record<string, unknown> {
+  const off = new Set(readConfig().disabledPlugins ?? [])
+  const out: Record<string, unknown> = {}
+  for (const [name, cfg] of Object.entries(servers)) {
+    if (!off.has('mcp:' + name)) out[name] = cfg
+  }
+  return out
 }
 
 export function writeConfig(cfg: UhConfig): void {

@@ -37,6 +37,7 @@ import { buildSeatbeltProfile, findSeatbelt } from './sandbox/seatbelt.ts'
 import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/toolchains.ts'
 import { McpRegistry } from './mcp/bridge.ts'
 import { loadMcpServers } from './mcp/config.ts'
+import { isPluginEnabled } from './llm/config.ts'
 import { makeEdit, toPayload, readMaybeFile as readMaybe } from './checkpoint/store.ts'
 import { loadHooks, matches, hookName } from './hook/hooks.ts'
 import type { HookConfig, HookDef, HookEvent, HookOutcome } from './hook/hooks.ts'
@@ -850,7 +851,7 @@ export class Harness {
 
   /** 当前工作目录下可用的 skills（只读，供 CLI/UI 展示） */
   get skills(): Skill[] {
-    return discoverSkills(process.cwd())
+    return discoverSkills(process.cwd()).filter((k) => isPluginEnabled('skill:' + k.name))
   }
 
   /** 已注册工具列表（只读）：插件工具 + MCP 桥接工具 */
@@ -902,7 +903,10 @@ export class Harness {
       emit: (kind, payload, parentId) => this.ev(kind, payload, 'agent', parentId ?? null)?.id ?? null,
     })
 
-    const skills: Skill[] = o.skills === false ? [] : discoverSkills(process.cwd())
+    // 关掉的技能不进工具表：它不该出现在模型的候选里，也不该被 use_skill 唤起
+    const skills: Skill[] = o.skills === false
+      ? []
+      : discoverSkills(process.cwd()).filter((k) => isPluginEnabled('skill:' + k.name))
     const sys = buildSystemPrompt({
       workspace: this.workspace,
       isolation: this.isolation.enforced,
@@ -918,8 +922,11 @@ export class Harness {
     // MCP：外部 server，按配置启动；单个失败不影响本次运行
     if (o.mcp !== false && this.mcp.isEmpty) {
       const loaded = loadMcpServers()
+      // 在设置里关掉的 server 不启动。连上了才算"能用"，所以过滤必须在这一步之前。
+      const keep = new Set(Object.keys(loaded.servers))
+      for (const name of keep) if (!isPluginEnabled('mcp:' + name)) keep.delete(name)
       if (Object.keys(loaded.servers).length > 0) {
-        await this.mcp.start(loaded.servers)
+        await this.mcp.start(Object.fromEntries([...keep].map((n) => [n, loaded.servers[n]!])))
         for (const st of this.mcp.status) {
           this.log(st.error ? 'warn' : 'info',
             st.error ? `mcp ${st.name}: ${st.error}` : `mcp ${st.name}: ${st.tools} tool(s) via ${st.transport}`)
