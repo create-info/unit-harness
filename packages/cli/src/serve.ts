@@ -14,6 +14,7 @@ import {
   Harness, EventStore, resolveProvider,
   PROVIDERS, findProvider, maskKey, readConfig, writeConfig, setProviderEntry, workspaceDir,
 } from '@unit-harness/core'
+import type { ApprovalGate, ApprovalRequest } from '@unit-harness/core'
 import UI from './ui.html'
 
 interface Subscriber {
@@ -34,6 +35,54 @@ const subs = new Map<string, Set<Subscriber>>()
  * 每次 run 都把它传给 Harness。刷新页面不丢（服务端内存），重启回到默认。
  */
 let currentWorkspace = process.env.UH_WORKSPACE || workspaceDir()
+
+/** 正在跑的 harness，`POST /api/stop` 要能找到它 */
+const running = new Map<string, Harness>()
+
+/**
+ * 等人在网页上点「允许/拒绝」的审批。
+ *
+ * CLI 里是 readline，网页里必须是同一件事：把请求推给前端、挂一个 promise、
+ * 等人点。五分钟没人理就当拒绝——把「没人回答」当成允许是最坏的那种默认。
+ */
+const pendingApprovals = new Map<string, (d: 'allow' | 'deny') => void>()
+
+/**
+ * 待决审批的完整内容，按 session 留一份。
+ *
+ * 光广播不够：请求可能在页面连上 SSE 之前就发出了（刷新页面、网络抖动、刚打开窗口），
+ * 那一刻没人听，任务就只剩「等五分钟超时然后拒绝」。新连接进来时重放一遍，才真正等价于
+ * CLI 里那句一直等在终端上的提示。
+ */
+const pendingInfo = new Map<string, { sid: string; payload: Record<string, unknown> }>()
+
+function makeWebGate(sidRef: { id: string }): ApprovalGate {
+  return {
+    async request(req: ApprovalRequest) {
+      const id = 'apr_' + Math.random().toString(36).slice(2, 10)
+      const payload = {
+        id,
+        kind: req.kind,
+        risk: req.risk,
+        summary: req.summary,
+        detail: req.detail,
+        reason: req.reason,
+      }
+      pendingInfo.set(id, { sid: sidRef.id, payload })
+      broadcast(sidRef.id, 'approval/needs', payload)
+      const decision = await new Promise<'allow' | 'deny'>((resolve) => {
+        pendingApprovals.set(id, resolve)
+        const timer = setTimeout(() => {
+          if (pendingApprovals.delete(id)) resolve('deny')
+        }, 300_000)
+        // 有人回答时把定时器摘掉，别让进程被它吊住
+        const orig = resolve
+        pendingApprovals.set(id, (d) => { clearTimeout(timer); orig(d) })
+      })
+      return decision
+    },
+  }
+}
 
 function broadcast(sessionId: string, kind: string, payload: Record<string, unknown>): void {
   const set = subs.get(sessionId)
@@ -257,15 +306,20 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       if (!task) { json(res, 400, { error: 'task is empty' }); return }
 
       let sid = ''
+      const sidRef = { id: '' }
       const h = new Harness({
         record: true,
         label: task.slice(0, 60),
         workspace: currentWorkspace,
+        // 网页里也要能审批：不接这个门，破坏性命令在 UI 里只能一律失败
+        gate: makeWebGate(sidRef),
         // session 在 start() 里创建，所以这里先缓冲，拿到 id 后再推送
         onEvent: (kind, payload) => { if (sid) broadcast(sid, kind, payload) },
       })
       await h.start()          // ← 少这一句就拿不到 sessionId
       sid = h.sessionId ?? ''
+      sidRef.id = sid
+      running.set(sid, h)
 
       // 立刻把 sessionId 交给前端，任务在后台跑
       json(res, 200, { sessionId: sid })
@@ -285,9 +339,34 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
           broadcast(sid, 'error', { message: err instanceof Error ? err.message : String(err) })
           broadcast(sid, 'done', {})
         } finally {
+          running.delete(sid)
           h.dispose()
         }
       })()
+      return
+    }
+
+    // 人在网页上点了「允许/拒绝」
+    if (req.method === 'POST' && url.pathname === '/api/approve') {
+      let body: { id?: string; approved?: boolean } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const fn = body.id ? pendingApprovals.get(body.id) : undefined
+      if (!fn) { json(res, 404, { error: 'no such approval request' }); return }
+      pendingApprovals.delete(body.id as string)
+      pendingInfo.delete(body.id as string)
+      fn(body.approved === true ? 'allow' : 'deny')
+      json(res, 200, { ok: true, decision: body.approved === true ? 'allow' : 'deny' })
+      return
+    }
+
+    // 停止：跑飞了要能按停，而不是等它把步数烧完
+    if (req.method === 'POST' && url.pathname === '/api/stop') {
+      let body: { sessionId?: string } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const h = body.sessionId ? running.get(body.sessionId) : undefined
+      if (!h) { json(res, 404, { error: 'that session is not running' }); return }
+      h.abort()
+      json(res, 200, { ok: true, stopped: body.sessionId })
       return
     }
 
@@ -300,6 +379,13 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         'x-accel-buffering': 'no',
       })
       res.write(': connected\n\n')
+
+      // 重放这个会话还没被回答的审批：页面刚连上时，请求可能早就发过了
+      for (const [, info] of pendingInfo) {
+        if (info.sid === sessionId) {
+          res.write(`event: approval/needs\ndata: ${JSON.stringify(info.payload)}\n\n`)
+        }
+      }
 
       const sub: Subscriber = { write: (c: string) => res.write(c) }
       if (!subs.has(sessionId)) subs.set(sessionId, new Set())
