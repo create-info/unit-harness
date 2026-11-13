@@ -20,6 +20,12 @@ import { loadMcpServers, discoverSkills } from '@unit-harness/core'
 import type { ApprovalGate, ApprovalRequest } from '@unit-harness/core'
 import UI from './ui.html'
 
+/** 和桌面端、站上同一个图标：32px PNG 直接内联，省一个静态文件路由 */
+const FAVICON_PNG = Buffer.from(
+  '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',
+  'base64',
+)
+
 interface Subscriber {
   write: (chunk: string) => void
 }
@@ -384,6 +390,13 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${host}:${port}`)
+
+    // 浏览器标签页的图标：不提供就会去要 /favicon.ico，然后拿到 404
+    if (req.method === 'GET' && (url.pathname === '/favicon.ico' || url.pathname === '/favicon.png')) {
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' })
+      res.end(FAVICON_PNG)
+      return
+    }
 
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
