@@ -13,7 +13,7 @@
 - **A2A**：已实现，见 [`a2a.md`](a2a.md)。但实现方式比本文草案简单——没有抽
   `ProtocolAdapter` 接口，`packages/core/src/a2a/` 直接就是这一种协议的实现。
   等第二个协议落地时再抽接口，比先假定一个抽象、再为每个协议打补丁好。
-- **ACP**：未实现。
+- **ACP**：已实现，见 [`acp.md`](acp.md)。stdio JSON-RPC，审批门通过 `session/request_permission` 反向问客户端。
 - **MCP**：已实现，但是 client 侧（我们调别人的工具），形状和本文描述的方向相反。
 
 ---

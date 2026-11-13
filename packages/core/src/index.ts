@@ -58,3 +58,12 @@ export { buildAgentCard } from './a2a/card.ts'
 export { taskOf, stateOf, historyOf, artifactsOf, isTerminal } from './a2a/task.ts'
 export type { SessionView, SessionEvent as A2ASessionEvent } from './a2a/task.ts'
 export type { Task, TaskState, Message as A2AMessage, Part, Artifact as A2AArtifact, AgentCard } from './a2a/types.ts'
+
+// ACP v1 服务端：stdio JSON-RPC，让编辑器驱动我们
+export { createAcpServer, RpcError as AcpRpcError } from './acp/server.ts'
+export type { AcpHooks, AcpHarnessLike } from './acp/server.ts'
+export type {
+  InitializeParams, InitializeResult, PromptParams, PromptResult, SessionUpdate,
+  SessionUpdateParams, StopReason, RequestPermissionParams, RequestPermissionResult,
+  ContentBlock as AcpContentBlock,
+} from './acp/types.ts'

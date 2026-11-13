@@ -106,6 +106,8 @@ export interface HarnessOptions {
   label?: string
   /** CLI 注入的版本号，写进 session/start */
   harnessVersion?: string
+  /** 日志写 stderr 而不是 stdout。stdio 协议（ACP）必须打开这个 */
+  logToStderr?: boolean
   /** 事件回调，CLI 用来实时打印进度 */
   onEvent?: (kind: string, payload: Record<string, unknown>) => void
   /** 允许远端写操作（默认 false：只读才放行） */
@@ -418,7 +420,10 @@ export class Harness {
   private log(level: LogLevel, msg: string, ...rest: unknown[]): void {
     if (LEVELS[level] < LEVELS[this.level]) return
     const line = `[uh:${level}] ${msg}`
-    if (level === 'error') console.error(line, ...rest)
+    // 走 stdio 协议时（ACP）stdout 是数据通道，混进一个日志行客户端就解析失败。
+    // 这不是可以「记得别 log」的事，得让默认行为本身分得清。
+    if (this.opts.logToStderr) console.error(line, ...rest)
+    else if (level === 'error') console.error(line, ...rest)
     else if (level === 'warn') console.warn(line, ...rest)
     else console.log(line, ...rest)
   }
