@@ -119,12 +119,14 @@ int main(int argc, char **argv) {
 
   const char *ro[32]; int nro = 0;
   const char *rw[32]; int nrw = 0;
+  const char *deny[64]; int ndeny = 0;
   int net_none = 0;
   int i = 1;
   for (; i < argc; i++) {
     if (strcmp(argv[i], "--") == 0) { i++; break; }
     if (strcmp(argv[i], "--ro") == 0 && i + 1 < argc) { if (nro < 32) ro[nro++] = argv[++i]; continue; }
     if (strcmp(argv[i], "--rw") == 0 && i + 1 < argc) { if (nrw < 32) rw[nrw++] = argv[++i]; continue; }
+    if (strcmp(argv[i], "--deny") == 0 && i + 1 < argc) { if (ndeny < 64) deny[ndeny++] = argv[++i]; continue; }
     if (strcmp(argv[i], "--net") == 0 && i + 1 < argc) {
       net_none = (strcmp(argv[++i], "none") == 0);
       continue;
@@ -159,6 +161,12 @@ int main(int argc, char **argv) {
 
   for (int k = 0; k < nro; k++) if (add_path((int)fd, ro[k], ro_access) != 0) return 71;
   for (int k = 0; k < nrw; k++) if (add_path((int)fd, rw[k], rw_access) != 0) return 71;
+
+  /* --deny：给这条路径（及其子树）零权限。
+     必须放在 --ro/--rw 之后：landlock 对嵌套路径取**最具体**的规则，
+     所以「放行 $HOME、拒绝 $HOME/.ssh」是能成立的。这让「读 home」不再
+     等于「把私钥交给模型」——而这正是我们之前把 home 整个关掉的原因。 */
+  for (int k = 0; k < ndeny; k++) if (add_path((int)fd, deny[k], 0) != 0) return 71;
 
   /* /dev 必须可写：/dev/null、/dev/urandom 等的写操作需要 WRITE_FILE 权限，
      否则任何程序的重定向都会 EACCES。调用方已显式给了就不重复。 */

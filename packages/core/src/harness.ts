@@ -32,6 +32,7 @@ import type { EventSource, SessionKind } from './evidence/kinds.ts'
 import { createHash } from 'node:crypto'
 import { buildLandlockArgv, findLandlockHelper } from './sandbox/landlock.ts'
 import type { LandlockHelper } from './sandbox/landlock.ts'
+import { findBwrap, buildBwrapArgv } from './sandbox/bwrap.ts'
 import { buildSeatbeltProfile, findSeatbelt } from './sandbox/seatbelt.ts'
 import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/toolchains.ts'
 import { McpRegistry } from './mcp/bridge.ts'
@@ -151,6 +152,7 @@ export class Harness {
   private readonly hookRegistry: HookRegistration[] = []
   private readonly services = new Map<string, unknown>()
   private readonly helper: LandlockHelper | null
+  private readonly bwrap: { path: string } | null
   private readonly seatbelt: SeatbeltInfo
   /** MCP server 桥接（外部进程，不在沙箱内） */
   readonly mcp = new McpRegistry()
@@ -244,6 +246,50 @@ export class Harness {
    * `ev` 是私有的：内部的 step 事件顺序由 loop 决定，放开会让人乱插。
    * 但「这一次跑的是哪个剧本」这种事实只有上层知道，所以留一个窄口。
    */
+  /**
+   * 沙箱里能不能干活，一半取决于环境变量。
+   *
+   * 沙箱只让写工作区，但 npm 想写 ~/.npm、pip 想写 ~/.cache/pip、go 想写 ~/go-build、
+   * cargo 想写 ~/.cargo——每一个都把「能装依赖」变成 EACCES。放宽沙箱去迁就它们
+   * 是错的方向：真正该改的是「缓存放哪」。把这些位置指到工作区里的 .uh/，
+   * 沙箱的边界不用动，工具就能正常跑。
+   *
+   * .uh 本来就被交付物快照跳过，所以这些缓存不会混进产物里。
+   */
+  private sandboxEnv(workdir: string): Record<string, string> {
+    // 不生效的沙箱（path-guard/unconfined）也用同一套：换机器时行为一致，
+    // 而且缓存留在项目里，清掉工作区就等于清掉缓存。
+    const root = nodePath.join(workdir, '.uh')
+    const dirs: Record<string, string> = {
+      TMPDIR: nodePath.join(root, 'tmp'),
+      TMP: nodePath.join(root, 'tmp'),
+      TEMP: nodePath.join(root, 'tmp'),
+      XDG_CACHE_HOME: nodePath.join(root, 'cache'),
+      XDG_DATA_HOME: nodePath.join(root, 'data'),
+      NPM_CONFIG_CACHE: nodePath.join(root, 'cache', 'npm'),
+      npm_config_cache: nodePath.join(root, 'cache', 'npm'),
+      YARN_CACHE_FOLDER: nodePath.join(root, 'cache', 'yarn'),
+      PNPM_HOME: nodePath.join(root, 'cache', 'pnpm'),
+      PIP_CACHE_DIR: nodePath.join(root, 'cache', 'pip'),
+      GOCACHE: nodePath.join(root, 'cache', 'go-build'),
+      GOMODCACHE: nodePath.join(root, 'cache', 'go-mod'),
+      CARGO_HOME: nodePath.join(root, 'cache', 'cargo'),
+      GRADLE_USER_HOME: nodePath.join(root, 'cache', 'gradle'),
+    }
+    const out: Record<string, string> = {}
+    for (const [k, v] of Object.entries(dirs)) {
+      try {
+        fsSync.mkdirSync(v, { recursive: true })
+        out[k] = v
+      } catch {
+        // 目录建不出来就别设了：设一个不存在的路径，工具会报一个更难懂的错误
+      }
+    }
+    // 告诉程序它在被沙箱包着——很多工具会因此跳过不必要的家目录写入
+    out.UH_SANDBOXED = '1'
+    return out
+  }
+
   note(kind: SessionKind, payload: Record<string, unknown>): void {
     this.ev(kind, payload)
   }
@@ -274,6 +320,7 @@ export class Harness {
     this.ctx = new Context()
     this.isolation = probeIsolation()
     this.helper = findLandlockHelper()
+    this.bwrap = findBwrap()
     this.seatbelt = findSeatbelt()
     // 必须走 paths.ts，否则 UH_HOME 只影响事件存储、不影响工作区，测试隔离会失效
     this.workspace = opts.workspace ?? workspaceDir()
@@ -323,8 +370,14 @@ export class Harness {
 
   /** 当前生效的隔离方式说明，供 UI/日志展示 */
   describeEnforcement(): string {
+    if (this.bwrap) {
+      return `bwrap via ${this.bwrap.path}; writes limited to ${this.workspace}; ` +
+        'credential dirs (.ssh/.aws/.gnupg/.npmrc/...) masked with empty tmpfs'
+    }
     if (this.helper) {
-      return `landlock-v${this.helper.abi} via ${this.helper.path}; writes limited to ${this.workspace}` +
+      return `landlock-v${this.helper.abi} via ${this.helper.path}; writes limited to ${this.workspace}; ` +
+        'read is NOT restricted — landlock has no way to allow $HOME except .ssh, and ' +
+        'blocking all of $HOME breaks git/npm/pip config' +
         (this.opts.allowHome ? ' (+home readable)' : '; home unreadable') +
         (this.opts.denyNetwork ? '; tcp blocked' : '')
     }
@@ -586,17 +639,31 @@ export class Harness {
     const workdir = spec.cwd ?? this.workspace
 
     // 按平台选择施加方式：Linux = landlock helper，macOS = sandbox-exec
-    const useLandlock = this.helper !== null && spec.isolation !== 'none'
+    // bwrap 排最前：它是唯一能既让工具链读得动、又挡住 ~/.ssh 的机制。
+    // 用不了（userns 被禁）才退到 landlock —— 那条路读是放开的，见 bwrap.ts。
+    const useBwrap = this.bwrap !== null && spec.isolation !== 'none'
+    const useLandlock = !useBwrap && this.helper !== null && spec.isolation !== 'none'
     const useSeatbelt = !useLandlock && this.seatbelt.available && spec.isolation !== 'none'
 
     let cmd: string
     let args: string[]
-    if (useLandlock) {
+    if (useBwrap) {
+      cmd = this.bwrap!.path
+      args = buildBwrapArgv(this.bwrap!, {
+        argv: [...spec.argv],
+        workspace: workdir,
+        denyNetwork: this.opts.denyNetwork,
+        extraReadOnly: [...toolchainPaths().readOnly, ...this.sandboxRoots(spec.argv, workdir)],
+      })
+    } else if (useLandlock) {
       cmd = this.helper!.path
       args = buildLandlockArgv(this.helper!, {
         argv: [...spec.argv],
         workspace: workdir,
-        allowHome: this.opts.allowHome,
+        // 默认让 home 可读。关掉它看起来更"安全"，实际是让 git、npm、pip、
+        // 编辑器配置全部失效——沙箱于是保护了一个什么都干不了的环境。
+        // 真正的凭据屏蔽交给 bwrap（能精确盖目录）；landlock 做不到，状态里如实写。
+        allowHome: this.opts.allowHome !== false,
         denyNetwork: this.opts.denyNetwork,
         // 只读放行解释器/包管理器目录：否则 venv、nvm 在沙箱里全部失效
         extraReadOnly: [
@@ -624,7 +691,7 @@ export class Harness {
     return await new Promise<ExecResult>((resolve, reject) => {
       const child = spawn(cmd, args, {
         cwd: workdir,
-        env: { ...process.env, ...(spec.env ?? {}) },
+        env: { ...process.env, ...this.sandboxEnv(workdir), ...(spec.env ?? {}) },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
 
@@ -681,7 +748,7 @@ export class Harness {
           tool: 'exec',
           status: code === 0 ? 'ok' : 'error',
           exit_code: code ?? -1,
-          isolation: this.helper ? `landlock-v${this.helper.abi}` : level,
+          isolation: this.bwrap ? 'bwrap' : this.helper ? `landlock-v${this.helper.abi}` : level,
           duration_ms: Date.now() - started,
           output_digest: digest,
           truncated,

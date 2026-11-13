@@ -76,7 +76,8 @@ function writeProjectName(path: string, name: string): void {
 /** 沙箱偏好，默认什么都不开 */
 function sandboxPrefs(): { allowHome: boolean; denyNetwork: boolean; unconfined: boolean } {
   const sp = readConfig().sandbox ?? {}
-  return { allowHome: sp.allowHome === true, denyNetwork: sp.denyNetwork === true, unconfined: sp.unconfined === true }
+  // allowHome 默认开：见 main.ts 里的说明
+  return { allowHome: sp.allowHome !== false, denyNetwork: sp.denyNetwork === true, unconfined: sp.unconfined === true }
 }
 
 function approvalMode(): ApprovalMode {
