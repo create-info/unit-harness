@@ -950,7 +950,7 @@ function renderSettings() {
   if (SETPAGE === 'sandbox') {
     body.appendChild(section('文件系统', [
       srow('允许读取 home', '默认不让：home 里有 .ssh、.aws、浏览器配置。打开后模型能读到这些目录。',
-        toggle(SB.allowHome === true, async (on) => { await saveSandbox({ allowHome: on }); })),
+        toggle(SB.allowHome !== false, async (on) => { await saveSandbox({ allowHome: on }); })),
       srow('允许写入工作区外', '不提供。写操作被限制在当前项目目录内——这是沙箱的核心，不是开关。',
         (() => { const d = document.createElement('span'); d.className = 'val'; d.textContent = 'locked'; return d; })()),
     ]));

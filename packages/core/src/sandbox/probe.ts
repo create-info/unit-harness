@@ -118,7 +118,11 @@ export function probeIsolation(): IsolationReport {
   let enforced: IsolationLevel = SANDBOX_ENFORCED_IN_P0
   if (process.platform === 'linux' && helper && helper.abi > 0) {
     enforced = `landlock-v${helper.abi}` as IsolationLevel
-    notes.push('enforced by landlock-helper: filesystem writes limited to workspace, home unreadable')
+    notes.push(
+      'enforced by landlock-helper: writes limited to the workspace. ' +
+      'Reads are not restricted (landlock cannot allow $HOME except credential dirs); ' +
+      'bwrap would, and is used automatically when unprivileged user namespaces are available.',
+    )
   } else if (process.platform === 'darwin') {
     const sb = findSeatbelt()
     if (sb.available) {

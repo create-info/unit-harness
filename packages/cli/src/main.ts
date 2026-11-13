@@ -127,7 +127,10 @@ async function withHarness<T>(
     pluginDirs: pluginDirs(),
     logLevel: (process.env.UH_LOG_LEVEL as never) ?? 'warn',
     unconfined: argv.includes('--allow-unconfined'),
-    allowHome: argv.includes('--allow-home'),
+    // 默认让 home 可读：不给读，git/npm/pip 的配置全部失效，沙箱保护的是一个
+    // 什么都干不了的环境。凭据屏蔽靠 bwrap 的空 tmpfs；landlock 做不到，
+    // 所以 `uh doctor` 会如实说明「读未受限」。
+    allowHome: !argv.includes('--no-home'),
     denyNetwork: argv.includes('--no-net'),
     harnessVersion: VERSION,
     ...(opts.record === undefined ? {} : { record: opts.record }),
@@ -236,7 +239,7 @@ async function cmdSandbox(sub?: string): Promise<void> {
     const probes: Array<{ name: string; argv: [string, ...string[]]; expect: 'ok' | 'deny' }> = [
       { name: 'write inside workspace', argv: ['sh', '-c', 'echo ok > ./sb-check.txt && cat ./sb-check.txt'], expect: 'ok' },
       { name: 'write outside workspace', argv: ['sh', '-c', 'echo x > "$HOME/uh-sb-outside.txt"'], expect: 'deny' },
-      { name: 'read $HOME/.gitconfig', argv: ['sh', '-c', 'cat "$HOME/.gitconfig"'], expect: argv.includes('--allow-home') ? 'ok' : 'deny' },
+      { name: 'read $HOME/.gitconfig', argv: ['sh', '-c', 'cat "$HOME/.gitconfig"'], expect: argv.includes('--no-home') ? 'deny' : 'ok' },
       { name: 'write to /etc', argv: ['sh', '-c', 'echo x >> /etc/uh-sb-etc.txt'], expect: 'deny' },
     ]
 
@@ -389,7 +392,10 @@ async function cmdExec(rest: string[]): Promise<void> {
     return
   }
 
-  const argv = rest.filter((a) => a !== '--')
+  // 本地开关要在这里剥掉：`--` 之后的都是命令，之前的不是。
+  // 漏掉剥的后果是 helper 去 exec 一个叫 --no-home 的程序。
+  const LOCAL_FLAGS = new Set(['--no-home', '--allow-unconfined', '--no-net', '--yes', '--no-ask'])
+  const argv = rest.filter((a) => a !== '--' && !LOCAL_FLAGS.has(a))
   if (argv.length === 0) fail('usage: uh exec -- <program> [args...]   (runs inside the sandbox)')
 
   await withHarness(async (h) => {
@@ -1196,7 +1202,7 @@ Sandbox:
   effective level is "path-guard" and exec is refused unless --allow-unconfined.
 
   --allow-unconfined   run without isolation (explicit risk acceptance)
-  --allow-home         let sandboxed commands read $HOME (default: unreadable)
+  --no-home            make $HOME unreadable to sandboxed commands (breaks git/npm/pip)
   --no-net             block TCP inside the sandbox (landlock ABI >= 4)
 `)
 }
