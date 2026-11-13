@@ -505,7 +505,10 @@ async function cmdDo(name?: string, rest: string[] = []): Promise<void> {
   }
 
   const recipe = entry.recipe
-  const vars = resolveVars(recipe, collectVars(rest))
+  // --check：只跑验收，不叫模型。被打断之后再对一次账，不该再花一次钱。
+  const checkOnly = rest.includes('--check') || rest.includes('--check-only')
+  const cleanRest = rest.filter((r) => r !== '--check' && r !== '--check-only')
+  const vars = resolveVars(recipe, collectVars(cleanRest))
   const task = renderTemplate(recipe.task.join('\n'), vars)
 
   console.log(`recipe: ${recipe.name}${entry.source === 'user' ? ' (user)' : ''}`)
@@ -515,15 +518,52 @@ async function cmdDo(name?: string, rest: string[] = []): Promise<void> {
   console.log('')
 
   let checkResults: Awaited<ReturnType<typeof runRecipeChecks>> = []
+  let interrupted = false
 
   await withHarness(async (h) => {
-    const out = await h.runTask({ task })
-    console.log('')
-    console.log(`--- deliverables (${out.artifacts.length}) ---`)
-    for (const a of out.artifacts) {
-      const rel = out.verifications.filter((v) => v.path === a.path)
-      const ok = rel.length > 0 && rel.every((v) => v.result === 'pass')
-      console.log(`  ${ok ? '✓' : '·'} ${a.path}  ${a.bytes} B  ${ok ? `${rel.length}/${rel.length}` : ''}`)
+    // 把「这一次跑的是哪个剧本、用了哪些变量」写进会话。
+    // 没有这条，打断之后谁都说不清该拿哪份验收单来对——只能在命令行上重打一遍。
+    h.note('recipe/started', {
+      name: recipe.name,
+      source: entry.source,
+      vars,
+      checks: (recipe.checks ?? []).length,
+      task,
+    })
+
+    if (!checkOnly) {
+      try {
+        const out = await h.runTask({ task })
+        // 中断不是异常：runTask 会正常返回，只是 stoppedBy 说明了原因。
+        // 把它当成失败抛出去，就会连「已经写好的文件要不要验收」这一步也一起丢掉。
+        interrupted = out.stoppedBy === 'interrupted'
+        if (interrupted) {
+          console.log('')
+          console.log('--- stopped early ---')
+          console.log(`  interrupted after ${out.steps} step(s) — nothing was rolled back.`)
+          console.log('')
+          console.log('  checking what is on disk anyway — the checks read real files, not the plan.')
+        } else {
+          console.log('')
+          console.log(`--- deliverables (${out.artifacts.length}) ---`)
+          for (const a of out.artifacts) {
+            const rel = out.verifications.filter((v) => v.path === a.path)
+            const ok = rel.length > 0 && rel.every((v) => v.result === 'pass')
+            console.log(`  ${ok ? '✓' : '·'} ${a.path}  ${a.bytes} B  ${ok ? `${rel.length}/${rel.length}` : ''}`)
+          }
+        }
+      } catch (err) {
+        // 打断不等于「这轮白跑了」：文件已经落盘，验收单看的正是磁盘上的结果。
+        // 所以接着检查，而不是把已经存在的交付物丢在地上。
+        interrupted = true
+        console.log('')
+        console.log(`--- stopped early ---`)
+        console.log(`  ${err instanceof Error ? err.message : String(err)}`)
+        console.log('')
+        console.log('  checking what is on disk anyway — the checks read real files, not the plan.')
+      }
+    } else {
+      console.log('--- re-checking only (no model run) ---')
     }
 
     if ((recipe.checks ?? []).length > 0) {
@@ -534,6 +574,13 @@ async function cmdDo(name?: string, rest: string[] = []): Promise<void> {
         const mark = c.result === 'pass' ? '✓' : c.result === 'error' ? '!' : '✗'
         console.log(`  ${mark} ${c.label}   ${c.detail}`)
       }
+      h.note('recipe/checked', {
+        name: recipe.name,
+        passed: checkResults.filter((c) => c.result === 'pass').length,
+        failed: checkResults.filter((c) => c.result !== 'pass').length,
+        interrupted,
+        detail: checkResults.map((c) => ({ label: c.label, result: c.result })),
+      })
     }
   })
 

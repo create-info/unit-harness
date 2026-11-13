@@ -376,6 +376,16 @@ just what was allowed.
 Both are plain local endpoints (`/api/settings`, `/api/projects`, `/api/models`), so
 the same controls work from the desktop shell, a browser, or `curl`.
 
+### Recipes: `uh do`
+
+A recipe is a fixed task plus acceptance checks that we run ourselves. If you stop it
+halfway, the checks still run against what is already on disk — a file the agent wrote
+is real whether or not the turn finished. `uh do <name> --check` re-runs only the
+checks, without calling the model again.
+
+`recipe/started` and `recipe/checked` go into the session log, so a run that was cut
+short still says which recipe and which verdict it was judged by.
+
 ## Where sessions live
 
 ```
