@@ -65,10 +65,20 @@ export async function chatComplete(
   cfg: ProviderConfig,
   body: { messages: Message[]; tools?: ToolSpec[]; temperature?: number; maxTokens?: number },
   handlers?: StreamHandlers,
+  /**
+   * 外部取消信号（用户点了 Stop）。
+   *
+   * 不接这个信号的话，停止标志只能在 step 边界生效——而一个 27B 模型的
+   * 单次请求就是几十秒。用户点了 Stop、界面上转着 "stopping…"、
+   * 实际上请求还在跑，看起来就是"停不下来"。
+   */
+  external?: AbortSignal,
 ): Promise<CompletionResult> {
   const url = cfg.baseUrl.replace(/\/$/, '') + '/chat/completions'
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), cfg.timeoutMs ?? 120_000)
+  // 谁先到算谁：超时或用户点停
+  const signal = external ? AbortSignal.any([controller.signal, external]) : controller.signal
   const streaming = Boolean(handlers?.onText || handlers?.onReasoning)
 
   const payload: Record<string, unknown> = {
@@ -105,7 +115,7 @@ export async function chatComplete(
         ...(cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {}),
       },
       body: JSON.stringify(payload),
-      signal: controller.signal,
+      signal,
     })
     // 先分流再读 body：res.text() 会把 ReadableStream 锁住，
     // 之后再交给 readStream 就是 "ReadableStream is locked"
@@ -148,6 +158,10 @@ export async function chatComplete(
   } catch (err) {
     // 裸的 fetch failed 什么也说明不了：连不上、DNS、header 非法、超时
     // 都是这一句。真实原因在 err.cause 里，必须带出来。
+    // 用户主动停的，不要报成"连不上"——那不是故障，是他自己的操作
+    if ((err as { name?: string }).name === 'AbortError' || external?.aborted) {
+      throw new Error('E_LLM_ABORTED: stopped by the user')
+    }
     throw new Error(explainFetchError(err, url, cfg), { cause: err })
   } finally {
     clearTimeout(timer)

@@ -43,6 +43,8 @@ export class LlmGateway {
     /** 流式回调：给了就开流，不给就一次性返回 */
     onText?: (delta: string) => void
     onReasoning?: (delta: string) => void
+    /** 用户点了 Stop：一路传到 fetch，别等这一轮自己跑完 */
+    signal?: AbortSignal
   }): Promise<CompletionResult> {
     const target = this.pick(req.role ?? 'plan')
     const requestEv = this.opts.emit('llm/request', {
@@ -73,6 +75,7 @@ export class LlmGateway {
                 ...(req.onReasoning ? { onReasoning: req.onReasoning } : {}),
               }
             : undefined,
+          req.signal,
         )
         this.opts.emit('llm/response', {
           provider: target.def.id,

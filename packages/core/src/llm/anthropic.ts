@@ -106,12 +106,15 @@ export function toAnthropicTools(tools: ToolSpec[] | undefined): unknown[] | und
 export async function anthropicComplete(
   cfg: AnthropicConfig,
   body: { messages: Message[]; tools?: ToolSpec[]; temperature?: number; maxTokens?: number },
+  /** 外部取消信号（用户点了 Stop）；不接的话停止只能等到请求自己返回 */
+  external?: AbortSignal,
 ): Promise<CompletionResult> {
   const url = cfg.baseUrl.replace(/\/$/, '') + '/v1/messages'
   const { system, messages } = toAnthropicMessages(body.messages)
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), cfg.timeoutMs ?? 180_000)
+  const signal = external ? AbortSignal.any([controller.signal, external]) : controller.signal
 
   const payload: Record<string, unknown> = {
     model: cfg.model,
@@ -132,7 +135,7 @@ export async function anthropicComplete(
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify(payload),
-      signal: controller.signal,
+      signal,
     })
     const text = await res.text()
     if (!res.ok) throw new Error(`E_LLM_HTTP ${res.status}: ${text.slice(0, 400)}`)
