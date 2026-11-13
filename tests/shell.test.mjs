@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, statSync, existsSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, statSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -99,6 +99,31 @@ function sessionEvents(home) {
   try {
     return readFileSync(join(dir, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
   } catch { return [] }
+}
+
+/** 按 session id 找它落在 YYYY/MM/DD 的哪一层 */
+function findSessionDir(home, sid) {
+  let dir = join(home, 'sessions')
+  for (let i = 0; i < 5; i++) {
+    const sub = readdirSync(dir)
+    if (sub.includes(sid)) return join(dir, sid)
+    if (!sub.length) break
+    dir = join(dir, sub[0])
+  }
+  throw new Error('session dir not found for ' + sid)
+}
+
+/** 走到 YYYY/MM/DD/<sid> 那一层 */
+function sessionDirOf(home) {
+  let dir = join(home, 'sessions')
+  for (let i = 0; i < 5; i++) {
+    const sub = readdirSync(dir)
+    if (!sub.length) return dir
+    const next = join(dir, sub[0])
+    if (existsSync(join(next, 'state.json'))) return next
+    dir = next
+  }
+  return dir
 }
 
 const get = async (p) => (await fetch('http://127.0.0.1:' + PORT + p)).json()
@@ -475,6 +500,79 @@ test('usage adds up what the providers actually reported', async () => {
     assert.equal(u.byModel[0].model, 'mock')
     assert.equal(u.byModel[0].calls, 2)
     assert.match(u.byDay[0].day, /^\d{4}-\d{2}-\d{2}$/, 'bucketed by the event timestamp, not "unknown"')
+  } finally {
+    srv.kill()
+    llm.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('@ a file: small ones inline, big ones become a pointer, escapes are refused', async () => {
+  const llm = http.createServer((req, res) => {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ id: 'mock' }] }))
+      return
+    }
+    req.on('data', () => {})
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        model: 'mock',
+        choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+      }))
+    })
+  })
+  await new Promise((r) => llm.listen(0, '127.0.0.1', r))
+  const port = llm.address().port
+
+  const home = mkdtempSync(join(tmpdir(), 'uh-ref-'))
+  const work = join(home, 'work')
+  mkdirSync(join(work, 'src'), { recursive: true })
+  mkdirSync(join(work, 'node_modules', 'junk'), { recursive: true })
+  writeFileSync(join(work, 'src', 'small.ts'), 'export const answer = 42\n')
+  writeFileSync(join(work, 'src', 'big.ts'), 'x'.repeat(20 * 1024))
+  writeFileSync(join(work, 'node_modules', 'junk', 'i.js'), 'noise')
+  writeFileSync(join(home, 'secret.txt'), 'do not read me')
+
+  const srv = await startServer({
+    ...process.env, UH_HOME: home, UH_WORKSPACE: work,
+    UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock',
+  })
+  try {
+    await post('/api/settings', { provider: 'deepseek', model: 'mock', apiKey: 'sk-x' })
+
+    // 补全：能搜到，且不把 node_modules 翻出来
+    const found = await get('/api/files?q=small')
+    assert.deepEqual(found.files, ['src/small.ts'])
+    const all = await get('/api/files')
+    assert.equal(all.files.some((f) => f.includes('node_modules')), false, 'node_modules stays out')
+
+    const lastUser = (sid) => {
+      const st = JSON.parse(readFileSync(join(findSessionDir(home, sid), 'state.json'), 'utf8'))
+      const u = (st.messages || []).filter((m) => m.role === 'user').pop()
+      return String(u?.content ?? '')
+    }
+
+    const a = await post('/api/run', { task: 'explain', refs: ['src/small.ts'] })
+    await new Promise((r) => setTimeout(r, 700))
+    const inline = lastUser(a.sessionId)
+    assert.ok(inline.includes('export const answer = 42'), 'a small file is inlined')
+    assert.ok(inline.includes('<file path="src/small.ts">'))
+
+    const b = await post('/api/run', { task: 'explain', refs: ['src/big.ts'] })
+    await new Promise((r) => setTimeout(r, 700))
+    const pointer = lastUser(b.sessionId)
+    assert.equal(pointer.includes('xxxxxxxxxx'), false, 'a big file is not pasted in')
+    assert.ok(/too large to inline/.test(pointer), 'it says so and points at read_file')
+
+    // 越界的 ref 必须被丢掉，而不是读出来
+    const c = await post('/api/run', { task: 'explain', refs: ['../secret.txt'] })
+    await new Promise((r) => setTimeout(r, 700))
+    const escaped = lastUser(c.sessionId)
+    assert.equal(escaped.includes('do not read me'), false, 'a path outside the workspace is refused')
+    assert.equal(escaped.includes('<attached_files>'), false, 'nothing is attached at all')
   } finally {
     srv.kill()
     llm.close()

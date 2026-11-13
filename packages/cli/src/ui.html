@@ -119,6 +119,18 @@
   .diffbox .ln.del{background:#1d1113}
   .diffbox .ln.del .c{color:#e2999c}
   .diffbox .ln.hunk .c{color:#6b7688}
+  .fpick{display:none;background:#141920;border:1px solid #2a3240;border-radius:9px;
+    margin-bottom:6px;overflow:hidden;max-height:230px;overflow-y:auto}
+  .fpick.on{display:block}
+  .frow{padding:6px 11px;font-size:11.5px;font-family:var(--mono);color:#b6bfcd;cursor:pointer;
+    display:flex;justify-content:space-between;gap:10px}
+  .frow .dir{color:#5c6676;font-size:10.5px}
+  .frow.sel,.frow:hover{background:#1d2530;color:#e6ebf3}
+  .fchip{display:inline-flex;align-items:center;gap:6px;background:#182131;border:1px solid #2b3a52;
+    color:#a8c4e8;border-radius:7px;padding:3px 8px;font-size:11px;font-family:var(--mono);margin:0 6px 6px 0}
+  .fchip b{color:#7aa6e8;font-weight:500}
+  .fchip .x{background:none;border:0;color:#5c6676;cursor:pointer;font-size:11px;padding:0}
+  .fchip .x:hover{color:var(--bad)}
   .attach{display:flex;gap:7px;flex-wrap:wrap;padding:0 2px 7px}
   .attach:empty{display:none}
   .thumb{position:relative;width:54px;height:54px;border-radius:7px;overflow:hidden;border:1px solid #2a3240}
@@ -281,6 +293,7 @@
       <span class="mbdim" id="mpWork"></span>
     </div>
     <div class="attach" id="attach"></div>
+    <div class="fpick" id="fpick"></div>
     <div class="qzone" id="qzone">
       <div class="qstate" id="qstate"></div>
       <div class="qlist" id="qlist"></div>
@@ -1353,6 +1366,83 @@ function setupMic(){
   btn.onclick = () => (on ? stop() : start());
 }
 
+/** @ 引用的文件，和图片一起提交；后端决定是内联内容还是只给路径 */
+let REFS = [];
+let FPICK = { open: false, list: [], sel: 0, at: -1, query: '' };
+
+function renderRefs(){
+  for (const el of [...document.querySelectorAll('.fchip')]) el.remove();
+  const box = $('#attach');
+  for (const r of REFS){
+    const el = document.createElement('span');
+    el.className = 'fchip';
+    const dir = r.includes('/') ? r.slice(0, r.lastIndexOf('/') + 1) : '';
+    el.innerHTML = '<b>@</b>' + esc(r.slice(dir.length)) + (dir ? '<span class="dir">' + esc(dir) + '</span>' : '')
+      + '<button class="x" type="button">✕</button>';
+    el.querySelector('.x').onclick = () => { REFS = REFS.filter((x) => x !== r); renderRefs(); };
+    box.insertBefore(el, box.firstChild);
+  }
+}
+
+function paintPick(){
+  const box = $('#fpick');
+  if (!FPICK.open || !FPICK.list.length){ box.classList.remove('on'); return; }
+  box.classList.add('on');
+  box.innerHTML = FPICK.list.map((f, i) => {
+    const dir = f.includes('/') ? f.slice(0, f.lastIndexOf('/') + 1) : '';
+    return '<div class="frow' + (i === FPICK.sel ? ' sel' : '') + '" data-i="' + i + '">'
+      + '<span>' + esc(f.slice(dir.length)) + '</span><span class="dir">' + esc(dir) + '</span></div>';
+  }).join('');
+  for (const row of box.querySelectorAll('.frow')){
+    row.onmousedown = (e) => { e.preventDefault(); pickFile(Number(row.dataset.i)); };
+  }
+}
+
+function pickFile(i){
+  const f = FPICK.list[i];
+  if (!f) return;
+  if (!REFS.includes(f)) REFS.push(f);
+  const ta = $('#task');
+  // 把已经打出来的 "@query" 去掉，文件名以 chip 的形式出现
+  const upto = ta.value.slice(0, FPICK.at);
+  const after = ta.value.slice(ta.selectionStart);
+  ta.value = upto + after;
+  FPICK.open = false;
+  FPICK.query = '';
+  renderRefs();
+  paintPick();
+  ta.focus();
+}
+
+async function fileQuery(q){
+  try {
+    const r = await fetch('/api/files?q=' + encodeURIComponent(q)).then((x) => x.json());
+    FPICK.list = r.files || [];
+    FPICK.sel = 0;
+    paintPick();
+  } catch { /* 列不出来就不弹，别挡住打字 */ }
+}
+
+function setupRefs(){
+  const ta = $('#task');
+  ta.addEventListener('input', () => {
+    const upto = ta.value.slice(0, ta.selectionStart);
+    const m = /(?:^|\s)@([^\s@]*)$/.exec(upto);
+    if (!m){ if (FPICK.open){ FPICK.open = false; paintPick(); } return; }
+    FPICK.open = true;
+    FPICK.query = m[1];
+    FPICK.at = ta.selectionStart - m[1].length - 1;
+    fileQuery(m[1]);
+  });
+  ta.addEventListener('keydown', (e) => {
+    if (!FPICK.open || !FPICK.list.length) return;
+    if (e.key === 'ArrowDown'){ e.preventDefault(); FPICK.sel = Math.min(FPICK.sel + 1, FPICK.list.length - 1); paintPick(); }
+    else if (e.key === 'ArrowUp'){ e.preventDefault(); FPICK.sel = Math.max(FPICK.sel - 1, 0); paintPick(); }
+    else if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey){ e.preventDefault(); pickFile(FPICK.sel); }
+    else if (e.key === 'Escape'){ FPICK.open = false; paintPick(); }
+  });
+}
+
 /** 附在图上的截图。只存 dataURL，提交时一起发；后端落成文件，base64 不进日志 */
 let ATTACH = [];
 
@@ -1606,7 +1696,11 @@ $('#run').addEventListener('submit', async (e) => {
   try {
     const r = await fetch('/api/run', {
       method: 'POST', headers: {'content-type':'application/json'},
-      body: JSON.stringify({ task, ...(ATTACH.length ? { images: ATTACH } : {}) }),
+      body: JSON.stringify({
+        task,
+        ...(ATTACH.length ? { images: ATTACH } : {}),
+        ...(REFS.length ? { refs: REFS } : {}),
+      }),
     });
     const j = await r.json();
     if (j.error){
@@ -1617,6 +1711,8 @@ $('#run').addEventListener('submit', async (e) => {
     }
     $('#task').value = '';
     clearAttach();
+    REFS = [];
+    renderRefs();
     attach(j.sessionId);
     loadProjects();
   } catch (err) {
@@ -1631,6 +1727,7 @@ $('#task').addEventListener('keydown', (e) => {
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
 
 setupAttach();
+setupRefs();
 boot();
 </script>
 </body>
