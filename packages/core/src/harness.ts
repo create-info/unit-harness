@@ -42,6 +42,7 @@ import { makeEdit, toPayload, readMaybeFile as readMaybe } from './checkpoint/st
 import { loadHooks, matches, hookName } from './hook/hooks.ts'
 import type { HookConfig, HookDef, HookEvent, HookOutcome } from './hook/hooks.ts'
 import { allowAll, denyAll, needsApproval } from './approval/gate.ts'
+import { addRule, loadRules, matchesRule, suggestPrefix, type ApprovalRule } from './approval/rules.ts'
 import type { ApprovalDecision, ApprovalGate, ApprovalPolicy, ApprovalRequest } from './approval/gate.ts'
 import { uhHome } from './paths.ts'
 import type { Message, ImageInput } from './llm/types.ts'
@@ -82,6 +83,16 @@ export function isSandboxDenial(stderr: string): boolean {
     || s.includes('权限不够')
     || s.includes('operation not allowed')
     || s.includes('eacces')
+}
+
+/** 查持久规则。只读不写——命中计数在 addRule 里做，查询不该有副作用 */
+function findRule(argv: string[], cwd: string): ApprovalRule | null {
+  try {
+    return loadRules().find((r) => matchesRule(argv, cwd, r)) ?? null
+  } catch {
+    // 规则文件坏了不能挡住审批流程，退化成"每次都问"
+    return null
+  }
 }
 
 export interface HarnessOptions {
@@ -658,13 +669,32 @@ export class Harness {
         verdict.needed = false
       }
 
+      // 持久规则：上次会话里点过「一直都行」，这里直接放行。
+      // 规则带 cwd，所以换到别的项目会重新问。
       if (verdict.needed) {
+        const hit = findRule(spec.argv, workdir0)
+        if (hit) {
+          this.ev('approval/resolved', {
+            kind: 'exec', risk, decision: 'allow', cached: true, rule: hit.prefix.join(' '),
+          }, 'user')
+          verdict.needed = false
+          // 会话缓存也记上，后面同一条命令不必再查盘
+          this.approvedCommands.add(cmdKey)
+        }
+      }
+
+      if (verdict.needed) {
+        // 能被记住的前缀要先算出来给界面：null 时界面就不该显示「一直都行」
+        const persistPrefix = suggestPrefix(spec.argv, risk)
         const req: ApprovalRequest = {
           kind: 'exec',
           risk,
           reason: verdict.reason,
           summary: cmdline.length > 160 ? `${cmdline.slice(0, 157)}...` : cmdline,
           detail: cmdline,
+          persistPrefix,
+          // 破坏性命中时记的是完整 argv，界面上不能画成通配
+          persistExact: persistPrefix !== null && persistPrefix.length === spec.argv.length,
         }
         // approval/requested 的含义是「问过人了」。--yes 并不问人，只是自动批准，
         // 记一条 requested 会让审计日志撒谎
@@ -674,9 +704,15 @@ export class Harness {
         } else {
           const requested = this.ev('approval/requested', { ...req }, 'agent')
           decision = await this.approvalGate().request(req)
-          this.ev('approval/resolved', { kind: 'exec', risk, decision }, 'user', requested?.id ?? null)
+          const resolved: Record<string, unknown> = { kind: 'exec', risk, decision: decision === 'deny' ? 'deny' : 'allow' }
+          if (decision === 'allow-always' && persistPrefix) {
+            const rule = addRule(persistPrefix, workdir0)
+            resolved.rule = rule.prefix.join(' ')
+            resolved.remembered = true
+          }
+          this.ev('approval/resolved', resolved, 'user', requested?.id ?? null)
         }
-        if (decision === 'allow') this.approvedCommands.add(cmdKey)
+        if (decision !== 'deny') this.approvedCommands.add(cmdKey)
         if (decision === 'deny') {
           this.ev('tool/result', {
             tool: 'exec',

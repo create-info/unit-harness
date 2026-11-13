@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>UnitHarness</title>
 <style>
+  /* 「一直都行」的勾选项：显式写出会记住什么前缀、在哪个目录 */
+  .apalways{display:none;align-items:flex-start;gap:8px;margin:0 0 10px;font-size:12.5px;color:var(--dim);line-height:1.5;cursor:pointer}
+  .apalways.on{display:flex}
+  .apalways input{margin-top:2px;flex:0 0 auto}
+  .apalways code{background:var(--soft);padding:1px 5px;border-radius:4px;color:var(--fg);font-size:12px}
+  .apbtns{display:flex;gap:8px;justify-content:flex-end}
+
   :root{
     /* 默认浅色，和桌面端一致：白底 #FFFFFF、正文 #1A1C1F。
        这几个值可以在设置→外观里改，改的是变量，不是硬编码。 */
@@ -417,8 +424,12 @@
       <pre id="apDetail"></pre>
     </div>
     <div class="apfoot">
-      <button class="btn" id="apDeny">Deny</button>
-      <button class="btn danger" id="apAllow">Run it</button>
+      <label id="apAlwaysWrap" class="apalways"><input type="checkbox" id="apAlways">
+        <span id="apAlwaysText"></span></label>
+      <div class="apbtns">
+        <button class="btn" id="apDeny">Deny</button>
+        <button class="btn danger" id="apAllow">Run it</button>
+      </div>
     </div>
   </div>
 </div>
@@ -768,24 +779,47 @@ function askApproval(req){
     $('#apRisk').className = 'risk' + (req.risk === 'write' ? ' write' : '');
     $('#apWhy').textContent = req.reason || '';
     $('#apDetail').textContent = req.detail || req.summary || '';
+
+    // 「一直都行」只在服务端说这条命令可以记住时才出现。
+    // 破坏性命令、curl、git push 那些永远拿不到 persistPrefix，所以这里天然不会有那个选项——
+    // 不是靠前端记得隐藏，是后端根本不给。
+    const box = $('#apAlways');
+    const wrap = $('#apAlwaysWrap');
+    const prefix = Array.isArray(req.persistPrefix) ? req.persistPrefix : null;
+    if (prefix && prefix.length) {
+      box.checked = false;
+      // 精确规则不能画成通配：`rm -rf node_modules *` 会让人以为删任何东西都行
+      const shown = esc(prefix.join(' ')) + (req.persistExact === true ? '' : ' *');
+      const qualifier = req.persistExact === true ? 'this exact command' : 'these commands';
+      $('#apAlwaysText').innerHTML =
+        'Always allow <code>' + shown + '</code> — ' + qualifier + ', in this folder only';
+      wrap.classList.add('on');
+    } else {
+      box.checked = false;
+      wrap.classList.remove('on');
+    }
     modal.classList.add('on');
 
     const done = (approved) => {
+      const always = approved === true && box.checked && !!prefix;
       modal.classList.remove('on');
       $('#apAllow').onclick = null;
       $('#apDeny').onclick = null;
       fetch('/api/approve', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: req.id, approved }),
+        body: JSON.stringify({ id: req.id, approved, always }),
       }).catch(() => {});
       resolve(approved);
     };
     $('#apAllow').onclick = () => done(true);
     $('#apDeny').onclick = () => done(false);
-    // Esc = 拒绝。默认不批准
-    const esc = (e) => { if (e.key === 'Escape') { document.removeEventListener('keydown', esc); done(false); } };
-    document.addEventListener('keydown', esc);
+    // Esc = 拒绝。默认不批准。
+    // 名字不能叫 esc：外层有个全局 `esc()` 负责 HTML 转义，函数作用域里的同名
+    // const 会把它整个遮蔽掉，于是上面任何 `esc(...)` 调用都变成 TDZ 错误——
+    // 而 Promise executor 里的异常是静默 reject，弹窗干脆不出现，控制台也不报。
+    const onEsc = (e) => { if (e.key === 'Escape') { document.removeEventListener('keydown', onEsc); done(false); } };
+    document.addEventListener('keydown', onEsc);
   });
 }
 
