@@ -1055,6 +1055,8 @@ export class Harness {
       ? []
       : discoverSkills(process.cwd()).filter((k) => isPluginEnabled('skill:' + k.name))
     const sys = buildSystemPrompt({
+      // 与 exec 用的是同一个判据，别让提示词和实际行为各说一套
+      homeReadable: this.opts.allowHome !== false,
       workspace: this.workspace,
       isolation: this.isolation.enforced,
       networkBlocked: this.opts.denyNetwork === true,
