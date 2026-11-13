@@ -50,3 +50,11 @@ export type { Artifact } from './artifact/snapshot.ts'
 export { inferAssertions, runAssertion, describeAssertion } from './verify/assertions.ts'
 export type { Assertion, AssertionOutcome } from './verify/assertions.ts'
 export type { Message, ImageInput, ToolCall, ToolSpec, Usage, ProviderConfig, LlmRole } from './llm/types.ts'
+
+// A2A v1.0 服务端：把工作区暴露成一个可被其他 agent 调用的 agent
+export { createA2AServer, RpcError, textOf } from './a2a/server.ts'
+export type { A2AHooks, A2AServerOptions } from './a2a/server.ts'
+export { buildAgentCard } from './a2a/card.ts'
+export { taskOf, stateOf, historyOf, artifactsOf, isTerminal } from './a2a/task.ts'
+export type { SessionView, SessionEvent as A2ASessionEvent } from './a2a/task.ts'
+export type { Task, TaskState, Message as A2AMessage, Part, Artifact as A2AArtifact, AgentCard } from './a2a/types.ts'

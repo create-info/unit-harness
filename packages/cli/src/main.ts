@@ -25,6 +25,7 @@ import * as readline from 'node:readline'
 
 import { VERSION } from './version.ts'
 import { startServer, openBrowser } from './serve.ts'
+import { startA2A } from './a2a.ts'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0] ?? 'help'
@@ -1173,6 +1174,8 @@ Usage:
                             (default: ask when a terminal is attached, refuse otherwise)
   uh do [name]              run a recipe: fixed task, then our own acceptance checks
   uh serve [--port N]       local web UI (default 127.0.0.1:7878)
+  uh a2a [--port N] [--host H] [--token T] [--public-url U]
+                            expose this workspace as an A2A agent (default 127.0.0.1:9300)
   uh desktop                same, and open it in your browser
   uh mcp list               show MCP servers and the tools they expose
   uh mcp add <name> <url>   add an HTTP MCP server (token asked, hidden)
@@ -1231,6 +1234,35 @@ async function main(): Promise<void> {
       const srv = await startServer({ port })
       console.log(`UnitHarness UI  ${srv.url}`)
       console.log('press Ctrl+C to stop')
+      return
+    }
+    case 'a2a': {
+      // 默认只听 127.0.0.1：把 agent 暴露到公网是用户的决定，不该是默认行为
+      const host = flag('host') ?? '127.0.0.1'
+      const port = Number(flag('port') ?? 9300)
+      const token = flag('token') ?? process.env.UH_A2A_TOKEN
+      const publicUrl = flag('public-url')
+      const srv = await startA2A({
+        host, port,
+        version: VERSION,
+        workspace: process.cwd(),
+        ...(token ? { authToken: token } : {}),
+        ...(publicUrl ? { publicUrl } : {}),
+        ...(flag('max-seconds') ? { maxSeconds: Number(flag('max-seconds')) } : {}),
+      })
+      const addr = srv.address()
+      const shown = typeof addr === 'object' && addr ? `${addr.address}:${addr.port}` : `${host}:${port}`
+      console.log(`A2A agent listening on http://${shown}`)
+      console.log(`  agent card:  http://${shown}/.well-known/agent-card.json`)
+      console.log(`  json-rpc:    POST http://${shown}/   (SendMessage / GetTask / CancelTask / ListTasks)`)
+      console.log(`  rest:        POST http://${shown}/message:send`)
+      console.log(token ? '  auth:        bearer token required' : '  auth:        none (loopback only)')
+      console.log('press Ctrl+C to stop')
+      await new Promise<void>((resolve) => {
+        const stop = () => { void srv.stop().then(() => resolve()) }
+        process.once('SIGINT', stop)
+        process.once('SIGTERM', stop)
+      })
       return
     }
     case 'desktop': {

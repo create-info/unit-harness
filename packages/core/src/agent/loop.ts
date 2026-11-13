@@ -319,7 +319,9 @@ export async function runAgent(
   const deadline = Date.now() + (opts.maxSeconds ?? 600) * 1000
   const planEnabled = deps.planEnabled !== false
 
-  deps.ev('turn/start', { turn_index: 1, trigger: 'user' })
+  // task 必须落进日志：没有它，事后回放一个会话只知道"跑了三步"，不知道用户要的是什么。
+  // A2A 的 history 也靠这条事件还原第一条用户消息。
+  deps.ev('turn/start', { turn_index: 1, trigger: 'user', task: opts.task })
 
   const messages: Message[] = []
   if (deps.system) messages.push({ role: 'system', content: deps.system })
