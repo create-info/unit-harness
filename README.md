@@ -282,10 +282,12 @@ things that decide whether an agent finishes a real task:
   context, working in the same sandbox, and gets a written summary back. Depth is capped
   at 2 **and** a run may start at most 8 of them — a depth limit alone does not bound
   cost (6 steps × 6 spawns each reaches 36 agents at depth 2).
-- **Checkpoints.** Every run leaves a restore point in a git repo of its own, keyed by
-  workspace and kept outside whatever repo the user has there. `uh undo` rewinds the
-  last run — including files the agent changed through a shell command, which is how
-  roughly half of real edits happen. Undoing is itself recoverable: the commits stay.
+- **Checkpoints, as log entries.** Every write the agent makes records `before` and
+  `after` as a `checkpoint/file` event — the same log that holds tool calls and
+  approvals. `uh undo` reads the last turn's entries and writes the `before` versions
+  back. No git, no shadow repo, nothing to install.
+  Known boundary, stated in the output rather than hidden: only writes that go through
+  the agent's tools are in the log. A `sed -i` inside a shell command is not.
 - **Images.** `uh run "..." --image shot.png` — sent as a data URL (OpenAI) or a
   base64 image block (Anthropic). Verified against a local vision model: asked what
   was in a screenshot of this very UI, it named the session list correctly.

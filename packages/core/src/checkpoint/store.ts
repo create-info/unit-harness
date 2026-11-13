@@ -1,155 +1,193 @@
 /**
- * Checkpoint / undo。
+ * Checkpoint / undo —— 日志式，不碰 git。
  *
- * apply_patch 是原子的（干跑全过才落盘），但**改完没有退路**：模型把一个文件改崩，
- * 只能指望它自己再改回来。Codex 有 rewind，我们之前连原内容都没留。
+ * 上一版给每个工作区开了个影子 git 仓库，能跑，但重：必须装 git、每次 run 前后
+ * 各来一次 `add -A`（大仓库要扫全树）、状态还是两套（GIT_DIR + 工作区）。
  *
- * 实现用 git，但**不看工作区自己的 .git**：我们给每个会话开一个独立的 GIT_DIR，
- * 以工作区为 work-tree。这样
- *   - 用户在 git 仓库里跑 agent，不会污染他的 index/HEAD
- *   - 工作区不是 git 仓库，也照样能建点
- *   - 命令行改的文件（`sed -i`、`npm install` 写出的产物）也能被覆盖到——
- *     只盯着 apply_patch 是不够的，agent 改文件的路子有一半在 shell 里
+ * 这一版照 Codex 的路子：**可回滚的东西就是日志本身**。
+ * 每次写盘把「改之前 + 改之后」记成一条事件，写进 session 的 events.jsonl 里——
+ * 和 tool/call、approval/requested 是同一条链。回滚 = 读日志、按倒序把 before 写回去。
  *
- * 只在 turn 边界建点。一个 turn 里的五次 patch 应该是一起回退的，
- * 否则 undo 会停在「改了一半」的中间态，那比不改更糟。
+ * 换来的是：
+ *   - 没有 git 也能 undo
+ *   - `uh replay` 天然看得到每一次改写（它就是事件）
+ *   - 粒度是文件，不是「整棵树 reset 到某个 commit」
+ *
+ * 代价写清楚，不假装没有：
+ *   - 二进制和超大文件不记正文，undo 时明说还原不了，而不是悄悄跳过
+ *   - 只有**经我们手**的写入（apply_patch / 内建写文件）有记录。shell 里的
+ *     `sed -i`、重定向不经过这里，日志里没有，undo 也就还原不了
  */
 
-import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 
-export interface CheckpointEntry {
-  hash: string
-  label: string
-  at: string
-  /** 这个点相对上一个点改了几个文件 */
-  files: number
+/** 超过这个大小就不内联正文了（事件日志是给人读的，不是备份仓） */
+export const MAX_INLINE_BYTES = 256_000
+
+export interface FileEdit {
+  /** 相对工作区 */
+  path: string
+  /** 改之前的内容；null = 这个文件原本不存在 */
+  before: string | null
+  /** 改之后的内容；null = 被删掉了 */
+  after: string | null
+  /** 二进制：没法当文本还原 */
+  binary: boolean
+  /** 太大没存正文 */
+  tooLarge: boolean
+}
+
+export function looksBinary(buf: Buffer): boolean {
+  const n = Math.min(buf.length, 8000)
+  for (let i = 0; i < n; i++) if (buf[i] === 0) return true
+  return false
+}
+
+/** 把一次写入的「前后」整理成一条可回滚的记录 */
+export function makeEdit(rel: string, before: Buffer | null, after: Buffer | null): FileEdit {
+  const binary = (before !== null && looksBinary(before)) || (after !== null && looksBinary(after))
+  const tooLarge =
+    (before !== null && before.length > MAX_INLINE_BYTES) ||
+    (after !== null && after.length > MAX_INLINE_BYTES)
+
+  const asText = (b: Buffer | null): string | null => {
+    if (b === null) return null
+    if (binary || tooLarge) return null
+    return b.toString('utf8')
+  }
+
+  return { path: rel, before: asText(before), after: asText(after), binary, tooLarge }
+}
+
+/** 这条记录能不能被还原 */
+export function isRestorable(edit: FileEdit): boolean {
+  return !edit.binary && !edit.tooLarge
+}
+
+interface AnyEvent {
+  kind: string
+  payload: Record<string, unknown>
 }
 
 /**
- * 每个工作区一个独立的 GIT_DIR —— 不按会话分。
- * 会话是「谁在干活」，工作区是「哪块文件被改了」；undo 关心的是后者。
+ * 从事件流里取出「最近一次 turn 的改写」，按路径合并成净变化。
+ *
+ * 同一个文件在一次 turn 里被改三次，只需要回到**第一次之前**的样子：
+ * 中间的版本对人没有意义，写回去反而会把文件停在一个半成品状态。
  */
-export function checkpointDirFor(uhHome: string, workspace: string): string {
-  const key = createHash('sha256').update(workspace).digest('hex').slice(0, 12)
-  return path.join(uhHome, 'checkpoints', key)
+export function editsForLastTurn(events: AnyEvent[]): { turn: number; edits: FileEdit[] } {
+  const collected = new Map<string, FileEdit>()
+  let turn = 0
+
+  const reset = (): void => { collected.clear() }
+
+  for (const ev of events) {
+    if (ev.kind === 'turn/start') { turn += 1; reset(); continue }
+    if (ev.kind === 'checkpoint/restored') { reset(); continue }
+    if (ev.kind !== 'checkpoint/file') continue
+
+    const p = String(ev.payload.path ?? '')
+    if (!p) continue
+    const edit: FileEdit = {
+      path: p,
+      before: (ev.payload.before as string | null) ?? null,
+      after: (ev.payload.after as string | null) ?? null,
+      binary: ev.payload.binary === true,
+      tooLarge: ev.payload.too_large === true,
+    }
+    const seen = collected.get(p)
+    // 只保留第一次的 before，after 始终取最新
+    collected.set(p, seen ? { ...edit, before: seen.before } : edit)
+  }
+
+  return { turn, edits: [...collected.values()] }
 }
 
-/** 工作区里默认不值得进快照的东西 */
-const DEFAULT_EXCLUDES = [
-  'node_modules/',
-  'dist/',
-  'build/',
-  'target/',
-  '.uh/',
-  '.venv/',
-  '__pycache__/',
-  '*.log',
-]
+/** 已撤销的轮次记在这里。事件日志是 append-only，撤销状态不能反过来往里写 */
+export function undoneMarkerPath(sessionDir: string): string {
+  return path.join(sessionDir, 'undone.json')
+}
 
-export class Checkpoints {
-  private ready = false
+export function isTurnUndone(sessionDir: string, turn: number): boolean {
+  try {
+    const raw = JSON.parse(fs.readFileSync(undoneMarkerPath(sessionDir), 'utf8')) as { turns?: number[] }
+    return Array.isArray(raw.turns) && raw.turns.includes(turn)
+  } catch {
+    return false
+  }
+}
 
-  constructor(
-    private readonly workTree: string,
-    private readonly gitDir: string,
-  ) {}
+export function markTurnUndone(sessionDir: string, turn: number): void {
+  let turns: number[] = []
+  try {
+    const raw = JSON.parse(fs.readFileSync(undoneMarkerPath(sessionDir), 'utf8')) as { turns?: number[] }
+    if (Array.isArray(raw.turns)) turns = raw.turns
+  } catch { /* first undo */ }
+  if (!turns.includes(turn)) turns.push(turn)
+  fs.writeFileSync(undoneMarkerPath(sessionDir), JSON.stringify({ turns, at: new Date().toISOString() }, null, 2), 'utf8')
+}
 
-  /** git 不在会静默降级成「没有 checkpoint」，而不是让整个 run 失败 */
-  available(): boolean {
-    try {
-      execFileSync('git', ['--version'], { stdio: 'ignore' })
-      return true
-    } catch {
-      return false
-    }
+export interface UndoResult {
+  restored: string[]
+  removed: string[]
+  skipped: Array<{ path: string; why: string }>
+}
+
+/**
+ * 把一批改写反向应用。
+ *
+ * 顺序无所谓（每个文件独立），但**先写真、后删文件**：万一中途失败，
+ * 留下的是多余的文件，而不是把原来的文件弄丢。
+ */
+export function applyUndo(workspace: string, edits: FileEdit[]): UndoResult {
+  const out: UndoResult = { restored: [], removed: [], skipped: [] }
+  const root = path.resolve(workspace)
+  const inWorkspace = (rel: string): string | null => {
+    const abs = path.resolve(root, rel)
+    return abs === root || abs.startsWith(root + path.sep) ? abs : null
   }
 
-  private git(args: string[], opts: { allowFail?: boolean } = {}): string {
-    try {
-      return execFileSync('git', args, {
-        cwd: this.workTree,
-        env: {
-          ...process.env,
-          GIT_DIR: this.gitDir,
-          GIT_WORK_TREE: this.workTree,
-          // 别让用户的全局配置（签名、hooks、模板）干扰我们
-          GIT_CONFIG_GLOBAL: '/dev/null',
-          GIT_CONFIG_SYSTEM: '/dev/null',
-        },
-        encoding: 'utf8',
-        maxBuffer: 32 * 1024 * 1024,
-      }).trim()
-    } catch (err) {
-      if (opts.allowFail) return ''
-      throw err
-    }
-  }
-
-  init(): void {
-    if (this.ready) return
-    fs.mkdirSync(this.gitDir, { recursive: true })
-    this.git(['init', '--quiet'], { allowFail: true })
-    const exclude = path.join(this.gitDir, 'info', 'exclude')
-    fs.mkdirSync(path.dirname(exclude), { recursive: true })
-    fs.writeFileSync(exclude, DEFAULT_EXCLUDES.join('\n') + '\n', 'utf8')
-    this.git(['config', 'user.email', 'agent@unit-harness.local'], { allowFail: true })
-    this.git(['config', 'user.name', 'UnitHarness'], { allowFail: true })
-    this.git(['config', 'commit.gpgsign', 'false'], { allowFail: true })
-    this.ready = true
-  }
-
-  /** 建一个点。返回 commit hash；没变化也留一个空点，保证 turn 与点一一对应 */
-  snapshot(label: string): string | null {
-    if (!this.available()) return null
-    try {
-      this.init()
-      this.git(['add', '-A'], { allowFail: true })
-      this.git(['commit', '--allow-empty', '--quiet', '-m', label], { allowFail: true })
-      return this.git(['rev-parse', 'HEAD'], { allowFail: true }) || null
-    } catch {
-      return null
-    }
-  }
-
-  list(limit = 20): CheckpointEntry[] {
-    if (!this.available()) return []
-    try {
-      this.init()
-      const raw = this.git(['log', `-${limit}`, '--pretty=format:%H\x1f%s\x1f%cI'], { allowFail: true })
-      if (!raw) return []
-      return raw.split('\n').map((line) => {
-        const [hash, label, at] = line.split('\x1f')
-        const stat = this.git(['show', '--stat', '--oneline', '--format=', hash as string], { allowFail: true })
-        const files = (stat.match(/\|\s+\d+\s+[+-]*/g) ?? []).length
-        return { hash: hash as string, label: label ?? '', at: at ?? '', files }
+  for (const edit of edits) {
+    const abs = inWorkspace(edit.path)
+    if (!abs) { out.skipped.push({ path: edit.path, why: 'outside the workspace' }); continue }
+    if (!isRestorable(edit)) {
+      out.skipped.push({
+        path: edit.path,
+        why: edit.binary ? 'binary file — content was not recorded' : 'too large — content was not recorded',
       })
-    } catch {
-      return []
+      continue
     }
-  }
-
-  /** 回退 n 个点。n=1 表示回到最近一次 run 之前 */
-  undo(n = 1): { commit: string; label: string } | null {
-    if (!this.available()) return null
     try {
-      this.init()
-      const count = Math.max(1, Math.floor(n))
-      const target = this.git(['rev-parse', `HEAD~${count}`], { allowFail: true })
-      if (!target) return null
-      const label = this.git(['log', '-1', '--pretty=%s', target], { allowFail: true })
-      // --hard 会连新增的文件一起清掉，这正是「还原」该有的样子
-      this.git(['reset', '--hard', target])
-      return { commit: target, label }
-    } catch {
-      return null
+      if (edit.before === null) {
+        // 原本不存在：删掉它
+        if (fs.existsSync(abs)) { fs.unlinkSync(abs); out.removed.push(edit.path) }
+      } else {
+        fs.mkdirSync(path.dirname(abs), { recursive: true })
+        fs.writeFileSync(abs, edit.before, 'utf8')
+        out.restored.push(edit.path)
+      }
+    } catch (err) {
+      out.skipped.push({ path: edit.path, why: err instanceof Error ? err.message : String(err) })
     }
   }
 
-  /** 某个点上改了什么（给 `uh checkpoints --diff` 用） */
-  summary(hash: string): string {
-    return this.git(['show', '--stat', '--format=%s', hash], { allowFail: true })
+  return out
+}
+
+/** 读文件；不存在或读不了就是 null（「原本没有这个文件」也是有效信息） */
+export function readMaybeFile(abs: string): Buffer | null {
+  try { return fs.readFileSync(abs) } catch { return null }
+}
+
+/** 读某个 session 的事件（undo 用；事件少，一次读完即可） */
+export function readSessionEvents(sessionDir: string): AnyEvent[] {
+  try {
+    return fs.readFileSync(path.join(sessionDir, 'events.jsonl'), 'utf8')
+      .split('\n')
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as AnyEvent)
+  } catch {
+    return []
   }
 }

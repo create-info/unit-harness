@@ -36,7 +36,7 @@ import { buildSeatbeltProfile, findSeatbelt } from './sandbox/seatbelt.ts'
 import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/toolchains.ts'
 import { McpRegistry } from './mcp/bridge.ts'
 import { loadMcpServers } from './mcp/config.ts'
-import { Checkpoints, checkpointDirFor } from './checkpoint/store.ts'
+import { makeEdit, readMaybeFile as readMaybe } from './checkpoint/store.ts'
 import { loadHooks, matches, hookName } from './hook/hooks.ts'
 import type { HookConfig, HookDef, HookEvent, HookOutcome } from './hook/hooks.ts'
 import { allowAll, denyAll, needsApproval } from './approval/gate.ts'
@@ -209,17 +209,22 @@ export class Harness {
     return blocked
   }
 
-  /** 工作区快照（每个 run 一个点） */
-  private snapshotWorkspace(task: string, phase: 'before' | 'after' = 'before'): void {
-    try {
-      const cps = new Checkpoints(this.workspace, checkpointDirFor(uhHome(), this.workspace))
-      const label = `${phase}: ${task.replace(/\s+/g, ' ').slice(0, 60)}`
-      const hash = cps.snapshot(label)
-      if (hash) this.ev('checkpoint/created', { commit: hash.slice(0, 12), label }, 'agent')
-    } catch {
-      // git 不在、磁盘满、工作区不可读——都不该让任务本身失败
-      this.log('warn', 'could not create a checkpoint for this run')
+  /**
+   * 记一条可回滚的改写。
+   *
+   * 不落盘到别处——它本身就是事件。这既是 checkpoint（能反向应用），
+   * 也是审计（能看到这一步改了哪个文件的哪一行）。
+   */
+  private recordEdit(rel: string, before: Buffer | null, after: Buffer | null): void {
+    const edit = makeEdit(rel.replace(/^\.\//, ''), before, after)
+    const payload: Record<string, unknown> = {
+      path: edit.path,
+      before: edit.before,
+      after: edit.after,
+      binary: edit.binary,
+      too_large: edit.tooLarge,
     }
+    this.ev('checkpoint/file', payload, 'agent')
   }
 
   /** 审批门：显式 gate 优先，否则按策略挑 */
@@ -762,9 +767,6 @@ export class Harness {
     // 每次 run 重新读配置：改了 hooks.json 不用重启
     this.hooks = loadHooks(this.workspace)
 
-    // 改动发生之前建点：undo 要能回到「这个 run 还没动过任何东西」的状态
-    this.snapshotWorkspace(o.task)
-
     const makeSpawnerSelf = this
     function makeSpawner(level: number) {
         return async (subTask: string, subOpts: { maxSteps?: number }): Promise<string> => {
@@ -914,11 +916,16 @@ export class Harness {
         },
         writeFile: (rel, content) => {
           const abs = this.safeJoin(rel)
+          const before = readMaybe(abs)
           fsSync.mkdirSync(nodePath.dirname(abs), { recursive: true })
           fsSync.writeFileSync(abs, content)
+          this.recordEdit(rel, before, Buffer.from(content, 'utf8'))
         },
         deleteFile: (rel) => {
-          try { fsSync.unlinkSync(this.safeJoin(rel)) } catch { /* already gone */ }
+          const abs = this.safeJoin(rel)
+          const before = readMaybe(abs)
+          try { fsSync.unlinkSync(abs) } catch { /* already gone */ }
+          if (before) this.recordEdit(rel, before, null)
         },
         /**
          * 子 agent：同一套执行环境，一段新对话。
@@ -970,10 +977,6 @@ export class Harness {
         }), 'utf8')
       } catch { /* 状态落盘失败不该让整次运行失败 */ }
     }
-
-    // 这次 run 的收尾点。没有它，第一次 run 的改动就撤不回来——
-    // 全部历史只有「run 之前」一个 commit，HEAD~1 根本不存在
-    this.snapshotWorkspace(o.task, 'after')
 
     // 中断不是失败：把「被谁停下的」写清楚，下次 --continue 才知道从哪接
     if (result.stoppedBy === 'interrupted') {
