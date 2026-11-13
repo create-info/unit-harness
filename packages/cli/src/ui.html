@@ -449,8 +449,12 @@ async function loadProjects(){
     wrap.className = 'grpsess' + (isCur ? ' on' : '');
     for (const s of proj.items || []){
       const d = document.createElement('div');
-      d.className = 'sess';
-      d.innerHTML = '<b>' + esc(s.label || s.id) + '</b>' + esc(s.created) + ' · ' + s.events + ' events';
+      d.className = 'sess' + (s.running ? ' active' : '');
+      // 正在跑的那条要有标记：跑着的会话和跑完的在列表里长得一模一样
+      const live = s.running ? '<span class="rdot"></span>' : '';
+      d.innerHTML = '<b>' + live + esc(s.label || s.id) + '</b>'
+        + (s.running ? '<span class="live"><span class="rdot"></span>running</span> · ' : '')
+        + esc(s.created) + ' · ' + s.events + ' events';
       d.onclick = () => openSession(s.id);
       wrap.appendChild(d);
     }
@@ -1291,8 +1295,6 @@ function render(kind, p){
     case 'turn/start':
       sawText = false;
       closeRun();
-      openRun();
-      row('step','turn start');
       break;
     case 'llm/request': procRow('dim','→ ' + (p.provider||'') + ' ' + (p.model||'')); break;
     case 'llm/response': procRow('dim','← ' + p.tool_calls + ' tool call(s), ' + ((p.usage&&p.usage.total_tokens)||0) + ' tokens'); break;
