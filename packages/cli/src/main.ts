@@ -17,8 +17,9 @@ import {
   loadHosts, upsertHost, removeHost, runRemote, classify, describeRisk,
   latestResumable,
 } from '@unit-harness/core'
-import type { Message, ImageInput } from '@unit-harness/core'
+import type { Message, ImageInput, ApprovalRequest } from '@unit-harness/core'
 import { readFileSync } from 'node:fs'
+import * as readline from 'node:readline'
 
 import { VERSION } from './version.ts'
 import { startServer, openBrowser } from './serve.ts'
@@ -105,6 +106,17 @@ process.on('SIGINT', () => {
   activeHarness.abort()
 })
 
+/** 交互式审批：人要能看到「到底要跑什么」再按 y */
+async function askApproval(req: ApprovalRequest): Promise<'allow' | 'deny'> {
+  endStreamLine()
+  process.stderr.write(`\n  ⚠ approval needed: ${req.reason}\n`)
+  process.stderr.write(`    ${req.detail}\n`)
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr })
+  const answer = await new Promise<string>((resolve) => rl.question('    run it? [y/N] ', resolve))
+  rl.close()
+  return /^y(es)?$/i.test(answer.trim()) ? 'allow' : 'deny'
+}
+
 async function withHarness<T>(
   fn: (h: Harness) => Promise<T>,
   opts: { record?: boolean; label?: string; onEvent?: (kind: string, payload: Record<string, unknown>) => void } = {},
@@ -121,6 +133,11 @@ async function withHarness<T>(
     ...(opts.onEvent === undefined ? {} : { onEvent: opts.onEvent }),
     onText: streamText,
     onReasoning: streamReasoning,
+    // 默认策略是 deny：没人回答 = 不批准。只有真的连着终端才逐次问。
+    approval: argv.includes('--yes') ? 'allow' : 'deny',
+    ...(process.stdin.isTTY && !argv.includes('--yes') && !argv.includes('--no-ask')
+      ? { gate: { request: askApproval } }
+      : {}),
   })
   activeHarness = h
   try {
@@ -981,6 +998,8 @@ Usage:
   uh host [list|add|test]   manage remote hosts (ssh targets, key paths only)
   uh run --continue [task]  resume the previous session instead of starting over
   uh run "..." --image f    attach an image (png/jpg/webp/gif) to the task
+  --yes / --no-ask          approve every dangerous action / refuse them all
+                            (default: ask when a terminal is attached, refuse otherwise)
   uh do [name]              run a recipe: fixed task, then our own acceptance checks
   uh serve [--port N]       local web UI (default 127.0.0.1:7878)
   uh desktop                same, and open it in your browser

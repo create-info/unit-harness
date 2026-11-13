@@ -267,6 +267,36 @@ $ git tag v0.1.0 && git push origin v0.1.0
 $ bash scripts/release.sh v0.1.0 --dry-run
 ```
 
+## 审批
+
+定位里写了「花钱动作有审批」，这就是那个东西：
+
+```console
+  ⚠ approval needed: destructive — it cannot be undone by the sandbox
+    sh -c cd /tmp/uh/work && chmod -R 777 .
+    run it? [y/N] n
+  ✗ refused
+```
+
+问不问，由沙箱说了算：
+
+| 情况 | 问吗 |
+|---|---|
+| 只读（`ls`、`cat`、`git status`） | 从不 |
+| 写操作，**沙箱生效**（`npm i`、`mkdir`） | 不问——它只碰得到工作区 |
+| 写操作，沙箱**没生效** | 问 |
+| 毁灭性（`rm -rf`、`mkfs`、`chmod -R 777`、`find -delete`） | 一律问 |
+| 远端写 / 毁灭性 | 一律问——沙箱管不到那台机器 |
+
+默认是**拒绝**而不是放行：没有终端的调用方（CI、脚本、API）不该因为「没人回答」
+就获得了执行危险动作的许可。`--yes` 全放行，`--no-ask` 全拒绝。
+
+两种结果都留痕：`approval/requested` 带着要执行的确切命令，`approval/resolved`
+带着决定。日志里能看到「试过什么」，不只是「允许了什么」。
+
+> Web UI（`uh serve`）目前对危险动作是直接拒绝而不是弹窗——审批控件还没接。
+> 这个失败是响的，不是静默的。
+
 ## 远端主机
 
 ```console

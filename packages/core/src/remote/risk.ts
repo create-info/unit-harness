@@ -13,7 +13,11 @@ export type RiskLevel = 'read' | 'write' | 'destructive'
 
 /** 明确会毁数据/断服务的东西 */
 const DESTRUCTIVE: RegExp[] = [
-  /\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+\//, // rm -rf /
+  // 递归/强制删除一律算毁灭性，不只是指向根的：
+  // 以前只认 `rm -rf /`，于是 `rm -rf src` 被当成普通写入，在沙箱里畅通无阻——
+  // 而沙箱变不出被删掉的文件
+  /\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+[^\s|;&]+/,
+  /\bfind\b[^|;]*\s-delete\b/,
   /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f?\b.*(\/|\*)/,
   /\bdd\b.*\bof=\/dev\//,
   /\bmkfs(\.\w+)?\b/,
