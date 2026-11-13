@@ -56,16 +56,21 @@ async function readBody(req: http.IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
-function collectSessions(): Array<{ id: string; label: string; created: string; events: number; status: string }> {
+function collectSessions(workspace?: string): Array<{ id: string; label: string; created: string; events: number; status: string; workspace: string }> {
   const store = new EventStore()
   try {
-    return store.list().slice(0, 50).map((s) => ({
-      id: s.id,
-      label: s.label ?? '(untitled)',
-      created: s.created_at.replace('T', ' ').slice(0, 19),
-      events: s.last_seq,
-      status: s.status,
-    }))
+    return store
+      .list({ limit: workspace ? 300 : 50 })
+      .filter((s) => !workspace || (s as { workspace?: string }).workspace === workspace)
+      .slice(0, 50)
+      .map((s) => ({
+        id: s.id,
+        label: s.label ?? '(untitled)',
+        created: s.created_at.replace('T', ' ').slice(0, 19),
+        events: s.last_seq,
+        status: s.status,
+        workspace: (s as { workspace?: string }).workspace ?? '',
+      }))
   } catch {
     return []
   }
@@ -102,7 +107,8 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     }
 
     if (req.method === 'GET' && url.pathname === '/api/sessions') {
-      json(res, 200, collectSessions())
+      const ws = url.searchParams.get('workspace') ?? undefined
+      json(res, 200, collectSessions(ws))
       return
     }
 
@@ -213,7 +219,15 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       if (!seen.has(currentWorkspace)) {
         list.unshift({ path: currentWorkspace, sessions: 0, lastUsed: new Date().toISOString() })
       }
-      json(res, 200, { current: currentWorkspace, projects: list })
+
+      // 每个项目挂自己的会话：左栏要画「项目 → 会话」两级，一个请求拿全
+      const withItems = list.map((p) => ({
+        ...p,
+        items: collectSessions(p.path).slice(0, 30).map((s) => ({
+          id: s.id, label: s.label, created: s.created, events: s.events,
+        })),
+      }))
+      json(res, 200, { current: currentWorkspace, projects: withItems })
       return
     }
 
