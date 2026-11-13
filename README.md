@@ -645,6 +645,22 @@ export default {
 See [`examples/plugin-hello`](examples/plugin-hello). Plugins have **zero runtime
 dependencies** — no `import` of cordis or of this package's runtime values.
 
+### Built-in plugins
+
+| Plugin | What it does | Docs |
+|---|---|---|
+| `@unit-harness/plugin-browser` | Drive a real browser over CDP: snapshot the page as a semantic tree, click, type, all with settle-and-verify | [`docs/browser.md`](docs/browser.md) |
+| `@unit-harness/plugin-phone` | Drive a real phone — Android (adb), HarmonyOS (hdc), iOS (WebDriverAgent) — with one element model | [`docs/phone.md`](docs/phone.md) |
+
+Both share `plugins/shared/observe.js`: a semantic-tree observer that keeps element
+refs stable across UI changes and reports only the diff, so a second look at the same
+screen costs a line instead of a full dump.
+
+```bash
+# they live next to the repo; point the loader at them
+UH_PLUGIN_DIR=$PWD/plugins uh tool browser_open --json '{"url":"https://example.com"}'
+```
+
 ## Architecture
 
 ```

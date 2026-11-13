@@ -26,18 +26,9 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { Observer, describe } from '../shared/observe.js'
 
 // ─────────────────────────── 常量 ───────────────────────────
-
-/** 只留下有语义的角色。generic / none / InlineTextBox 纯噪声。 */
-const KEEP = new Set([
-  'button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox',
-  'listbox', 'menuitem', 'menuitemcheckbox', 'tab', 'switch', 'slider',
-  'heading', 'img', 'navigation', 'main', 'form', 'dialog', 'alert', 'table', 'row',
-])
-
-/** 这些角色没名字也要留着——空输入框正是最需要看见的 */
-const NAMELESS_OK = new Set(['textbox', 'searchbox', 'checkbox', 'switch', 'slider'])
 
 /** 现成浏览器优先从这些端口找。用户手动开过带调试端口的 Chrome 时直接命中。 */
 const PROBE_PORTS = [9222, 9223, 9224, 9229]
@@ -105,8 +96,26 @@ function findChrome() {
   return null
 }
 
-/** 用户真实浏览器的 profile 目录。用真实 profile 才带登录态、书签和扩展。 */
-function realProfile(bin) {
+/**
+ * 自启时用的 profile 目录。
+ *
+ * 默认用我们自己的一份，不去碰用户的真实 profile。理由有两个：
+ *   - 真实 profile 里是用户所有网站的登录态，让 agent 默认读写它，风险不对等；
+ *   - 真实 profile 通常正被用户的浏览器占着，进程内会话锁会直接让启动失败。
+ *
+ * 需要登录态时走的是另一条路：attach 到用户自己开的浏览器（见 connect）。
+ * 想强制用真实 profile 才显式配 useRealProfile，而且不该轻易打开。
+ */
+function profileDir(bin, cfg) {
+  if (cfg.profileDir) return cfg.profileDir
+  if (cfg.useRealProfile === true) return REAL_PROFILE(bin)
+  const dir = path.join(uhHome(), 'browser', 'profile')
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** 用户真实浏览器的 profile。只给显式配置用，见 profileDir 的注释。 */
+function REAL_PROFILE(bin) {
   const p = (bin || '').toLowerCase()
   if (process.platform === 'darwin') {
     if (p.includes('chrome')) return path.join(os.homedir(), 'Library/Application Support/Google/Chrome')
@@ -302,150 +311,78 @@ async function waitForPage(transport, stderrRef) {
 }
 
 /**
- * 自己起一个。两条路：
- *   port 模式：能被下一次 attach 复用，也能配真实 profile
- *   pipe 模式：port 被环境挡住时的兜底（snap chromium 实测：端口在听但 WS 被 reset）
+ * 自己起一个浏览器。两条路，**不是二选一而是降级链**：
+ *
+ *   port 模式：成功的话下一次能 attach 复用，是首选。
+ *   pipe 模式：port 被环境挡住时的兜底。实测 snap chromium 就是这样——端口在听，
+ *              但 HTTP 和 WS 都被 reset（confinement 挡 TCP）。pipe 走 fd 3/4，拦不住。
+ *
+ * 关键点：port 失败时必须自动退 pipe，否则受限环境里这个插件一次都用不了。
+ * 唯一的例外是 profile 被占用——那 pipe 也会同样撞墙，这时要直接告诉用户关掉浏览器。
  */
 async function launchOwn(bin, opts) {
-  const profile = opts.profileDir || realProfile(bin)
+  const profile = opts.profileDir || profileDir(bin, opts.cfg || {})
   const usePort = opts.port !== false
+
+  if (!usePort) return launchPipe(bin, opts, profile)
+
   const port = opts.port === true ? 9222 : (opts.port || 9222)
-
-  const args = ['--no-first-run', '--no-default-browser-check', '--disable-gpu', '--window-size=1280,900']
-  if (opts.headless !== false) args.push('--headless=new')
-  args.push(usePort ? `--remote-debugging-port=${port}` : '--remote-debugging-pipe')
-  args.push(`--user-data-dir=${profile}`, 'about:blank')
-  if (process.getuid && process.getuid() === 0) args.unshift('--no-sandbox')
-
-  const child = spawn(bin, args, {
-    // 端口模式也要留 stderr：不然"起不来"就只剩一句没有原因的话。
-    // fd 3/4 只有 pipe 模式用得上。
-    stdio: usePort ? ['ignore', 'ignore', 'pipe', 'ignore', 'ignore'] : ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'],
-    detached: true,
-  })
-  let stderr = ''
-  if (child.stderr) child.stderr.on('data', (d) => { stderr += String(d) })
-
-  if (!usePort) {
-    const transport = new PipeTransport(child)
-    const sessionId = await waitForPage(transport, () => stderr)
-    return { transport, mode: 'launch-pipe', port: null, pid: child.pid, sessionId, profile }
-  }
-
-  child.unref()
-  const deadline = Date.now() + 25_000
-  while (Date.now() < deadline) {
-    const got = await attach(port)
-    if (got) return { ...got, mode: 'launch', pid: child.pid, profile }
-    if (!alive(child.pid)) break
-    await new Promise((r) => setTimeout(r, 300))
-  }
-  try { process.kill(child.pid, 'SIGKILL') } catch { /* 已退出 */ }
-
-  // 端口起不来最常见的原因就是 profile 被占用，把原因翻成人话
-  if (/ProcessSingleton|SingletonLock/i.test(stderr)) {
+  const r = await tryPort(bin, opts, profile, port)
+  if (r.ok) return r.launched
+  if (r.profileBusy) {
     throw new Error(
       'Chrome is already running with this profile, so it will not open a debug port. '
       + 'Close Chrome and retry, or start it yourself with --remote-debugging-port=9222.',
     )
   }
-  const why = stderr.split('\n').filter(Boolean).slice(-2).join(' | ')
-  throw new Error('browser did not start' + (why ? ': ' + why : ''))
+  // 端口这条路走不通，退到 pipe。把上一次的原因带上，出问题时能看出是哪一步降级的
+  return launchPipe(bin, opts, profile, r.why)
 }
 
-// ─────────────────────────── 增量观察 ───────────────────────────
+async function tryPort(bin, opts, profile, port) {
+  const args = ['--no-first-run', '--no-default-browser-check', '--disable-gpu', '--window-size=1280,900']
+  if (opts.headless !== false) args.push('--headless=new')
+  args.push(`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank')
+  if (process.getuid && process.getuid() === 0) args.unshift('--no-sandbox')
 
-/**
- * 把 AX 树压成"一行一个节点"，并让 ref 在页面变化之间保持稳定。
- *
- * 稳定性来自 fingerprint = role | name | 同类第几个。
- * 同一个按钮在局部刷新后仍拿同一个 ref，模型不必重新学一遍页面；
- * 只有真的增删改才出现在 diff 里，上下文于是只承载"变化"。
- */
-class Observer {
-  constructor() {
-    this.prev = new Map()    // fingerprint -> { ref, line, backendId }
-    this.byRef = new Map()   // ref -> backendDOMNodeId（当前有效）
-    this.lastRef = 0
+  // 端口模式也要留 stderr：不然"起不来"就只剩一句没有原因的话
+  const child = spawn(bin, args, {
+    stdio: ['ignore', 'ignore', 'pipe', 'ignore', 'ignore'],
+    detached: true,
+  })
+  let stderr = ''
+  if (child.stderr) child.stderr.on('data', (d) => { stderr += String(d) })
+
+  child.unref()
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    const got = await attach(port)
+    if (got) return { ok: true, launched: { ...got, mode: 'launch', pid: child.pid, profile } }
+    if (!alive(child.pid)) break
+    await new Promise((r) => setTimeout(r, 300))
   }
+  try { process.kill(child.pid, 'SIGKILL') } catch { /* 已退出 */ }
 
-  observe(nodes) {
-    const lines = []
-    const added = []
-    const removed = []
-    const updated = []
-    const seen = new Set()
-    const ordinal = new Map()
+  if (/ProcessSingleton|SingletonLock/i.test(stderr)) return { ok: false, profileBusy: true }
+  const why = stderr.split('\n').map((s) => s.trim()).filter(Boolean).slice(-2).join(' | ')
+  return { ok: false, why: why || `debug port ${port} is not reachable` }
+}
 
-    for (const node of nodes) {
-      if (node.ignored) continue
-      const role = node.role?.value
-      if (!role || !KEEP.has(role)) continue
-      const name = node.name?.value ? String(node.name.value).replace(/\s+/g, ' ').trim() : ''
-      if (!name && !NAMELESS_OK.has(role)) continue
+async function launchPipe(bin, opts, profile, degradedFrom) {
+  const args = ['--no-first-run', '--no-default-browser-check', '--disable-gpu', '--window-size=1280,900']
+  if (opts.headless !== false) args.push('--headless=new')
+  args.push('--remote-debugging-pipe', `--user-data-dir=${profile}`, 'about:blank')
+  if (process.getuid && process.getuid() === 0) args.unshift('--no-sandbox')
 
-      const props = {}
-      for (const p of node.properties || []) props[p.name] = p.value?.value
+  const child = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], detached: true })
+  let stderr = ''
+  if (child.stderr) child.stderr.on('data', (d) => { stderr += String(d) })
 
-      const flags = []
-      if (props.checked === true) flags.push('checked')
-      if (props.disabled === true) flags.push('disabled')
-      if (props.expanded === true) flags.push('expanded')
-      if (props.required === true) flags.push('required')
-      if (props.selected === true) flags.push('selected')
-
-      // 同 role+name 可能多个（多个相同按钮、列表项），用出现次序区分
-      const key = `${role}|${name}`
-      const nth = (ordinal.get(key) ?? 0) + 1
-      ordinal.set(key, nth)
-      const fp = `${key}|${nth}`
-      seen.add(fp)
-
-      const shape = `- ${role} "${name.slice(0, 80)}"`
-      const tail = `${flags.length ? ' (' + flags.join(', ') + ')' : ''}`
-      let entry = this.prev.get(fp)
-
-      if (!entry) {
-        const ref = 'e' + (++this.lastRef)
-        entry = { ref, shape, tail, backendId: node.backendDOMNodeId }
-        this.prev.set(fp, entry)
-        added.push(`${shape} [ref=${ref}]${tail}`)
-      } else {
-        // 指纹没变说明还是同一个元素，只更新后端句柄和变化过的属性
-        if (entry.tail !== tail) {
-          entry.tail = tail
-          updated.push(`${shape} [ref=${entry.ref}]${tail}`)
-        }
-        entry.backendId = node.backendDOMNodeId
-      }
-      lines.push(`${entry.shape} [ref=${entry.ref}]${entry.tail}`)
-    }
-
-    // 上一轮有、这一轮没有了
-    for (const [fp, entry] of [...this.prev]) {
-      if (!seen.has(fp)) {
-        removed.push(`${entry.shape} [ref=${entry.ref}]${entry.tail}`)
-        this.prev.delete(fp)
-      }
-    }
-
-    // ref → backendDOMNodeId 只留这轮还在的
-    this.byRef.clear()
-    for (const entry of this.prev.values()) {
-      if (entry.backendId) this.byRef.set(entry.ref, entry.backendId)
-    }
-
-    return {
-      text: lines.join('\n'),
-      changed: added.length > 0 || removed.length > 0 || updated.length > 0,
-      added, removed, updated,
-    }
-  }
-
-  reset() {
-    this.prev.clear()
-    this.byRef.clear()
-    this.lastRef = 0
+  const transport = new PipeTransport(child)
+  const sessionId = await waitForPage(transport, () => stderr)
+  return {
+    transport, mode: 'launch-pipe', port: null, pid: child.pid, sessionId, profile,
+    degradedFrom: degradedFrom || null,
   }
 }
 
@@ -479,9 +416,30 @@ async function settle(cdp, sessionId, budgetMs = 6000) {
   return false   // 一直没稳定：动画或长轮询，不算错，但不能声称已确认
 }
 
+/** AX 树 → 观察器认得的归一化节点。过滤留给 Observer，这里只做形状转换。 */
+function normalizeAx(raw) {
+  const out = []
+  for (const n of raw) {
+    if (n.ignored) continue
+    const role = n.role?.value
+    if (!role) continue
+    const name = n.name?.value ? String(n.name.value).replace(/\s+/g, ' ').trim() : ''
+    const props = {}
+    for (const p of n.properties || []) props[p.name] = p.value?.value
+    const flags = []
+    if (props.checked === true) flags.push('checked')
+    if (props.disabled === true) flags.push('disabled')
+    if (props.expanded === true) flags.push('expanded')
+    if (props.required === true) flags.push('required')
+    if (props.selected === true) flags.push('selected')
+    out.push({ role, name, flags, id: n.backendDOMNodeId })
+  }
+  return out
+}
+
 async function axNodes(cdp, sessionId) {
   const ax = await cdp.send('Accessibility.getFullAXTree', {}, sessionId)
-  return (ax.nodes || []).filter((n) => !n.ignored)
+  return normalizeAx(ax.nodes || [])
 }
 
 async function rectOf(cdp, sessionId, backendId) {
@@ -504,14 +462,6 @@ async function mouseClick(cdp, sessionId, x, y) {
 }
 
 const TEXT = (s) => ({ content: String(s) })
-
-function describe(o) {
-  const parts = []
-  if (o.added.length) parts.push('added:\n' + o.added.map((x) => '  ' + x).join('\n'))
-  if (o.removed.length) parts.push('gone:\n' + o.removed.map((x) => '  ' + x).join('\n'))
-  if (o.updated.length) parts.push('changed:\n' + o.updated.map((x) => '  ' + x).join('\n'))
-  return parts.join('\n')
-}
 
 // ─────────────────────────── 插件 ───────────────────────────
 
@@ -574,6 +524,7 @@ export default {
         headless: cfg.headless !== false,
         port: cfg.port === false ? false : (cfg.port || 9222),
         profileDir: cfg.profileDir,
+        cfg,
       })
       if (!launched.sessionId) {
         const page = await firstPage(launched.transport)
@@ -632,12 +583,19 @@ export default {
       },
       async handler(args) {
         const url = String(args?.url ?? '')
-        if (!/^https?:\/\//i.test(url)) return TEXT(`ERROR: only http(s) URLs are allowed, got "${url}"`)
+        // data: 也放行——它不联网、不读本地文件，正好用来验证页面脚本和动作链。
+        // file: 故意不支持：那等于把任意本地文件内容交给模型。
+        if (!/^(https?:\/\/|data:text\/html)/i.test(url)) {
+          return TEXT(`ERROR: only http(s) and data:text/html URLs are allowed, got "${url}"`)
+        }
         try {
           const l = await connect()
           const before = await pageSignature(l.transport, l.sessionId).catch(() => '')
           if (args?.fresh) observer.reset()
-          await l.transport.send('Page.navigate', { url }, l.sessionId)
+          const nav = await l.transport.send('Page.navigate', { url }, l.sessionId)
+          // Page.navigate 自己会报错，别把它当成"已经打开了"继续往下走。
+          // 浏览器内部错误页也是一张正常页面，settle 会判定它很稳定。
+          if (nav?.errorText) throw new Error(`navigation failed: ${nav.errorText}`)
           const stable = await settle(l.transport, l.sessionId)
           const after = await pageSignature(l.transport, l.sessionId).catch(() => '')
           const o = await look(false)
@@ -772,9 +730,16 @@ export default {
             ? 'n/a (element has no value)'
             : actual === text ? 'yes' : `NO — field contains ${JSON.stringify(actual)}`
 
+          // 输入文字本身不改变页面结构，pageSignature 往往不变，所以这里不能用
+          // "changed:no" 去质疑它——真正的判据是回读到的值。
+          const typedOk = actual === null ? res.changed : actual === text
           return TEXT(
             `typed ${text.length} chars into ${ref}${args?.submit ? ' + Enter' : ''}\n`
-            + `readback: ${verdict}\n` + report(res),
+            + `readback: ${verdict}\n`
+            + `settled: ${res.stable ? 'yes' : 'no — page kept changing'}\n`
+            + `page changed: ${res.changed ? 'yes' : 'no (typing alone usually does not change the page)'}\n`
+            + (typedOk ? '' : 'the field does not hold what was typed — this did NOT take effect\n')
+            + (describe(res.delta) ? '\n' + describe(res.delta) : ''),
           )
         } catch (e) {
           return TEXT(`ERROR: ${e.message}`)
