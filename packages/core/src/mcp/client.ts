@@ -31,6 +31,26 @@ export interface McpTool {
   inputSchema?: Record<string, unknown>
 }
 
+export interface McpResource {
+  uri: string
+  name?: string
+  description?: string
+  mimeType?: string
+}
+
+export interface McpPrompt {
+  name: string
+  description?: string
+  arguments?: Array<{ name: string; description?: string; required?: boolean }>
+}
+
+/** 一个 server 暴露了什么。resources/prompts 可能整个不存在，所以三个都按「有就记」 */
+export interface McpCapabilities {
+  tools: McpTool[]
+  resources: McpResource[]
+  prompts: McpPrompt[]
+}
+
 export interface McpCallResult {
   content: string
   isError: boolean
@@ -250,6 +270,40 @@ export class McpClient {
       .join('\n')
       .trim()
     return { content: text || '(no content)', isError: res?.isError === true, raw: res }
+  }
+
+  async listResources(): Promise<McpResource[]> {
+    const res = (await this.request('resources/list')) as { resources?: McpResource[] } | undefined
+    return res?.resources ?? []
+  }
+
+  async readResource(uri: string): Promise<string> {
+    const res = (await this.request('resources/read', { uri })) as
+      | { contents?: Array<{ text?: string; blob?: string; mimeType?: string }> }
+      | undefined
+    const blocks = res?.contents ?? []
+    return blocks
+      .map((c) => (c.text !== undefined ? c.text : c.blob !== undefined ? `[binary ${c.mimeType ?? ''} ${c.blob.length} b64 chars]` : ''))
+      .join('\n')
+      .trim() || '(empty resource)'
+  }
+
+  async listPrompts(): Promise<McpPrompt[]> {
+    const res = (await this.request('prompts/list')) as { prompts?: McpPrompt[] } | undefined
+    return res?.prompts ?? []
+  }
+
+  async getPrompt(name: string, args: Record<string, string>): Promise<string> {
+    const res = (await this.request('prompts/get', { name, arguments: args })) as
+      | { messages?: Array<{ role?: string; content?: { type?: string; text?: string } | Array<{ type?: string; text?: string }> }> }
+      | undefined
+    const out: string[] = []
+    for (const m of res?.messages ?? []) {
+      const c = m.content
+      const parts = Array.isArray(c) ? c : c ? [c] : []
+      for (const part of parts) if (part.type === 'text' && part.text) out.push(part.text)
+    }
+    return out.join('\n').trim() || '(empty prompt)'
   }
 
   async close(): Promise<void> {

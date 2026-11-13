@@ -51,6 +51,39 @@ function startModel(seen) {
   return server
 }
 
+/** 按给定顺序依次调用工具，最后给一句结论 */
+function startSequence(calls, seen) {
+  return http.createServer((req, res) => {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ id: 'mock' }] }))
+      return
+    }
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const parsed = body ? JSON.parse(body) : {}
+      seen.push(parsed)
+      const done = (parsed.messages ?? []).filter((m) => m.role === 'tool').length
+      const payload = done >= calls.length
+        ? { model: 'mock', choices: [{ message: { role: 'assistant', content: 'mcp said hi' }, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }
+        : {
+            model: 'mock',
+            choices: [{
+              message: {
+                role: 'assistant', content: '',
+                tool_calls: [{ id: 'c' + done, type: 'function', function: calls[done] }],
+              },
+              finish_reason: 'tool_calls',
+            }],
+            usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+          }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(payload))
+    })
+  })
+}
+
 function setup() {
   const home = mkdtempSync(join(tmpdir(), 'uh-mcp-'))
   writeFileSync(join(home, 'mcp.json'), JSON.stringify({
@@ -196,3 +229,70 @@ function sessionDirOf(home) {
   }
   return dir
 }
+
+test('resources and prompts become tools instead of being ignored', async () => {
+  const home = setup()
+  try {
+    const out = execFileSync(process.execPath, [CLI, 'mcp', 'list'], {
+      env: { ...process.env, UH_HOME: home }, encoding: 'utf8',
+    })
+    // 资源不逐个展开成工具：一个 server 可能有几百个，展开就把工具表淹了
+    assert.match(out, /mcp__mock__list_resources/)
+    assert.match(out, /mcp__mock__read_resource/)
+    assert.equal(out.includes('mcp__mock__readme'), false, 'resources are not one tool each')
+    // prompt 模板带上了它的参数
+    assert.match(out, /mcp__mock__prompt_review/)
+    assert.match(out, /takes: target/)
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('read_resource and prompt templates actually return the server content', async () => {
+  const seen = []
+  const server = startSequence([
+    { name: 'mcp__mock__read_resource', arguments: JSON.stringify({ uri: 'mock://readme' }) },
+    { name: 'mcp__mock__prompt_review', arguments: JSON.stringify({ target: 'the diff' }) },
+  ], seen)
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const port = server.address().port
+  const home = setup()
+  try {
+    const out = await new Promise((resolve) => {
+      const p = spawn(process.execPath, [CLI, 'run', 'read the mock resource', '--max-steps', '4'], {
+        env: { ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock' },
+      })
+      let s = ''
+      p.stdout.on('data', (d) => (s += d))
+      p.stderr.on('data', (d) => (s += d))
+      p.on('close', () => resolve(s))
+    })
+    assert.match(out, /mcp said hi/)
+
+    const fed = seen.at(-1).messages.filter((m) => m.role === 'tool').map((m) => String(m.content))
+    const joined = fed.join('\n')
+    assert.ok(joined.includes('this came from an MCP resource'), 'resource text reaches the model')
+    assert.ok(joined.includes('Please review the diff carefully.'), 'the prompt template is expanded, not echoed')
+  } finally {
+    server.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a server that only implements tools is not treated as broken', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'uh-mcp-tools-'))
+  writeFileSync(join(home, 'mcp.json'), JSON.stringify({
+    mcpServers: { mock: { command: process.execPath, args: [MOCK], env: { MOCK_MCP_TOOLS_ONLY: '1' } } },
+  }))
+  try {
+    const out = execFileSync(process.execPath, [CLI, 'mcp', 'list'], {
+      env: { ...process.env, UH_HOME: home }, encoding: 'utf8',
+    })
+    // -32601 是「本服务器没这个能力」，不是错误
+    assert.match(out, /mcp__mock__echo/)
+    assert.equal(/error/i.test(out.split('mock__mock__echo')[0] ?? ''), false, 'no error banner')
+    assert.equal(out.includes('list_resources'), false, 'nothing invented for a server without resources')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
