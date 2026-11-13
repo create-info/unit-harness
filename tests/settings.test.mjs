@@ -65,9 +65,12 @@ test('settings expose every provider, save a key masked, and keep it off disk in
     assert.equal(after.keyMasked.includes('secret-value'), false, 'the masked form must not carry the key')
     assert.match(after.keyMasked, /…/)
 
-    // 配置文件 0600
+    // 配置文件 0600。Windows 的 chmod 不生效（NTFS ACL 不是 POSIX 位），
+    // 产品层已经 try/catch 忽略，所以这里也只对 POSIX 断言
     const cfgPath = join(home, 'config.json')
-    assert.equal(statSync(cfgPath).mode & 0o777, 0o600, 'config.json must be 0600')
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(cfgPath).mode & 0o777, 0o600, 'config.json must be 0600')
+    }
     assert.ok(readFileSync(cfgPath, 'utf8').includes('sk-ant-secret-value-4321'), 'the key itself is stored')
 
     // 换 provider 之后再读，选中项要跟着变
@@ -107,7 +110,9 @@ test('the workspace can be switched and becomes the sandbox root', async () => {
 
     // ~ 展开
     const tilde = await post('/api/project', { path: '~/unit-harness-tmp-proj' })
-    assert.ok(tilde.current && tilde.current.startsWith('/'), '~ must expand to an absolute path')
+    // Windows 上是 D:\..., POSIX 上是 /...，两者都算展开成功
+    assert.ok(tilde.current && /^([A-Za-z]:[\\/]|\/)/.test(tilde.current), '~ must expand to an absolute path')
+    assert.equal(tilde.current.includes('~'), false, 'no literal ~ may survive')
     rmSync(tilde.current, { recursive: true, force: true })
   } finally {
     srv.kill()
