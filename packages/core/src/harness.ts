@@ -35,6 +35,7 @@ import { buildSeatbeltProfile, findSeatbelt } from './sandbox/seatbelt.ts'
 import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/toolchains.ts'
 import { McpRegistry } from './mcp/bridge.ts'
 import { loadMcpServers } from './mcp/config.ts'
+import { Checkpoints, checkpointDirFor } from './checkpoint/store.ts'
 import { allowAll, denyAll, needsApproval } from './approval/gate.ts'
 import type { ApprovalDecision, ApprovalGate, ApprovalPolicy, ApprovalRequest } from './approval/gate.ts'
 import { uhHome } from './paths.ts'
@@ -153,6 +154,19 @@ export class Harness {
 
   /** 中断：Ctrl+C 走这里，而不是直接杀进程 */
   private readonly abortCtl = new AbortController()
+
+  /** 工作区快照（每个 run 一个点） */
+  private snapshotWorkspace(task: string, phase: 'before' | 'after' = 'before'): void {
+    try {
+      const cps = new Checkpoints(this.workspace, checkpointDirFor(uhHome(), this.workspace))
+      const label = `${phase}: ${task.replace(/\s+/g, ' ').slice(0, 60)}`
+      const hash = cps.snapshot(label)
+      if (hash) this.ev('checkpoint/created', { commit: hash.slice(0, 12), label }, 'agent')
+    } catch {
+      // git 不在、磁盘满、工作区不可读——都不该让任务本身失败
+      this.log('warn', 'could not create a checkpoint for this run')
+    }
+  }
 
   /** 审批门：显式 gate 优先，否则按策略挑 */
   private approvalGate(): ApprovalGate {
@@ -691,6 +705,9 @@ export class Harness {
 
     const before = o.verify === false ? null : snapshotDir(this.workspace)
 
+    // 改动发生之前建点：undo 要能回到「这个 run 还没动过任何东西」的状态
+    this.snapshotWorkspace(o.task)
+
     const result = await runAgent(
       {
         workspace: this.workspace,
@@ -839,6 +856,10 @@ export class Harness {
         }), 'utf8')
       } catch { /* 状态落盘失败不该让整次运行失败 */ }
     }
+
+    // 这次 run 的收尾点。没有它，第一次 run 的改动就撤不回来——
+    // 全部历史只有「run 之前」一个 commit，HEAD~1 根本不存在
+    this.snapshotWorkspace(o.task, 'after')
 
     // 中断不是失败：把「被谁停下的」写清楚，下次 --continue 才知道从哪接
     if (result.stoppedBy === 'interrupted') {

@@ -278,6 +278,10 @@ things that decide whether an agent finishes a real task:
   Before this the model had to shell out to `cat`: no line numbers to point at, and a
   big file would flood the context in one go. They run in-process, read-only, and every
   path goes through the same escape check as `apply_patch`.
+- **Checkpoints.** Every run leaves a restore point in a git repo of its own, keyed by
+  workspace and kept outside whatever repo the user has there. `uh undo` rewinds the
+  last run — including files the agent changed through a shell command, which is how
+  roughly half of real edits happen. Undoing is itself recoverable: the commits stay.
 - **Images.** `uh run "..." --image shot.png` — sent as a data URL (OpenAI) or a
   base64 image block (Anthropic). Verified against a local vision model: asked what
   was in a screenshot of this very UI, it named the session list correctly.

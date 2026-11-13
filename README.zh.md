@@ -243,6 +243,9 @@ uh run "看看工作区里有什么"
 - **真正的文件工具**。`read_file`（带行号、支持 offset/limit）、`list_dir`、`grep`。
   在这之前模型只能 `cat`：拿不到行号指不到位，一个大文件就能把上下文冲掉。它们跑在
   进程内、只读，路径和 `apply_patch` 走同一道逃逸检查。
+- **检查点**。每次 run 在工作区之外留一个还原点（每个工作区一个独立的 git 仓库，
+  不碰你自己的 .git）。`uh undo` 撤回最近一次 run——包括 agent 通过 shell 命令改的文件，
+  而真实改动里有一半是这么来的。回退本身也能再回退：commit 都还在。
 - **图片**。`uh run "..." --image shot.png`，OpenAI 走 data URL、Anthropic 走 base64 image block。
   已用本地视觉模型实测：问它这张界面截图左侧栏有什么，它准确报出了会话列表。
 
