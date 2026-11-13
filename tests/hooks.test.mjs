@@ -86,7 +86,7 @@ test('a pre_tool hook blocks the command before it runs', async () => {
   }))
 
   try {
-    const { s } = await run(['run', 'write the file', '--yes'], {
+    const { s } = await run(['run', 'write the file', '--yes', '--allow-unconfined'], {
       ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock',
     })
 
@@ -120,7 +120,7 @@ test('a pre_finish hook rejects "done" until the check passes', async () => {
   }))
 
   try {
-    const { s } = await run(['run', 'do the thing', '--max-steps', '4'], {
+    const { s } = await run(['run', 'do the thing', '--max-steps', '4', '--allow-unconfined'], {
       ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock',
     })
 
@@ -145,7 +145,7 @@ test('no hooks file means no hook overhead', async () => {
   const home = mkdtempSync(join(tmpdir(), 'uh-hook3-'))
   mkdirSync(join(home, 'work'), { recursive: true })
   try {
-    await run(['run', 'nothing special'], {
+    await run(['run', 'nothing special', '--allow-unconfined'], {
       ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock',
     })
     const events = eventsOf(home)
