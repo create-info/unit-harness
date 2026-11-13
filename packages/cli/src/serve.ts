@@ -537,6 +537,14 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       return
     }
 
+    // 页面刷新 / 新标签页进来时，正在等的那条审批得能拿回来。
+    // 之前只有 broadcast，人一刷新卡片就没了，而任务还在原地等——
+    // 界面看起来像卡死，其实是有一个没人看得见的弹窗。
+    if (req.method === 'GET' && url.pathname === '/api/pending') {
+      json(res, 200, { pending: [...pendingInfo.values()] })
+      return
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/approval') {
       let body: { mode?: string } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
@@ -900,7 +908,14 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       try {
         const store = new EventStore()
         const events = store.read(id)
-        const answer = [...events].reverse().find((e) => e.kind === 'assistant/message' || e.kind === 'turn/end')
+        // 只要文本。之前把整个 payload 递出去，UI 拿到一个对象，
+        // 于是重放历史会话时回答区显示的是 "[object Object]"。
+        const answerEvent = [...events].reverse().find(
+          (e) => e.kind === 'assistant/message' && typeof (e.payload as { text?: unknown })?.text === 'string',
+        )
+        const answer = typeof (answerEvent?.payload as { text?: unknown })?.text === 'string'
+          ? (answerEvent!.payload as { text: string }).text
+          : null
         const artifacts = events.filter((e) => e.kind === 'artifact/emitted').map((e) => e.payload)
         const verifications = events
           .filter((e) => e.kind === 'verification/asserted')
@@ -912,7 +927,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
               detail: e.payload,
             }
           })
-        json(res, 200, { id, events, artifacts, verifications, answer: answer?.payload ?? null })
+        json(res, 200, { id, events, artifacts, verifications, answer })
       } catch (err) {
         json(res, 404, { error: err instanceof Error ? err.message : 'session not found' })
       }
