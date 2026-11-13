@@ -65,6 +65,24 @@ const dynamicImport = new Function('s', 'return import(s)') as (s: string) => Pr
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'silent'
 const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40, silent: 100 }
 
+/**
+ * 这条 stderr 是不是沙箱拒绝，而不是命令自己失败。
+ *
+ * 分不清的代价很大：把普通报错当沙箱拒绝，模型会一遍遍申请放宽；
+ * 把沙箱拒绝当普通报错，模型只会换个写法重试然后放弃。所以只认
+ * 各后端自己的固定方言（bwrap / landlock / seatbelt 各有各的说法）。
+ */
+export function isSandboxDenial(stderr: string): boolean {
+  if (!stderr) return false
+  const s = stderr.toLowerCase()
+  return s.includes('read-only file system')
+    || s.includes('permission denied')
+    || s.includes('operation not permitted')
+    || s.includes('权限不够')
+    || s.includes('operation not allowed')
+    || s.includes('eacces')
+}
+
 export interface HarnessOptions {
   pluginDirs?: string[]
   /** 审批策略：ask 逐次问（默认），allow 全放行，deny 一律拒 */
@@ -153,6 +171,8 @@ export class Harness {
   private readonly services = new Map<string, unknown>()
   private readonly helper: LandlockHelper | null
   private readonly bwrap: { path: string } | null
+  /** 本会话已批准的命令指纹（cwd + argv）。进程退出即失效，不落盘。 */
+  private readonly approvedCommands = new Set<string>()
   private readonly seatbelt: SeatbeltInfo
   /** MCP server 桥接（外部进程，不在沙箱内） */
   readonly mcp = new McpRegistry()
@@ -564,7 +584,8 @@ export class Harness {
 
   /** 唯一的命令执行入口；path-guard 下默认拒绝（fail-closed） */
   async exec(spec: ExecSpec): Promise<ExecResult> {
-    const level = this.isolation.enforced
+    let level = this.isolation.enforced
+    let escalated = false
     const workdir0 = spec.cwd ?? this.workspace
 
     // 先记 tool/call：即使随后被拒绝，"有人试图执行"也必须留痕（审计完整性）
@@ -578,11 +599,59 @@ export class Harness {
     if (spec.source === 'model') {
       const cmdline = spec.argv.join(' ')
       const risk = classify(cmdline)
+
+      // 越权申请：沙箱挡不住它想要的事，它明确要求这一次跑在外面。
+      // 这种请求一律要问，而且不问"要不要"，问的是"同不同意这个理由"。
+      if (spec.escalate) {
+        const why = spec.escalate.trim().slice(0, 300) || '(no reason given)'
+        const req: ApprovalRequest = {
+          kind: 'exec',
+          risk: risk === 'read' ? 'write' : risk,
+          reason: `wants to run OUTSIDE the sandbox — ${why}`,
+          summary: cmdline.length > 160 ? `${cmdline.slice(0, 157)}...` : cmdline,
+          detail: `${cmdline}\n\nwhy: ${why}\n\nsandbox: ${level}`,
+        }
+        let decision: ApprovalDecision = 'allow'
+        if (this.opts.approval === 'allow') {
+          this.ev('approval/resolved', { kind: 'exec', risk, decision: 'allow', auto: true, escalation: true }, 'user')
+        } else {
+          const requested = this.ev('approval/requested', { ...req }, 'agent')
+          decision = await this.approvalGate().request(req)
+          this.ev('approval/resolved', { kind: 'exec', risk, decision, escalation: true }, 'user', requested?.id ?? null)
+        }
+        if (decision === 'deny') {
+          this.ev('tool/result', {
+            tool: 'exec', status: 'refused', isolation: level, refused: true, denied_by: 'approval',
+          }, 'user', attempted?.id ?? null)
+          throw new Error(
+            'E_APPROVAL_DENIED: the user refused to run this outside the sandbox. ' +
+            'Do not retry it and do not try to reach the same result through another command. ' +
+            'Say what you could not do and why it needed to leave the sandbox.',
+          )
+        }
+        escalated = true
+        level = 'none'
+      }
+    }
+
+    if (spec.source === 'model' && !spec.escalate) {
+      const cmdline = spec.argv.join(' ')
+      const risk = classify(cmdline)
       const verdict = needsApproval(risk, {
         // path-guard / none 时沙箱其实没在管写入
         isolationEnforced: level !== 'path-guard' && level !== 'none',
         kind: 'exec',
       })
+      // 本会话内批准过的同一条命令（同参数、同目录）不再问第二遍。
+      // Codex 的 ApprovedForSession 就是这个粒度：精确到 argv + cwd，
+      // 因为它记住的是"这一条"，不是"这一类"——`rm -rf node_modules` 批一次，
+      // 不代表下次 `rm -rf ~` 也该放行。
+      const cmdKey = workdir0 + '\u0000' + spec.argv.join('\u0000')
+      if (verdict.needed && this.approvedCommands.has(cmdKey)) {
+        this.ev('approval/resolved', { kind: 'exec', risk, decision: 'allow', cached: true }, 'user')
+        verdict.needed = false
+      }
+
       if (verdict.needed) {
         const req: ApprovalRequest = {
           kind: 'exec',
@@ -601,6 +670,7 @@ export class Harness {
           decision = await this.approvalGate().request(req)
           this.ev('approval/resolved', { kind: 'exec', risk, decision }, 'user', requested?.id ?? null)
         }
+        if (decision === 'allow') this.approvedCommands.add(cmdKey)
         if (decision === 'deny') {
           this.ev('tool/result', {
             tool: 'exec',
@@ -617,7 +687,9 @@ export class Harness {
       }
     }
 
-    if ((level === 'path-guard' || level === 'none') && this.opts.unconfined !== true) {
+    // 越权批准过的那一次是**有意**跑在沙箱外的，人已经点过头；
+    // 再拿 fail-closed 拦一次，等于让刚批准的许可当场失效。
+    if ((level === 'path-guard' || level === 'none') && this.opts.unconfined !== true && !escalated) {
       this.ev('tool/result', {
         tool: 'exec',
         status: 'error',
@@ -641,9 +713,11 @@ export class Harness {
     // 按平台选择施加方式：Linux = landlock helper，macOS = sandbox-exec
     // bwrap 排最前：它是唯一能既让工具链读得动、又挡住 ~/.ssh 的机制。
     // 用不了（userns 被禁）才退到 landlock —— 那条路读是放开的，见 bwrap.ts。
-    const useBwrap = this.bwrap !== null && spec.isolation !== 'none'
-    const useLandlock = !useBwrap && this.helper !== null && spec.isolation !== 'none'
-    const useSeatbelt = !useLandlock && this.seatbelt.available && spec.isolation !== 'none'
+    // 判据是解析后的 level，不是请求里的 spec.isolation：
+    // 越权批准后 level 会被改成 'none'，那一刻就真的不能套沙箱。
+    const useBwrap = this.bwrap !== null && level !== 'none'
+    const useLandlock = !useBwrap && this.helper !== null && level !== 'none'
+    const useSeatbelt = !useBwrap && !useLandlock && this.seatbelt.available && level !== 'none'
 
     let cmd: string
     let args: string[]
@@ -744,11 +818,21 @@ export class Harness {
         const stdout = outC.value()
         const stderr = errC.value()
         const digest = createHash('sha256').update(stdout + stderr).digest('hex').slice(0, 16)
+        // 记**实际**用的机制。越权批准过的那一次没有沙箱——
+        // 这里如果照抄"我们有 landlock"，审计链就会给一次不受限的执行贴上受限的标签，
+        // 那比没有日志更糟：它让你以为查过了。
+        const actualIsolation: IsolationLevel = escalated
+          ? 'none'
+          : useBwrap ? 'bwrap'
+          : useLandlock ? (`landlock-v${this.helper!.abi}` as IsolationLevel)
+          : useSeatbelt ? 'seatbelt'
+          : level
         this.ev('tool/result', {
           tool: 'exec',
           status: code === 0 ? 'ok' : 'error',
           exit_code: code ?? -1,
-          isolation: this.bwrap ? 'bwrap' : this.helper ? `landlock-v${this.helper.abi}` : level,
+          isolation: actualIsolation,
+          ...(escalated ? { escalated: true } : {}),
           duration_ms: Date.now() - started,
           output_digest: digest,
           truncated,
@@ -757,9 +841,8 @@ export class Harness {
           exitCode: code ?? -1,
           stdout, stderr, truncated,
           durationMs: Date.now() - started,
-          isolation: this.helper
-            ? (`landlock-v${this.helper.abi}` as IsolationLevel)
-            : (useSeatbelt ? 'seatbelt' : level),
+          isolation: actualIsolation,
+          ...(escalated ? { escalated: true } : {}),
         })
       })
     })
@@ -917,11 +1000,21 @@ export class Harness {
           const r = await this.exec({
             argv: [a.argv[0] as string, ...a.argv.slice(1)],
             ...(a.timeoutMs ? { timeoutMs: a.timeoutMs } : {}),
+            ...(a.escalate ? { escalate: a.escalate } : {}),
             signal: this.abortCtl.signal,
             source: 'model',
           })
           const body = r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : '')
-          return { content: `exit=${r.exitCode} isolation=${r.isolation}\n${body}`.trim() }
+
+          // 撞了沙箱墙的人（模型）需要知道两件事：这不是命令写错了，以及有正规的
+          // 申请通道。否则它只会换个写法再撞一次，或者干脆报告"做不到"。
+          const hint = r.exitCode !== 0 && !r.escalated && isSandboxDenial(r.stderr)
+            ? `\n\n[sandbox: refused by ${r.isolation} — this is the boundary, not a bug in your command. `
+              + `Writes are only allowed inside ${this.workspace}.]\n`
+              + `[sandbox: if this genuinely has to happen, call run_command again with `
+              + `escalate:"<one line saying why>". The user is asked first, and only that one command runs outside.]`
+            : ''
+          return { content: `exit=${r.exitCode} isolation=${r.isolation}\n${body}${hint}`.trim() }
         },
         callTool: (name, args) => this.callTool(name, args),
         readFile: (rel) => {
