@@ -19,7 +19,11 @@
 
 import type { RiskLevel } from '../remote/risk.ts'
 
-export type ApprovalDecision = 'allow' | 'deny'
+/**
+ * `allow-always` 只有在请求带了 `persistPrefix` 时才有意义——
+ * 界面上那个复选框不该出现在注定记不住的命令上（破坏性、curl、git push …）。
+ */
+export type ApprovalDecision = 'allow' | 'allow-always' | 'deny'
 
 /** ask = 逐次询问（默认），allow = 全放行，deny = 一律拒绝 */
 export type ApprovalPolicy = 'ask' | 'allow' | 'deny'
@@ -34,6 +38,16 @@ export interface ApprovalRequest {
   detail: string
   /** 为什么需要问（沙箱没兜住 / 毁灭性 / 远端写） */
   reason: string
+  /**
+   * 若用户选「一直都行」，会记住这个前缀。null / 缺失 = 这条命令不允许被记住，
+   * 界面就不该显示那个选项。
+   */
+  persistPrefix?: string[] | null
+  /**
+   * true = 记的是这一条确切的命令（破坏性动作），false = 记前缀。
+   * 界面上要区分：`npm install *` 覆盖后续参数，`rm -rf node_modules` 只覆盖它自己。
+   */
+  persistExact?: boolean
 }
 
 export interface ApprovalGate {

@@ -152,7 +152,7 @@ const running = new Map<string, Harness>()
  * CLI 里是 readline，网页里必须是同一件事：把请求推给前端、挂一个 promise、
  * 等人点。五分钟没人理就当拒绝——把「没人回答」当成允许是最坏的那种默认。
  */
-const pendingApprovals = new Map<string, (d: 'allow' | 'deny') => void>()
+const pendingApprovals = new Map<string, (d: 'allow' | 'allow-always' | 'deny') => void>()
 
 /**
  * 待决审批的完整内容，按 session 留一份。
@@ -283,10 +283,13 @@ function makeWebGate(sidRef: { id: string }): ApprovalGate {
         summary: req.summary,
         detail: req.detail,
         reason: req.reason,
+        // null 表示这条命令不允许被记住，界面就不显示那个复选框
+        persistPrefix: req.persistPrefix ?? null,
+        persistExact: req.persistExact === true,
       }
       pendingInfo.set(id, { sid: sidRef.id, payload })
       broadcast(sidRef.id, 'approval/needs', payload)
-      const decision = await new Promise<'allow' | 'deny'>((resolve) => {
+      const decision = await new Promise<'allow' | 'allow-always' | 'deny'>((resolve) => {
         pendingApprovals.set(id, resolve)
         const timer = setTimeout(() => {
           if (pendingApprovals.delete(id)) resolve('deny')
@@ -1075,14 +1078,20 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
 
     // 人在网页上点了「允许/拒绝」
     if (req.method === 'POST' && url.pathname === '/api/approve') {
-      let body: { id?: string; approved?: boolean } = {}
+      let body: { id?: string; approved?: boolean; always?: boolean } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
       const fn = body.id ? pendingApprovals.get(body.id) : undefined
       if (!fn) { json(res, 404, { error: 'no such approval request' }); return }
       pendingApprovals.delete(body.id as string)
       pendingInfo.delete(body.id as string)
-      fn(body.approved === true ? 'allow' : 'deny')
-      json(res, 200, { ok: true, decision: body.approved === true ? 'allow' : 'deny' })
+      // 三种回答：拒绝 / 就这一次 / 一直都行。第三种的持久化由 harness 做，
+      // 这里只把意图传下去——服务端不该偷偷往规则文件里写东西。
+      const decision: 'allow' | 'allow-always' | 'deny' =
+        body.approved === true
+          ? (body.always === true ? 'allow-always' : 'allow')
+          : 'deny'
+      fn(decision)
+      json(res, 200, { ok: true, decision })
       return
     }
 

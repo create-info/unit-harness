@@ -71,3 +71,7 @@ export type {
 // 事件 → 人话。三个前端共用一套说法，屏幕上不出现内部术语
 export { describeTool, describeToolResult, describeCommand, describeThinking, describeFilesChanged } from './agent/progress.ts'
 export type { ProgressLine } from './agent/progress.ts'
+
+// 审批记忆：prefix_rule 持久化（破坏性命令永不记）
+export { suggestPrefix, matchesRule, normalizeArgv, loadRules, addRule, removeRule, touchMatching, describeRule } from './approval/rules.ts'
+export type { ApprovalRule } from './approval/rules.ts'
