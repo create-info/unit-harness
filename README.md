@@ -41,6 +41,18 @@ curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/main/insta
 irm https://raw.githubusercontent.com/create-info/unit-harness/main/install.ps1 | iex
 ```
 
+**Don't click the `.dmg` / binaries on the Releases page.** Browsers stamp every
+download with a quarantine flag, and macOS then refuses to run a binary that isn't
+notarised — you get "damaged and can't be opened" (for the .app) or "Apple cannot
+verify…" (for the CLI), neither of which means anything is wrong with the file. The
+two commands above fetch with `curl`, which does not set that flag, so the binaries
+run directly. If you already downloaded by hand:
+
+```bash
+xattr -d com.apple.quarantine ~/Downloads/uh-darwin-arm64   # the CLI
+xattr -cr /Applications/UnitHarness.app                     # the desktop app
+```
+
 The Linux binary carries the landlock helper inside itself and unpacks it to
 `~/.uh/bin/` on first run — nothing else to install. From source instead:
 

@@ -135,6 +135,21 @@ jobs:
       - name: build single-file binary
         run: npm run build:sea
 
+      - name: ad-hoc sign the macOS binary
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          cd dist/bin
+          BIN=$(ls | grep -E '^uh-darwin-' | head -1)
+          # Apple Silicon 要求所有 arm64 代码页都有签名。没有签名时系统说的不是
+          # 「无法验证开发者」，而是「已损坏，无法打开」——用户会以为下载坏了。
+          # ad-hoc 签名（-s -）不需要开发者证书，只把提示降回正常的那条。
+          codesign --force --sign - "$BIN"
+          codesign --verify --strict "$BIN"
+          codesign -dv "$BIN" 2>&1 | grep -E 'Signature|Identifier' || true
+          echo "signed $BIN (ad-hoc)"
+
       - name: smoke test the binary
         shell: bash
         run: |
