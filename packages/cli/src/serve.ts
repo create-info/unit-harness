@@ -11,7 +11,7 @@ import pathMod, { join as pjoin } from 'node:path'
 import fsSync, { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import fs6 from 'node:fs'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import {
   EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey,
   readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig,
@@ -172,6 +172,91 @@ function bufferEvent(sid: string, kind: string, payload: Record<string, unknown>
   arr.push({ kind, payload })
   if (arr.length > EV_BUF_MAX) arr.splice(0, arr.length - EV_BUF_MAX)
   evBuf.set(sid, arr)
+}
+
+/**
+ * 这台机器上，电脑操控到底能做到哪一步。
+ *
+ * 分两类报：截屏（看）和输入模拟（动）。两者的依赖完全不同——截屏有 ffmpeg
+ * 就够，输入要 xdotool（X11）或 ydotool（Wayland）。分开报是因为
+ * 「我能看见但动不了」和「完全不行」是两件事，混在一个布尔里没法做决定。
+ */
+function haveCmd(name: string): boolean {
+  try {
+    execFileSync('sh', ['-c', `command -v ${name}`], { stdio: 'ignore', timeout: 2000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function sessionType(): 'x11' | 'wayland' | 'none' {
+  if (process.env.WAYLAND_DISPLAY) return 'wayland'
+  if (process.env.DISPLAY) return 'x11'
+  return 'none'
+}
+
+function computerStatus() {
+  const cfg = readConfig().computer ?? {}
+  const session = sessionType()
+  const grabber = session === 'x11'
+    ? (haveCmd('ffmpeg') ? 'ffmpeg x11grab' : haveCmd('scrot') ? 'scrot' : haveCmd('import') ? 'import' : '')
+    : session === 'wayland'
+      ? (haveCmd('grim') ? 'grim' : '')
+      : '';
+  const input = session === 'x11'
+    ? (haveCmd('xdotool') ? 'xdotool' : '')
+    : session === 'wayland'
+      ? (haveCmd('ydotool') ? 'ydotool' : '')
+      : '';
+  return {
+    // 总开关默认开：截屏本身不改变任何东西，先让人看见它行不行
+    enabled: cfg.enabled !== false,
+    // 分项开关也要回给界面，否则关掉之后刷新一看还是"开"的
+    screenshotsEnabled: cfg.screenshots !== false,
+    controlEnabled: cfg.control === true,
+    screenshots: {
+      available: Boolean(grabber),
+      tool: grabber,
+    },
+    control: {
+      available: Boolean(input),
+      tool: input,
+      // 没有工具时说清要装什么，而不是让用户对着一个灰按钮猜
+      need: input ? '' : session === 'wayland' ? 'ydotool' : 'xdotool',
+    },
+    session,
+    display: process.env.DISPLAY || process.env.WAYLAND_DISPLAY || '',
+    allowedApps: cfg.allowedApps ?? [],
+    // 这一层碰的是真实的桌面，沙箱管不到。状态里必须这么写。
+    isolation: 'none' as const,
+    external: true as const,
+  }
+}
+
+function captureScreen(out: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const session = sessionType()
+    const args = session === 'x11'
+      ? (haveCmd('ffmpeg')
+          // 缩到 1600 宽：4K 原图在设置页里只是个小预览，580KB 传过来纯属浪费，
+          // 而且整页会卡住浏览器
+          ? ['ffmpeg', '-loglevel', 'error', '-f', 'x11grab', '-i', process.env.DISPLAY || ':0',
+             '-vf', 'scale=1600:-1', '-frames:v', '1', '-y', out]
+          : haveCmd('scrot') ? ['scrot', '-o', out]
+          : haveCmd('import') ? ['import', '-window', 'root', out]
+          : null)
+      : (haveCmd('grim') ? ['grim', out] : null)
+    if (!args) { reject(new Error('no screenshot tool')); return }
+    const child = spawn(args[0] as string, args.slice(1), { stdio: 'ignore' })
+    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('timed out')) }, 20_000)
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      if (code === 0) resolve()
+      else reject(new Error(`${args[0]} exited ${code}`))
+    })
+    child.on('error', (e) => { clearTimeout(timer); reject(e) })
+  })
 }
 
 function makeWebGate(sidRef: { id: string }): ApprovalGate {
@@ -570,6 +655,55 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       cfg.sandbox = cur
       writeConfig(cfg)
       json(res, 200, { ok: true, sandbox: sandboxPrefs() })
+      return
+    }
+
+    // 电脑操控：这一层是真在操作这台机器，不是在沙箱里。
+    // 能做什么必须先探测再显示——列出"支持点击"然后点了没反应，比不支持更糟。
+    if (req.method === 'GET' && url.pathname === '/api/computer') {
+      json(res, 200, computerStatus())
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/computer/toggle') {
+      const body = JSON.parse(await readBody(req) || '{}') as { field?: string; value?: unknown }
+      const cfg = readConfig()
+      const cur = cfg.computer ?? {}
+      if (body.field === 'enabled' || body.field === 'screenshots' || body.field === 'control') {
+        cfg.computer = { ...cur, [body.field]: Boolean(body.value) }
+      } else if (body.field === 'allowedApps') {
+        cfg.computer = { ...cur, allowedApps: Array.isArray(body.value) ? body.value.map(String) : [] }
+      } else {
+        json(res, 400, { error: 'unknown field' })
+        return
+      }
+      writeConfig(cfg)
+      json(res, 200, { ok: true, ...computerStatus() })
+      return
+    }
+
+    // 截屏：返回 PNG 本体，页面直接当图用
+    if (req.method === 'GET' && url.pathname === '/api/computer/shot.png') {
+      const st = computerStatus()
+      // 三个条件缺一不可：总开关、分项开关、机器上真有工具。
+      // 只查前两个里的一个，会出现「关掉了还在截」——开关于是变成一句谎话。
+      if (!st.enabled || !st.screenshotsEnabled || !st.screenshots.available) {
+        json(res, 403, {
+          error: !st.enabled || !st.screenshotsEnabled ? 'screen capture is turned off' : 'no screenshot tool on this machine',
+        })
+        return
+      }
+      const out = pjoin(os.tmpdir(), 'uh-computer-' + Date.now() + '.png')
+      try {
+        await captureScreen(out)
+        const buf = fs6.readFileSync(out)
+        fs6.unlinkSync(out)
+        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' })
+        res.end(buf)
+      } catch (e) {
+        // 拿不到就如实说拿不到：黑图会让人以为屏幕是黑的
+        json(res, 500, { error: 'screenshot failed: ' + (e as Error).message })
+      }
       return
     }
 
