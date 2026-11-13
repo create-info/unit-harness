@@ -613,7 +613,7 @@ export class Harness {
         const req: ApprovalRequest = {
           kind: 'exec',
           risk: risk === 'read' ? 'write' : risk,
-          reason: `wants to run OUTSIDE the sandbox — ${why}`,
+          reason: `needs to run this outside the sandbox — ${why}`,
           summary: cmdline.length > 160 ? `${cmdline.slice(0, 157)}...` : cmdline,
           detail: `${cmdline}\n\nwhy: ${why}\n\nsandbox: ${level}`,
         }

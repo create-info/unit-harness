@@ -14,8 +14,8 @@ import fs6 from 'node:fs'
 import { spawn, execFileSync } from 'node:child_process'
 import {
   EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey,
-  readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig,
-} from '@unit-harness/core'
+  readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig } from '@unit-harness/core'
+import { describeTool, describeToolResult, describeThinking, describeFilesChanged } from '@unit-harness/core'
 import { loadMcpServers, discoverSkills } from '@unit-harness/core'
 import type { ApprovalGate, ApprovalRequest } from '@unit-harness/core'
 import UI from './ui.html'
@@ -300,9 +300,38 @@ function makeWebGate(sidRef: { id: string }): ApprovalGate {
   }
 }
 
+/**
+ * 给事件补一句人话。
+ *
+ * 屏幕上是给用户看的，不是协议转储：`run_command`、`argv`、`tool_call(s)`
+ * 这些词只该出现在日志里。翻译放在服务端，因为 Web UI 拿到的是静态页，
+ * 而 ACP / CLI 也要用同一套说法——三处各写一套就是同一个动作三个名字。
+ */
+function progressOf(kind: string, payload: Record<string, unknown>): Record<string, unknown> {
+  try {
+    if (kind === 'tool/call') {
+      const { label, detail } = describeTool(String(payload.tool ?? ''), payload)
+      return { label, ...(detail ? { detail } : {}) }
+    }
+    if (kind === 'tool/result') {
+      const { label } = describeToolResult(String(payload.tool ?? ''), payload)
+      return { label }
+    }
+    if (kind === 'llm/request') return { label: describeThinking().label }
+    if (kind === 'checkpoint/file') {
+      const added = Number(payload.added ?? 0)
+      const removed = Number(payload.removed ?? 0)
+      return { label: describeFilesChanged(added, removed, 1).label }
+    }
+  } catch {
+    // 翻译失败绝不能挡住事件本身：宁可显示原文，也不能让界面少一条
+  }
+  return {}
+}
+
 function broadcast(sessionId: string, kind: string, payload: Record<string, unknown>): void {
   // 盖上发送时刻：前端算「+2.3s」要用事件自己的时间，不然补发的那一批全显示成 +0.0s
-  const stamped = { ...payload, _ts: Date.now() }
+  const stamped = { ...payload, ...progressOf(kind, payload), _ts: Date.now() }
   // 先记账，再看有没有人订阅。没有人听的时候正是最需要缓冲的时候——
   // 早退之前就 return，等于「没人在场就不留证据」，前端后来接上只能看到后半截
   bufferEvent(sessionId, kind, stamped)

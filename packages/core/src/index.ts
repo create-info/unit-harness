@@ -67,3 +67,7 @@ export type {
   SessionUpdateParams, StopReason, RequestPermissionParams, RequestPermissionResult,
   ContentBlock as AcpContentBlock,
 } from './acp/types.ts'
+
+// 事件 → 人话。三个前端共用一套说法，屏幕上不出现内部术语
+export { describeTool, describeToolResult, describeCommand, describeThinking, describeFilesChanged } from './agent/progress.ts'
+export type { ProgressLine } from './agent/progress.ts'
