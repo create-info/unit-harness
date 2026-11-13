@@ -8,7 +8,7 @@
 import http from 'node:http'
 import os from 'node:os'
 import pathMod, { join as pjoin } from 'node:path'
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import fsSync, { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import fs6 from 'node:fs'
 import { spawn } from 'node:child_process'
@@ -233,6 +233,44 @@ async function readBody(req: http.IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString('utf8')
 }
 
+/** 路径必须落在工作区内。refs 是前端传来的字符串，不能直接 join */
+function underWorkspace(rel: string): string | null {
+  const base = pathMod.resolve(currentWorkspace)
+  const abs = pathMod.resolve(base, rel)
+  if (abs !== base && !abs.startsWith(base + pathMod.sep)) return null
+  return abs
+}
+
+const REF_SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.uh', '.cache', '__pycache__', '.venv', 'target'])
+
+/**
+ * 工作区里有哪些文件可以被 @ 到。
+ *
+ * 不用 `git ls-files`：换项目时目录未必是 git 仓库，而且用户常常就想引用
+ * 一个还没提交的新文件。直接走目录，跳过那些一旦展开就没法收尾的目录。
+ */
+function listWorkspaceFiles(limit = 3000): string[] {
+  const out: string[] = []
+  const walk = (dir: string, depth: number) => {
+    if (out.length >= limit || depth > 8) return
+    let entries: import('node:fs').Dirent[]
+    try { entries = fsSync.readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      if (out.length >= limit) return
+      if (e.name.startsWith('.') && e.name !== '.env.example') continue
+      if (e.isDirectory()) {
+        if (REF_SKIP.has(e.name)) continue
+        walk(pathMod.join(dir, e.name), depth + 1)
+      } else if (e.isFile()) {
+        const abs = pathMod.join(dir, e.name)
+        out.push(pathMod.relative(currentWorkspace, abs))
+      }
+    }
+  }
+  walk(currentWorkspace, 0)
+  return out
+}
+
 function collectSessions(workspace?: string): Array<{ id: string; label: string; created: string; events: number; status: string; workspace: string }> {
   const store = new EventStore()
   try {
@@ -330,6 +368,15 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     // 用量：把每个会话的 llm/response 加起来。模型名和 token 数只存在于事件里，
     // 所以这里必须读日志，不能问 provider —— 问 provider 只会给「当前余额」，
     // 而用户想知道的是「我这些天在它身上花了多少、花在哪个模型上」。
+    // @ 的文件补全
+    if (req.method === 'GET' && url.pathname === '/api/files') {
+      const q = (url.searchParams.get('q') ?? '').toLowerCase()
+      const all = listWorkspaceFiles()
+      const hits = (q ? all.filter((f) => f.toLowerCase().includes(q)) : all).slice(0, 40)
+      json(res, 200, { files: hits, total: all.length })
+      return
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/usage') {
       const now = Date.now()
       if (usageCache && now - usageCache.at < 30_000) { json(res, 200, usageCache.data); return }
@@ -632,6 +679,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         task?: string
         maxSteps?: number
         images?: { name?: string; mediaType?: string; data?: string }[]
+        refs?: string[]
       } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* ignore */ }
       const task = (body.task ?? '').trim()
@@ -677,6 +725,29 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         images.push({ path: file, mediaType: im.mediaType ?? 'image/png', data })
       }
 
+      // @ 到的文件：小的直接放进上下文，大的只给路径。
+      // 全塞进去的话，拖进一个大文件就等于把整个窗口烧掉，而模型本来就能自己读。
+      const INLINE_MAX = 16 * 1024
+      const blocks: string[] = []
+      for (const rel of (body.refs ?? []).slice(0, 12)) {
+        const abs = underWorkspace(String(rel))
+        if (!abs || !existsSync(abs)) continue
+        let st: import('node:fs').Stats
+        try { st = fsSync.statSync(abs) } catch { continue }
+        if (!st.isFile()) continue
+        const rel2 = pathMod.relative(currentWorkspace, abs)
+        if (st.size > INLINE_MAX) {
+          blocks.push(`<file path="${rel2}" bytes="${st.size}">(too large to inline — open it with read_file)</file>`)
+        } else {
+          let text = ''
+          try { text = fsSync.readFileSync(abs, 'utf8') } catch { continue }
+          blocks.push(`<file path="${rel2}">\n${text}\n</file>`)
+        }
+      }
+      const attachedBlock = blocks.length
+        ? `<attached_files>\n${blocks.join('\n')}\n</attached_files>\n\n`
+        : ''
+
       let sid = ''
       const sidRef = { id: '' }
       // session/start、turn/start、第一轮思考都发生在 start() 之前，那时还没有 id。
@@ -719,7 +790,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       void (async () => {
         try {
           const out = await h.runTask({
-            task,
+            task: attachedBlock + task,
             ...(body.maxSteps ? { maxSteps: body.maxSteps } : {}),
             ...(images.length ? { images } : {}),
           })
