@@ -86,6 +86,65 @@
   .account .who i{font-style:normal;font-size:10px;color:var(--dim)}
   .account .mem{font-size:9.5px;border:1px solid #54431f;color:var(--warn);border-radius:999px;padding:1px 6px}
   .account .mem.free{border-color:var(--line);color:var(--dim)}
+  .think{border-left:2px solid #2f3a4a;padding:2px 0 2px 10px;margin:6px 0;color:#7d8798;font-size:11.5px;white-space:pre-wrap;line-height:1.6;max-height:260px;overflow:auto}
+  .think .hd{display:flex;align-items:center;gap:6px;color:#5f6a7c;font-size:11px;cursor:pointer;user-select:none;margin-bottom:3px}
+  .think.fold .bd{display:none}
+  .say{background:#161c24;border:1px solid var(--line);border-radius:9px;padding:9px 12px;margin:7px 0;white-space:pre-wrap;line-height:1.65;font-size:12.5px;color:var(--fg)}
+  .say.typing::after{content:'▍';color:#4a8cff;animation:blink 1s steps(2) infinite}
+  @keyframes blink{50%{opacity:0}}
+  .fcard{display:flex;align-items:center;gap:9px;border:1px solid var(--line);background:#131a22;border-radius:8px;padding:7px 11px;margin:6px 0;font-size:11.5px;cursor:pointer}
+  .fcard:hover{border-color:#35507a}
+  .fcard .fn{font-family:var(--mono);color:#9fd0ff;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fcard .st{color:var(--dim);font-size:10.5px}
+  .fcard .add{color:var(--good)}
+  .fcard .del{color:var(--bad)}
+  .diffbox{margin:4px 0 10px;border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:340px;background:#0c0f14;font:11.5px/1.55 var(--mono)}
+  .diffbox .ln{display:flex;white-space:pre;min-width:max-content}
+  .diffbox .ln .n{width:34px;flex:0 0 34px;text-align:right;padding:0 7px;color:#3d4654;user-select:none}
+  .diffbox .ln .c{flex:1;padding-right:12px}
+  .diffbox .ln.add{background:#0f1d15}
+  .diffbox .ln.add .c{color:#8fd6a8}
+  .diffbox .ln.del{background:#1d1113}
+  .diffbox .ln.del .c{color:#e2999c}
+  .diffbox .ln.hunk .c{color:#6b7688}
+  .mic{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:8px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;flex:0 0 36px}
+  .mic:hover{border-color:#35507a;color:var(--fg)}
+  .mic.rec{border-color:var(--bad);color:var(--bad);animation:pulse 1.2s ease-in-out infinite}
+  @keyframes pulse{50%{background:#2a1416}}
+  #setModal{position:fixed;inset:0;display:none;background:rgba(0,0,0,.55);z-index:24;align-items:center;justify-content:center}
+  #setModal.on{display:flex}
+  .setwrap{width:min(1040px,96vw);height:min(760px,92vh);background:var(--panel);border:1px solid var(--line);border-radius:12px;display:flex;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.65)}
+  .setnav{width:214px;flex:0 0 214px;border-right:1px solid var(--line);background:#0f1319;padding:12px 8px;overflow:auto}
+  .setsearch input{width:100%;background:#0c0f14;border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 9px;font-size:11.5px;outline:none;margin-bottom:10px}
+  .setsearch input:focus{border-color:#35507a}
+  .setgrp{font-size:10px;color:#4d5769;text-transform:uppercase;letter-spacing:.08em;padding:10px 10px 5px}
+  .setitem{padding:6px 10px;border-radius:6px;font-size:12.5px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:8px}
+  .setitem:hover{background:#181d25;color:var(--fg)}
+  .setitem.cur{background:#1d2530;color:var(--fg)}
+  .setitem.cur::before{content:'';width:3px;height:13px;border-radius:2px;background:#4a8cff;margin-left:-10px;margin-right:7px}
+  .setmain{flex:1;display:flex;flex-direction:column;min-width:0}
+  .settop{display:flex;align-items:center;padding:16px 26px 10px}
+  .settop h2{margin:0;font-size:17px;font-weight:600;flex:1}
+  .setbody{flex:1;overflow:auto;padding:6px 26px 24px}
+  .setfoot{border-top:1px solid var(--line);padding:9px 26px;min-height:38px;display:flex;align-items:center}
+  .sec{margin-bottom:26px}
+  .sec h3{font-size:11.5px;color:#6b7688;font-weight:500;margin:14px 0 8px;text-transform:uppercase;letter-spacing:.06em}
+  .card{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#141920}
+  .row{display:flex;align-items:flex-start;gap:16px;padding:13px 15px;border-bottom:1px solid var(--line)}
+  .row:last-child{border-bottom:0}
+  .row .rt{flex:1;min-width:0}
+  .row .rt b{display:block;font-size:12.5px;font-weight:500;color:var(--fg);line-height:1.4}
+  .row .rt i{display:block;font-style:normal;font-size:11.5px;color:var(--dim);margin-top:3px;line-height:1.5}
+  .row .rc{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding-top:1px}
+  .row select,.row input[type=text],.row input[type=password]{background:#0c0f14;border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 9px;font-size:12px;outline:none;min-width:170px}
+  .row input:focus,.row select:focus{border-color:#35507a}
+  .sw{position:relative;width:38px;height:21px;flex:0 0 38px;border-radius:999px;background:#2a3240;cursor:pointer;transition:background .15s}
+  .sw::after{content:'';position:absolute;top:2.5px;left:2.5px;width:16px;height:16px;border-radius:50%;background:#8b95a6;transition:transform .15s,background .15s}
+  .sw.on{background:#2f6fd0}
+  .sw.on::after{transform:translateX(17px);background:#fff}
+  .row .val{font-size:11.5px;color:var(--dim);font-family:var(--mono);max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .warnbox{border:1px solid #4a2020;background:#1b1214;color:#e08b8b;border-radius:9px;padding:10px 13px;font-size:11.5px;line-height:1.55;margin-bottom:12px}
+  .okbox{border:1px solid #234a34;background:#101a14;color:#7fc79b;border-radius:9px;padding:10px 13px;font-size:11.5px;line-height:1.55;margin-bottom:12px}
   #loginModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.6);z-index:22}
   #loginModal.on{display:flex}
   .lgcard{width:460px;max-width:94vw;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6)}
@@ -179,6 +238,7 @@
       <span class="mbdim" id="mpWork"></span>
     </div>
     <form id="run">
+      <button class="mic" id="micBtn" type="button" title="Speak instead of typing">🎤</button>
       <textarea id="task" placeholder="Describe the task. It runs in a sandbox; every write is logged and undoable."></textarea>
       <button class="go" id="go" type="submit">Run</button>
       <button class="stop" id="stopBtn" type="button" style="display:none">Stop</button>
@@ -186,6 +246,29 @@
   </footer>
 </main>
 
+<div id="setModal">
+  <div class="setwrap">
+    <aside class="setnav">
+      <div class="setsearch"><input id="setFind" placeholder="Search settings" spellcheck="false"></div>
+      <div class="setgrp">General</div>
+      <div class="setitem" data-p="general">常规</div>
+      <div class="setitem" data-p="model">模型</div>
+      <div class="setitem" data-p="sandbox">沙箱</div>
+      <div class="setgrp">Data</div>
+      <div class="setitem" data-p="storage">存储</div>
+      <div class="setgrp">About</div>
+      <div class="setitem" data-p="about">关于</div>
+    </aside>
+    <main class="setmain">
+      <div class="settop">
+        <h2 id="setTitle">常规</h2>
+        <button class="icon" id="setClose">✕</button>
+      </div>
+      <div class="setbody" id="setBody"></div>
+      <div class="setfoot"><span class="msg" id="setMsg"></span></div>
+    </main>
+  </div>
+</div>
 <div id="loginModal">
   <div class="lgcard">
     <div class="dhead"><b>Sign in to UnitAI</b><button class="icon" id="lgClose">✕</button></div>
@@ -281,7 +364,7 @@
 <script>
 const $ = (s) => document.querySelector(s);
 const logEl = $('#log'), delivEl = $('#deliverables');
-let es = null, started = Date.now();
+let es = null, started = Date.now(), firstTs = 0, lastTs = 0;
 let SETTINGS = null, PROVIDERS = [], drawerMode = 'settings';
 let CURRENT_SID = '', RUNNING = false, ALL_PROJECTS = [];
 
@@ -289,7 +372,10 @@ function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt
 function row(cls, text){
   const d = document.createElement('div');
   d.className = 'row';
-  const t = ('+' + ((Date.now() - started)/1000).toFixed(1) + 's');
+  // 基准是「这一批事件里最早的那条」，不是「现在」——补发的历史事件
+  // 也能显示出真实的先后，而不会全挤成 +0.0s
+  const at = lastTs || Date.now();
+  const t = ('+' + (((at - (firstTs || started))/1000).toFixed(1)) + 's');
   d.innerHTML = '<span class="t">' + t + '</span><span class="c ' + cls + '">' + text + '</span>';
   logEl.appendChild(d);
   logEl.scrollTop = logEl.scrollHeight;
@@ -297,19 +383,20 @@ function row(cls, text){
 }
 async function boot(){
   const info = await fetch('/api/info').then(r => r.json());
+  window.INFO = info;
   $('#iso').textContent = 'sandbox ' + info.isolation;
   $('#iso').className = 'pill ' + (info.isolation === 'none' || info.isolation === 'path-guard' ? 'bad' : 'ok');
   await loadSettings();
   await loadProjects();
   await loadAccount();
+  setupMic();
 
   // 全新用户：没有模型就别让他先去踩一次 Run
   if (!SETTINGS.model){
-    openDrawer('settings');
-    $('#dMsg').className = 'msg';
-    $('#dMsg').textContent = SETTINGS.hasKey
+    openSettings('general');
+    setMsg(SETTINGS.hasKey
       ? 'pick a model — hit List to see what this provider serves'
-      : 'pick a provider and paste a key to get started';
+      : 'pick a provider and paste a key to get started');
   }
 }
 
@@ -409,9 +496,7 @@ function openModelMenu(){
     it.onclick = async () => {
       m.classList.remove('on');
       if (p.id === SETTINGS.provider || !p.configured){
-        openDrawer('settings');
-        $('#fProvider').value = p.id;
-        $('#fProvider').dispatchEvent(new Event('change'));
+        openSettings('model');
         return;
       }
       await fetch('/api/settings', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ provider: p.id }) });
@@ -437,84 +522,17 @@ async function loadSettings(){
   $('#mpWork').textContent = SETTINGS.workspace;
   paintApproval(SETTINGS.approval || 'ask');
   $('#task').placeholder = 'Describe the task. It runs in a sandbox; the workspace is ' + SETTINGS.workspace;
-  fillSettingsForm();
 }
 
-function fillSettingsForm(){
-  const sel = $('#fProvider');
-  sel.innerHTML = '';
-  for (const p of PROVIDERS){
-    const o = document.createElement('option');
-    o.value = p.id;
-    o.textContent = p.label + (p.configured ? '  ✓' : '');
-    sel.appendChild(o);
-  }
-  sel.value = SETTINGS.provider;
-  const cur = PROVIDERS.find(p => p.id === SETTINGS.provider) || {};
-  $('#fBase').value = SETTINGS.baseUrl || '';
-  $('#fKey').value = '';
-  $('#fKey').placeholder = SETTINGS.hasKey ? 'already set (' + SETTINGS.keyMasked + ') — leave blank to keep' : (cur.local ? 'not needed for local models' : 'paste the key here');
-  $('#fModel').value = SETTINGS.model || '';
-  $('#fWork').value = SETTINGS.workspace || '';
-  updateProvHint(cur);
-}
-
-function updateProvHint(p){
-  const bits = [];
-  if (p.protocol) bits.push('protocol ' + p.protocol);
-  if (p.keysUrl) bits.push('<a href="' + p.keysUrl + '" target="_blank" rel="noreferrer">get a key ↗</a>');
-  if (p.envKey) bits.push('<code>' + p.envKey + '</code> also works');
-  if (p.modelHint) bits.push('known: ' + p.modelHint);
-  if (p.local) bits.push('local server, usually no key');
-  $('#fProvHint').innerHTML = bits.join(' · ');
-  $('#fModelHint').textContent = p.modelHint ? 'Try “List” after setting a key to see what this provider actually serves.' : '';
-}
-
-$('#fProvider').addEventListener('change', async () => {
-  const id = $('#fProvider').value;
-  const p = PROVIDERS.find(x => x.id === id) || {};
-  // 换 provider：baseUrl 跟着换回默认，key/model 留空（不同家的模型名不通用）
-  $('#fBase').value = p.baseUrl || '';
-  $('#fKey').value = '';
-  $('#fKey').placeholder = p.local ? 'not needed for local models' : 'paste the key here';
-  $('#fModel').value = '';
-  updateProvHint(p);
-  const r = await fetch('/api/models?provider=' + encodeURIComponent(id)).then(x => x.json());
-  fillModels(r.models || [], r.error);
-});
-
-$('#fFetch').addEventListener('click', async () => {
-  const id = $('#fProvider').value;
-  $('#fFetch').disabled = true;
-  try {
-    const r = await fetch('/api/models?provider=' + encodeURIComponent(id)).then(x => x.json());
-    fillModels(r.models || [], r.error);
-  } finally { $('#fFetch').disabled = false; }
-});
-
-function fillModels(models, error){
-  const dl = $('#modelList');
-  dl.innerHTML = '';
-  for (const m of models){
-    const o = document.createElement('option');
-    o.value = m;
-    dl.appendChild(o);
-  }
-  $('#fModelHint').textContent = models.length
-    ? models.length + ' model(s) available — pick one or type a name'
-    : (error ? 'could not list models: ' + error : 'no models returned; type the name yourself');
-}
-
-function openDrawer(mode){
-  drawerMode = mode;
-  $('#drawerTitle').textContent = mode === 'settings' ? 'Settings · model & keys' : 'Create project';
-  $('#settingsPane').style.display = mode === 'settings' ? '' : 'none';
-  $('#projPane').style.display = mode === 'settings' ? 'none' : '';
+function openDrawer(){
+  drawerMode = 'project';
+  $('#drawerTitle').textContent = 'Create project';
+  $('#projPane').style.display = '';
   $('#dMsg').textContent = '';
   $('#dMsg').className = 'msg';
   $('#drawer').classList.add('on');
   $('#veil').classList.add('on');
-  if (mode === 'project') fillProjectPicker();
+  fillProjectPicker();
 }
 function closeDrawer(){
   $('#drawer').classList.remove('on');
@@ -538,9 +556,15 @@ async function fillProjectPicker(){
   $('#fProjName').value = '';
 }
 
-$('#settingsBtn').addEventListener('click', () => openDrawer('settings'));
-$('#projBtn').addEventListener('click', () => openDrawer('project'));
-$('#model').addEventListener('click', () => openDrawer('settings'));
+$('#settingsBtn').addEventListener('click', () => openSettings('general'));
+$('#projBtn').addEventListener('click', () => openDrawer());
+
+$('#model').addEventListener('click', () => openSettings('model'));
+$('#setClose').addEventListener('click', () => $('#setModal').classList.remove('on'));
+for (const it of document.querySelectorAll('.setitem')) {
+  it.addEventListener('click', () => { SETPAGE = it.dataset.p; renderSettings(); });
+}
+$('#setModal').addEventListener('click', (e) => { if (e.target.id === 'setModal') $('#setModal').classList.remove('on'); });
 $('#modelPick').addEventListener('click', (e) => { e.stopPropagation(); openModelMenu(); });
 $('#apprBtn').addEventListener('click', (e) => { e.stopPropagation(); openApprovalMenu(); });
 document.addEventListener('click', (e) => {
@@ -582,7 +606,7 @@ $('#dSave').addEventListener('click', async () => {
   msg.textContent = 'saving…';
   $('#dSave').disabled = true;
   try {
-    if (drawerMode === 'project'){
+    {
       const typed = $('#fNewProj').value.trim();
       const target = typed || $('#fProject').value;
       const r = await fetch('/api/project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path: target, name: $('#fProjName').value.trim() }) });
@@ -596,26 +620,6 @@ $('#dSave').addEventListener('click', async () => {
       return;
     }
 
-    const body = {
-      provider: $('#fProvider').value,
-      model: $('#fModel').value.trim(),
-      baseUrl: $('#fBase').value.trim(),
-    };
-    const key = $('#fKey').value.trim();
-    if (key) body.apiKey = key;
-    const work = $('#fWork').value.trim();
-    if (work && work !== SETTINGS.workspace){
-      const pr = await fetch('/api/project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path: work }) });
-      const pj = await pr.json();
-      if (pj.error) throw new Error(pj.error);
-    }
-    const r = await fetch('/api/settings', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
-    const j = await r.json();
-    if (j.error) throw new Error(j.error);
-    await loadSettings();
-    msg.className = 'msg good';
-    msg.textContent = 'saved — next run uses ' + body.provider + ' / ' + (body.model || 'default');
-    setTimeout(closeDrawer, 700);
   } catch (err) {
     msg.className = 'msg err';
     msg.textContent = String(err.message || err);
@@ -684,6 +688,294 @@ function openApprovalMenu(){
     m.appendChild(it);
   }
   m.classList.toggle('on');
+}
+
+/* ---------------- 设置页 ----------------
+ * 照 Codex 的结构：左边分组，右边是「分组卡片 + 行」。
+ * 每一行都是「标题 / 一句人话说明 / 一个控件」，说明必须写清楚后果——
+ * 「允许读 home」比「allowHome」有用得多，因为前者能让人想到 .ssh。
+ */
+let SETPAGE = 'general';
+
+const srow = (title, desc, ctrl) => ({ title, desc, ctrl });
+
+function section(title, rows) {
+  const c = document.createElement('div');
+  c.className = 'card';
+  for (const r of rows) {
+    const el = document.createElement('div');
+    el.className = 'row';
+    const t = document.createElement('div');
+    t.className = 'rt';
+    t.innerHTML = '<b>' + esc(r.title) + '</b>' + (r.desc ? '<i>' + esc(r.desc) + '</i>' : '');
+    const ctl = document.createElement('div');
+    ctl.className = 'rc';
+    if (r.ctrl) ctl.appendChild(r.ctrl);
+    el.appendChild(t);
+    el.appendChild(ctl);
+    c.appendChild(el);
+  }
+  const sec = document.createElement('div');
+  sec.className = 'sec';
+  if (title) { const h = document.createElement('h3'); h.textContent = title; sec.appendChild(h); }
+  sec.appendChild(c);
+  return sec;
+}
+
+function toggle(on, onChange) {
+  const sw = document.createElement('div');
+  sw.className = 'sw' + (on ? ' on' : '');
+  sw.onclick = async () => {
+    const next = !sw.classList.contains('on');
+    sw.classList.toggle('on', next);
+    await onChange(next);
+  };
+  return sw;
+}
+
+function selectBox(options, value, onChange) {
+  const sel = document.createElement('select');
+  for (const o of options) {
+    const op = document.createElement('option');
+    op.value = o.value; op.textContent = o.text;
+    if (o.value === value) op.selected = true;
+    sel.appendChild(op);
+  }
+  sel.onchange = () => onChange(sel.value);
+  return sel;
+}
+
+function setMsg(text, bad) {
+  const m = $('#setMsg');
+  m.textContent = text || '';
+  m.className = 'msg' + (bad ? ' err' : '');
+  if (text) setTimeout(() => { if (m.textContent === text) m.textContent = ''; }, 4000);
+}
+
+async function openSettings(page) {
+  SETPAGE = page || SETPAGE;
+  $('#setModal').classList.add('on');
+  await loadSettings();
+  await loadAccount();
+  renderSettings();
+}
+
+function navHighlight() {
+  for (const it of document.querySelectorAll('.setitem')) it.classList.toggle('cur', it.dataset.p === SETPAGE);
+  const title = { general: '常规', model: '模型', sandbox: '沙箱', storage: '存储', about: '关于' };
+  $('#setTitle').textContent = title[SETPAGE] || '设置';
+}
+
+function renderSettings() {
+  navHighlight();
+  const body = $('#setBody');
+  body.innerHTML = '';
+  const S = SETTINGS || {};
+  const SB = S.sandbox || {};
+
+  if (SETPAGE === 'general') {
+    const mode = S.approval || 'ask';
+
+    body.appendChild(section('权限', [
+      srow('默认权限',
+        '在沙箱保护下读写当前项目。需要更多权限时，模型会先问你。',
+        toggle(mode !== 'allow', async (on) => {
+          const next = on ? 'ask' : 'allow';
+          await saveApproval(next);
+        })),
+      srow('完整访问权限',
+        '全权读写这台机器上的任何文件，运行任意命令，不经过审批。数据的丢失或外泄风险随之上升，只在你知道自己在做什么时打开。',
+        toggle(mode === 'allow', async (on) => {
+          if (on) {
+            const ok = confirm('Full access means every command runs without asking.\n\nTurn it on?');
+            if (!ok) { renderSettings(); return; }
+          }
+          await saveApproval(on ? 'allow' : 'ask');
+        })),
+    ]));
+
+    body.appendChild(section('审批', [
+      srow('询问方式',
+        '请求批准：每次需要时都问。帮我批准：只问不可逆的操作。完全访问：不问。',
+        selectBox([
+          { value: 'ask', text: '请求批准' },
+          { value: 'auto', text: '帮我批准' },
+          { value: 'allow', text: '完全访问' },
+        ], mode, async (v) => { await saveApproval(v); })),
+    ]));
+
+    const iso = (window.INFO && window.INFO.isolation) || 'unknown';
+    const strong = /landlock|seatbelt/.test(iso);
+    const box = document.createElement('div');
+    box.className = strong ? 'okbox' : 'warnbox';
+    box.textContent = strong
+      ? '当前隔离：' + iso + '。命令跑在真实的沙箱里，写不出工作区，读不到 home。'
+      : '当前隔离：' + iso + '。这不是完整沙箱——写操作只靠路径约束，遇到不认识的命令一律拒绝执行。';
+    body.appendChild(section('隔离', [srow('当前强度', '', (() => { const d = document.createElement('span'); d.className = 'val'; d.textContent = iso; return d; })())]));
+    body.insertBefore(box, body.lastChild);
+    return;
+  }
+
+  if (SETPAGE === 'model') {
+    const provOpts = (S.providers || []).map(p => ({
+      value: p.id,
+      text: (p.label || p.id) + (p.configured ? ' ✓' : ''),
+    }));
+    body.appendChild(section('服务商', [
+      srow('Provider', '选一家。已配置过的后面打 ✓。', selectBox(provOpts, S.provider, async (v) => {
+        const p = (S.providers || []).find(x => x.id === v);
+        $('#fModel').value = '';
+        await saveProvider(v, p);
+        renderSettings();
+      })),
+      srow('Base URL', '留空就用这家默认地址。自建网关或代理时填这里。', (() => {
+        const i = document.createElement('input');
+        i.type = 'text'; i.id = 'fBaseUrl'; i.value = S.baseUrl || '';
+        i.placeholder = 'default';
+        i.onchange = async () => { await postSettings({ baseUrl: i.value.trim() }); setMsg('saved'); };
+        return i;
+      })()),
+      srow('API Key', S.hasKey ? '已设置（' + S.keyMasked + '）。留空则保持不变。' : '存在 ~/.uh/config.json（0600），不会写进事件日志。', (() => {
+        const i = document.createElement('input');
+        i.type = 'password'; i.id = 'fKey'; i.autocomplete = 'off'; i.placeholder = S.hasKey ? '••••' : 'paste the key';
+        i.onchange = async () => {
+          const v = i.value.trim();
+          if (!v) return;
+          await postSettings({ apiKey: v });
+          i.value = '';
+          setMsg('key saved');
+          renderSettings();
+        };
+        return i;
+      })()),
+      srow('Model', '模型名不写死在代码里——点「List」问这家到底提供哪些。', (() => {
+        const wrap = document.createElement('div');
+        wrap.style.display = 'flex'; wrap.style.gap = '7px';
+        const i = document.createElement('input');
+        i.type = 'text'; i.id = 'fModel'; i.value = S.model || ''; i.placeholder = 'e.g. deepseek-v4-flash';
+        i.onchange = async () => { await postSettings({ model: i.value.trim() }); setMsg('model saved'); paintModelPicker(); };
+        const b = document.createElement('button');
+        b.className = 'btn'; b.textContent = 'List';
+        b.onclick = async () => {
+          b.disabled = true; b.textContent = '…';
+          try {
+            const r = await fetch('/api/models?provider=' + encodeURIComponent(S.provider)).then(x => x.json());
+            b.disabled = false; b.textContent = 'List';
+            if (r.error) { setMsg(r.error, true); return; }
+            const list = (r.models || []);
+            if (!list.length) { setMsg('this provider returned no models', true); return; }
+            const cur = i.value;
+            i.value = list.includes(cur) ? cur : list[0];
+            await postSettings({ model: i.value });
+            setMsg(list.length + ' models — picked ' + i.value);
+            paintModelPicker();
+          } catch (e) { b.disabled = false; b.textContent = 'List'; setMsg(String(e.message || e), true); }
+        };
+        wrap.appendChild(i); wrap.appendChild(b);
+        return wrap;
+      })()),
+    ]));
+    return;
+  }
+
+  if (SETPAGE === 'sandbox') {
+    body.appendChild(section('文件系统', [
+      srow('允许读取 home', '默认不让：home 里有 .ssh、.aws、浏览器配置。打开后模型能读到这些目录。',
+        toggle(SB.allowHome === true, async (on) => { await saveSandbox({ allowHome: on }); })),
+      srow('允许写入工作区外', '不提供。写操作被限制在当前项目目录内——这是沙箱的核心，不是开关。',
+        (() => { const d = document.createElement('span'); d.className = 'val'; d.textContent = 'locked'; return d; })()),
+    ]));
+    body.appendChild(section('网络', [
+      srow('禁止网络访问', '在内核支持时切断沙箱内的 TCP 连接。模型就装不了包、拉不了依赖。',
+        toggle(SB.denyNetwork === true, async (on) => { await saveSandbox({ denyNetwork: on }); })),
+    ]));
+    body.appendChild(section('兜底', [
+      srow('沙箱不可用时仍然执行', '默认关。打开后，如果这台机器上没有任何可用的隔离机制（landlock / bwrap / seatbelt），命令仍然会跑——只是没有任何保护。关着的时候是 fail-closed：宁可不干活。',
+        toggle(SB.unconfined === true, async (on) => { await saveSandbox({ unconfined: on }); })),
+    ]));
+    const iso = (window.INFO && window.INFO.isolation) || 'unknown';
+    const box = document.createElement('div');
+    box.className = /landlock|seatbelt/.test(iso) ? 'okbox' : 'warnbox';
+    box.textContent = '检测到的隔离：' + iso + '。降级顺序是 landlock → bwrap → 路径约束，界面显示的永远是实际生效的那一档。';
+    body.insertBefore(box, body.firstChild);
+    return;
+  }
+
+  if (SETPAGE === 'storage') {
+    body.appendChild(section('会话', [
+      srow('存放位置', '按 YYYY/MM/DD 分层，和 Codex 一样。事件日志是证据，只追加。',
+        (() => { const d = document.createElement('span'); d.className = 'val'; d.textContent = (window.INFO && window.INFO.home) || '~/.uh/sessions'; return d; })()),
+      srow('清理旧会话', '归档而不是删除：移动到 archived_sessions/，事件日志还在。正在跑的会话不会被碰。',
+        (() => {
+          const b = document.createElement('button');
+          b.className = 'btn'; b.textContent = 'Archive > 30 days';
+          b.onclick = async () => {
+            b.disabled = true; b.textContent = '…';
+            try {
+              const r = await fetch('/api/prune', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ olderThanDays: 30, dryRun: false }) }).then(x => x.json());
+              b.disabled = false; b.textContent = 'Archive > 30 days';
+              setMsg(r.error ? r.error : 'archived ' + (r.moved || 0) + ' session(s)', Boolean(r.error));
+            } catch (e) { b.disabled = false; b.textContent = 'Archive > 30 days'; setMsg(String(e.message || e), true); }
+          };
+          return b;
+        })()),
+    ]));
+    body.appendChild(section('配置', [
+      srow('配置文件', '模型与 key。权限 0600。', (() => { const d = document.createElement('span'); d.className = 'val'; d.textContent = '~/.uh/config.json'; return d; })()),
+      srow('账号令牌', ACCOUNT.signedIn ? '已登录。登出会删除这个文件。' : '未登录——不影响使用。', (() => { const d = document.createElement('span'); d.className = 'val'; d.textContent = '~/.uh/account.json'; return d; })()),
+    ]));
+    return;
+  }
+
+  if (SETPAGE === 'about') {
+    const d = document.createElement('div');
+    d.innerHTML = '<div class="sec"><div class="card">'
+      + '<div class="row"><div class="rt"><b>Unit Harness</b><i>验证闭环 — the agent that proves its work</i></div>'
+      + '<div class="rc"><span class="val">' + esc((window.INFO && window.INFO.version) || 'dev') + '</span></div></div>'
+      + '<div class="row"><div class="rt"><b>隔离</b><i>这台机器上实际生效的那一档</i></div>'
+      + '<div class="rc"><span class="val">' + esc((window.INFO && window.INFO.isolation) || 'unknown') + '</span></div></div>'
+      + '<div class="row"><div class="rt"><b>工作区</b><i>所有写操作都限制在这里面</i></div>'
+      + '<div class="rc"><span class="val">' + esc((window.INFO && window.INFO.workspace) || '') + '</span></div></div>'
+      + '<div class="row"><div class="rt"><b>模型</b><i>当前在用的</i></div>'
+      + '<div class="rc"><span class="val">' + esc((window.INFO && window.INFO.model) || 'none') + '</span></div></div>'
+      + '</div></div>';
+    body.appendChild(d);
+    return;
+  }
+}
+
+async function saveApproval(mode) {
+  const r = await fetch('/api/approval', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ mode }) }).then(x => x.json());
+  if (r.ok) {
+    SETTINGS.approval = r.approval;
+    paintApproval(r.approval);
+    renderSettings();
+    setMsg('saved');
+  } else setMsg(r.error || 'failed', true);
+}
+
+async function saveSandbox(patch) {
+  const r = await fetch('/api/sandbox', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(patch) }).then(x => x.json());
+  if (r.ok) {
+    SETTINGS.sandbox = r.sandbox;
+    setMsg('saved — takes effect on the next run');
+  } else setMsg(r.error || 'failed', true);
+}
+
+async function postSettings(patch) {
+  const r = await fetch('/api/settings', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(patch) }).then(x => x.json());
+  if (r.error) setMsg(r.error, true);
+  await loadSettings();
+  paintModelPicker();
+  return r;
+}
+
+async function saveProvider(id, def) {
+  const r = await fetch('/api/settings', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ provider: id }) }).then(x => x.json());
+  if (r.error) { setMsg(r.error, true); return; }
+  await loadSettings();
+  paintModelPicker();
+  setMsg('provider set to ' + (def?.label || id));
 }
 
 /** 账号：令牌就是网页的 aw_auth_token，30 天不续期，所以要把到期这件事说清楚 */
@@ -761,6 +1053,161 @@ $('#lgGo').addEventListener('click', async () => {
   await loadAccount();
 });
 
+/* ---------- 实时：思考、正文、文件 ----------
+ * 事件是按 seq 一条条来的，delta 是「又多了几个字」。所以这里维护
+ * 「当前正在写的气泡」，而不是每条 delta 建一个元素——否则一个回答会被
+ * 切成上百个段落。step/start 和工具调用是新阶段的边界，此时收口。
+ */
+let sayEl = null, thinkEl = null, sawText = false;
+
+function closeStreams(){
+  if (sayEl){ sayEl.classList.remove('typing'); sayEl = null; }
+  if (thinkEl){ thinkEl = null; }
+}
+
+function pushSay(delta){
+  sawText = true;
+  if (!sayEl){
+    sayEl = document.createElement('div');
+    sayEl.className = 'say typing';
+    logEl.appendChild(sayEl);
+  }
+  sayEl.textContent += delta;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function pushThink(delta){
+  if (!thinkEl){
+    thinkEl = document.createElement('div');
+    thinkEl.className = 'think';
+    const hd = document.createElement('div');
+    hd.className = 'hd';
+    hd.innerHTML = '<span>◌</span><span>thinking</span>';
+    hd.onclick = () => thinkEl.classList.toggle('fold');
+    const bd = document.createElement('div');
+    bd.className = 'bd';
+    thinkEl.appendChild(hd);
+    thinkEl.appendChild(bd);
+    logEl.appendChild(thinkEl);
+  }
+  thinkEl.querySelector('.bd').textContent += delta;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+/** 文件卡片：点开才去算 diff —— 大部分时候人只想知道「改了哪个文件」 */
+function fileCard(p, seq){
+  const el = document.createElement('div');
+  el.className = 'fcard';
+  const size = p.after_size || 0;
+  el.innerHTML = '<span>✎</span><span class="fn">' + esc(p.path) + '</span>'
+    + '<span class="st">' + size + ' B</span><span class="st">diff ▾</span>';
+  el.onclick = () => toggleDiff(el, p.path, seq);
+  logEl.appendChild(el);
+}
+
+async function toggleDiff(card, path, seq){
+  const next = card.nextElementSibling;
+  if (next && next.classList.contains('diffbox')){ next.remove(); return; }
+  const box = document.createElement('div');
+  box.className = 'diffbox';
+  box.textContent = 'loading…';
+  card.after(box);
+  try {
+    const q = '/api/diff?session=' + encodeURIComponent(CURRENT_SID) + '&path=' + encodeURIComponent(path) + (seq ? '&seq=' + seq : '');
+    const r = await fetch(q).then(x => x.json());
+    if (r.error){ box.textContent = r.error; return; }
+    box.innerHTML = '';
+    for (const ln of diffLines(r.before || '', r.after || '')) box.appendChild(ln);
+  } catch (e) { box.textContent = String(e.message || e); }
+}
+
+/** 一行行比：小的改动看得很清楚，比整块重画省得多 */
+function diffLines(before, after){
+  const a = before.split('\n'), b = after.split('\n');
+  const out = [];
+  let i = 0, j = 0;
+  while (i < a.length || j < b.length){
+    if (i < a.length && j < b.length && a[i] === b[j]){
+      out.push(mk('', a[i], j + 1)); i++; j++;
+    } else if (j < b.length && (i >= a.length || !a.includes(b[j], i))){
+      out.push(mk('add', b[j], j + 1)); j++;
+    } else if (i < a.length){
+      out.push(mk('del', a[i], i + 1)); i++;
+    }
+  }
+  if (!out.length) out.push(mk('hunk', '(no textual change)', ''));
+  return out;
+}
+
+function mk(cls, text, n){
+  const d = document.createElement('div');
+  d.className = 'ln ' + cls;
+  const nEl = document.createElement('span'); nEl.className = 'n'; nEl.textContent = n;
+  const cEl = document.createElement('span'); cEl.className = 'c'; cEl.textContent = text;
+  d.appendChild(nEl); d.appendChild(cEl);
+  return d;
+}
+
+/* ---------- 语音输入 ----------
+ * 用浏览器自带的识别：一个字都不用我们转写，也不上传录音。
+ * 前提是浏览器提供 SpeechRecognition（Chrome/Edge 有，Safari 部分有，
+ * Tauri 的 WebKit 没有）——没有就如实说没有，不做一个点了没反应的按钮。
+ */
+function setupMic(){
+  const btn = $('#micBtn');
+  if (!btn) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR){
+    btn.onclick = () => row('bad', 'this browser has no speech recognition — desktop Chrome or Edge do');
+    btn.style.opacity = '.5';
+    return;
+  }
+  const ta = $('#task');
+  let rec = null, on = false, base = '', finalText = '';
+
+  const start = () => {
+    base = ta.value;
+    finalText = '';
+    rec = new SR();
+    rec.lang = navigator.language || 'zh-CN';
+    rec.continuous = true;
+    rec.interimResults = true;
+
+    rec.onresult = (ev) => {
+      let interim = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++){
+        const r = ev.results[i];
+        if (r.isFinal) finalText += r[0].transcript;
+        else interim += r[0].transcript;
+      }
+      ta.value = base + (base && !/\s$/.test(base) ? ' ' : '') + finalText + interim;
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+    };
+    // 识别会因为静音自己停；还在录音状态就接上，别让用户说半句发现没在听
+    rec.onend = () => { if (on){ try { rec.start(); } catch { /* already */ } } };
+    rec.onerror = (e) => {
+      if (e.error === 'not-allowed'){ row('bad', 'microphone permission denied'); stop(); }
+      else if (e.error === 'no-speech'){ /* keep listening */ }
+      else row('warn', 'speech: ' + e.error);
+    };
+    try { rec.start(); } catch (e) { row('bad', 'could not start listening: ' + e.message); return }
+    on = true;
+    btn.classList.add('rec');
+    btn.textContent = '■';
+  };
+
+  const stop = () => {
+    on = false;
+    if (rec){ try { rec.stop(); } catch { /* done */ } rec = null; }
+    btn.classList.remove('rec');
+    btn.textContent = '🎤';
+    ta.focus();
+  };
+
+  btn.onclick = () => (on ? stop() : start());
+}
+
 function setRunning(on){
   RUNNING = on;
   $('#go').style.display = on ? 'none' : '';
@@ -769,8 +1216,10 @@ function setRunning(on){
 }
 
 function render(kind, p){
+  if (p && typeof p._ts === 'number'){ lastTs = p._ts; if (!firstTs) firstTs = p._ts; }
   switch(kind){
-    case 'turn/start': row('step','turn start'); break;
+    case 'turn/start':
+      sawText = false; row('step','turn start'); break;
     case 'step/start': row('step','── step ' + p.step_index); break;
     case 'llm/request': row('dim','→ ' + (p.provider||'') + ' ' + (p.model||'')); break;
     case 'llm/response': row('dim','← ' + p.tool_calls + ' tool call(s), ' + ((p.usage&&p.usage.total_tokens)||0) + ' tokens'); break;
@@ -787,14 +1236,20 @@ function render(kind, p){
       for (const s of p.steps || []) row('dim','  ' + (s.status==='completed'?'✓':s.status==='in_progress'?'▸':' ') + ' ' + esc(s.step));
       break;
     }
-    case 'checkpoint/file': row('warn','⟲ ' + esc(p.path) + '  (' + (p.after_size || 0) + ' B, undoable)'); break;
+    case 'text/delta': pushSay(p.text || ''); break;
+    case 'reasoning/delta': pushThink(p.text || ''); break;
+    case 'step/start': closeStreams(); break;
+    case 'checkpoint/file': closeStreams(); fileCard(p, p.seq || 0); break;
     case 'approval/needs': void askApproval(p); break;
     case 'approval/requested': row('warn','⚠ approval needed: ' + esc(p.reason || '')); break;
     case 'approval/resolved': row(p.approved ? 'ok' : 'bad', (p.approved ? '✓ approved' : '✗ refused') + (p.auto ? ' (policy)' : '')); break;
     case 'session/compacted': row('warn','⟳ compacted: dropped ' + p.dropped_messages + ' msg(s), summary ~' + p.summary_chars + ' chars'); break;
     case 'artifact/emitted': row('ok','◆ artifact ' + esc(p.path) + '  ' + p.bytes + ' B'); break;
     case 'turn/end': row('step','turn end (' + p.stop_reason + ', ' + p.steps + ' steps)'); break;
-    case 'answer': row('answer','<div class="answer">' + esc(p.text || '(no text)') + '</div>'); break;
+    // 已经流式显示过就不再贴一遍：同一段回答出现两次，看起来像模型说了两遍
+    case 'answer':
+      if (!sawText) row('answer','<div class="answer">' + esc(p.text || '(no text)') + '</div>');
+      break;
     case 'deliverables': renderDeliverables(p.items || [], p.verifications || []); break;
     case 'done':
       row('dim','— done —');
@@ -832,10 +1287,11 @@ function attach(id){
   delivEl.innerHTML = '';
   $('#sid').textContent = id;
   started = Date.now();
+  firstTs = 0;
   CURRENT_SID = id;
   es = new EventSource('/api/stream?session=' + encodeURIComponent(id));
   for (const kind of ['turn/start','step/start','llm/request','llm/response','tool/call','tool/result','plan/updated',
-                      'checkpoint/file','approval/needs','approval/requested','approval/resolved','session/compacted','artifact/emitted',
+                      'text/delta','reasoning/delta','checkpoint/file','approval/needs','approval/requested','approval/resolved','session/compacted','artifact/emitted',
                       'turn/end','answer','deliverables','done','error']){
     es.addEventListener(kind, (e) => render(kind, JSON.parse(e.data)));
   }
@@ -871,7 +1327,7 @@ $('#run').addEventListener('submit', async (e) => {
     if (j.error){
       row('bad', 'ERROR: ' + j.error);
       setRunning(false);
-      if (j.needsSetup){ openDrawer('settings'); $('#dMsg').className = 'msg err'; $('#dMsg').textContent = j.error; }
+      if (j.needsSetup){ openSettings('general'); setMsg(j.error, true); }
       return;
     }
     $('#task').value = '';
