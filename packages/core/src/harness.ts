@@ -17,6 +17,7 @@ import { EventStore } from './evidence/store.ts'
 import { LlmGateway } from './llm/gateway.ts'
 import { resolveProvider } from './llm/resolve.ts'
 import { runAgent } from './agent/loop.ts'
+import type { AgentDeps } from './agent/loop.ts'
 import { snapshotDir, diffSnapshots, collectArtifacts, sha256File } from './artifact/snapshot.ts'
 import type { Artifact } from './artifact/snapshot.ts'
 import { inferAssertions, runAssertion } from './verify/assertions.ts'
@@ -151,6 +152,12 @@ export class Harness {
   private readonly seatbelt: SeatbeltInfo
   /** MCP server 桥接（外部进程，不在沙箱内） */
   readonly mcp = new McpRegistry()
+
+  /** 子 agent 深度限制：再深只是把上下文切碎，没有收益 */
+  private readonly maxSubAgentDepth = 2
+  /** 一次 run 里最多起几个子 agent（深度不封口宽度，成本要封） */
+  private readonly maxSubAgentTotal = 8
+  private subAgentCount = 0
 
   /** 中断：Ctrl+C 走这里，而不是直接杀进程 */
   private readonly abortCtl = new AbortController()
@@ -708,8 +715,53 @@ export class Harness {
     // 改动发生之前建点：undo 要能回到「这个 run 还没动过任何东西」的状态
     this.snapshotWorkspace(o.task)
 
-    const result = await runAgent(
-      {
+    const makeSpawnerSelf = this
+    function makeSpawner(level: number) {
+        return async (subTask: string, subOpts: { maxSteps?: number }): Promise<string> => {
+        if (level > makeSpawnerSelf.maxSubAgentDepth) {
+          throw new Error(`E_AGENT_DEPTH: already ${level - 1} levels deep, refusing to go further`)
+        }
+        // 深度有界 ≠ 成本有界：每个子 agent 跑满 maxSteps、每步再派一个，
+        // 深度 2 也能派出几十个。给整个 run 一个总数上限。
+        if (makeSpawnerSelf.subAgentCount >= makeSpawnerSelf.maxSubAgentTotal) {
+          throw new Error(
+            `E_AGENT_BUDGET: this run already started ${makeSpawnerSelf.subAgentCount} sub-agents ` +
+            `(limit ${makeSpawnerSelf.maxSubAgentTotal}). Do the remaining work yourself.`,
+          )
+        }
+        const id = `sub${++makeSpawnerSelf.subAgentCount}`
+        const startedAt = Date.now()
+        const spawned = makeSpawnerSelf.ev('agent/spawned', { agent: id, task: subTask.slice(0, 200), level }, 'agent')
+        const subDeps: AgentDeps = { ...depsRef, spawnSubAgent: makeSpawner(level + 1) }
+        try {
+          const sub = await runAgent(subDeps, {
+            task: subTask,
+            maxSteps: subOpts.maxSteps ?? 6,
+            signal: makeSpawnerSelf.abortCtl.signal,
+          })
+          makeSpawnerSelf.ev('agent/finished', {
+            agent: id,
+            steps: sub.steps,
+            tokens: sub.usage.total,
+            duration_ms: Date.now() - startedAt,
+            stopped_by: sub.stoppedBy,
+          }, 'agent', spawned?.id ?? null)
+          return `[sub-agent ${id} finished after ${sub.steps} steps]\n${sub.text || '(no text)'}`
+        } catch (err) {
+          makeSpawnerSelf.ev('agent/finished', {
+            agent: id,
+            error: err instanceof Error ? err.message.slice(0, 200) : String(err),
+            duration_ms: Date.now() - startedAt,
+          }, 'agent', spawned?.id ?? null)
+          throw err
+        }
+          }
+    }
+
+
+    // 子 agent 的闭包要引用「同一个 deps 对象」，而它正在被构造
+    let depsRef: AgentDeps
+    const agentDeps: AgentDeps = {
         workspace: this.workspace,
         system: sys,
         gateway,
@@ -818,6 +870,13 @@ export class Harness {
         deleteFile: (rel) => {
           try { fsSync.unlinkSync(this.safeJoin(rel)) } catch { /* already gone */ }
         },
+        /**
+         * 子 agent：同一套执行环境，一段新对话。
+         *
+         * 深度用**闭包**带下去，不用共享计数器：计数器在多路并行时会互相覆盖，
+         * 实测能把限制放穿到三层（1+6+36 次派活）。参数化闭包没有这个漏洞。
+         */
+        spawnSubAgent: makeSpawner(1),
         planEnabled: o.plan !== false,
         skills,
         ...(o.stream !== false ? {
@@ -827,7 +886,11 @@ export class Harness {
         maxContextTokens: o.maxContextTokens ?? Number(process.env.UH_MAX_CONTEXT ?? 32000),
         ev: (kind, payload) => this.ev(kind, payload, 'agent')?.id ?? null,
         log: (m) => this.log('info', m),
-      },
+    }
+    depsRef = agentDeps
+
+    const result = await runAgent(
+      agentDeps,
       {
         task: o.task,
         ...(o.maxSteps ? { maxSteps: o.maxSteps } : {}),
