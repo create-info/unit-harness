@@ -29,6 +29,11 @@ export interface UhConfig {
   ui?: UiPrefs
   /** 被关掉的插件，形如 "mcp:github" / "skill:deploy-check"，跨会话生效 */
   disabledPlugins?: string[]
+  /**
+   * 成本预算（token）。到线就停。
+   * 与 maxContextTokens（上下文压缩）不是一回事：那个管窗口装不装得下，这个管钱包。
+   */
+  budget?: { perRun?: number; perDay?: number }
   /** 钩子：事件名 → 命令 */
   hooks?: Record<string, string>
   /** 电脑操控：这一层直接操作真实桌面，沙箱管不到，所以开关要显式 */

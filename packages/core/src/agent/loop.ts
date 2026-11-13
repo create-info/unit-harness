@@ -10,6 +10,7 @@ import type { CompletionResult, Message, ToolCall, ToolSpec } from '../llm/types
 import type { LlmGateway } from '../llm/gateway.ts'
 import type { ToolDefinition } from '../types.ts'
 import { parsePatch, planPatch } from './tools/apply-patch.ts'
+import { checkBudget } from './budget.ts'
 import { compactMessages, shouldCompact } from './compact.ts'
 import { prepareToolOutput } from './output.ts'
 import { sliceLines, formatEntry, formatHits, looksBinary } from './tools/fs.ts'
@@ -58,7 +59,8 @@ export interface AgentDeps {
     kind:
       | 'turn/start' | 'turn/end' | 'step/start' | 'step/end' | 'plan/updated'
       | 'assistant/message'
-      | 'tool/call' | 'tool/result' | 'session/compacted' | 'steering/message',
+      | 'tool/call' | 'tool/result' | 'session/compacted' | 'steering/message'
+      | 'budget/warning' | 'budget/exceeded',
     payload: Record<string, unknown>,
   ) => string | null
   log: (msg: string) => void
@@ -86,7 +88,7 @@ export interface RunResult {
   text: string
   steps: number
   usage: { prompt: number; completion: number; total: number }
-  stoppedBy: 'model' | 'max-steps' | 'timeout' | 'interrupted'
+  stoppedBy: 'model' | 'max-steps' | 'timeout' | 'interrupted' | 'budget'
   /** 结束时完整消息列表，供续跑落盘 */
   messages: Message[]
   plan: PlanStep[]
@@ -313,6 +315,8 @@ export async function runAgent(
     initialMessages?: Message[]
     /** 附在第一轮用户消息上的图片 */
     images?: ImageInput[]
+    /** 成本预算（token）：到线就停，stoppedBy 记为 'budget' */
+    budget?: { perRun?: number; perDay?: number; dayUsed?: number }
   },
 ): Promise<RunResult> {
   const maxSteps = opts.maxSteps ?? 12
@@ -353,6 +357,9 @@ export async function runAgent(
   let steps = 0
   let stoppedBy: RunResult['stoppedBy'] = 'model'
   const usage = { prompt: 0, completion: 0, total: 0 }
+  const costBudget = opts.budget
+  // 「快到线」只提醒一次，不然每一步都弹一句
+  let budgetWarned = false
   let lastText = ''
   let plan: PlanStep[] = []
   let compactions = 0
@@ -571,6 +578,42 @@ export async function runAgent(
     usage.completion += res.usage.completion_tokens
     usage.total += res.usage.total_tokens
     if (res.content) lastText = res.content
+
+    // ---- 成本预算：钱包到线就停，与上下文压缩是两件事 ----
+    // 压缩是把历史变短，超了还继续；预算超了必须停。
+    if (costBudget) {
+      const verdict = checkBudget(
+        {
+          used: usage.total,
+          limit: costBudget.perRun ?? 0,
+          dayUsed: (costBudget.dayUsed ?? 0) + usage.total,
+          dayLimit: costBudget.perDay ?? 0,
+        },
+        { warned: budgetWarned },
+      )
+      if (verdict.action === 'warn') {
+        budgetWarned = true
+        deps.ev('budget/warning', {
+          used: usage.total,
+          limit: costBudget.perRun ?? 0,
+          day_used: (costBudget.dayUsed ?? 0) + usage.total,
+          day_limit: costBudget.perDay ?? 0,
+          pct: verdict.pct,
+          message: verdict.message,
+        })
+      } else if (verdict.action === 'stop') {
+        deps.ev('budget/exceeded', {
+          used: usage.total,
+          limit: costBudget.perRun ?? 0,
+          day_used: (costBudget.dayUsed ?? 0) + usage.total,
+          day_limit: costBudget.perDay ?? 0,
+          message: verdict.message,
+        })
+        // 收尾：这一轮不算完成，让上层知道是被预算停下的
+        deps.ev('turn/end', { turn_index: 1, steps, stop_reason: 'budget', usage })
+        return { text: lastText, steps, usage, stoppedBy: 'budget', plan, compactions, messages }
+      }
+    }
 
 
     if (res.toolCalls.length === 0) {

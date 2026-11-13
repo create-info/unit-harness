@@ -10,6 +10,8 @@ export const SESSION_KINDS = [
   'session/end',
   'session/interrupted',
   'checkpoint/created', 'checkpoint/restored', 'checkpoint/file',
+  // 成本预算：warn 是快到线（一次），exceeded 是到线停下
+  'budget/warning', 'budget/exceeded',
   'turn/start', 'turn/end', 'step/start', 'step/end',
   'steering/message',
   'assistant/chunk', 'assistant/message',

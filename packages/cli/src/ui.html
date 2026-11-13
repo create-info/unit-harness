@@ -468,6 +468,7 @@
       <input id="fWork" spellcheck="false" placeholder="/absolute/path/to/project">
       <div class="hint">The sandbox limits writes to this directory.</div>
     </div>
+
   </div>
   <div class="dbody" id="projPane" style="display:none">
     <div class="field">
@@ -1341,6 +1342,40 @@ function renderSettings() {
   }
 
   if (SETPAGE === 'usage') {
+    // 预算放这里而不是「常规」：用户是在看到用量之后才想设上限的
+    const numInput = (id, placeholder) => {
+      const i = document.createElement('input');
+      i.id = id; i.className = 'val'; i.inputMode = 'numeric';
+      i.placeholder = placeholder; i.style.width = '150px';
+      return i;
+    };
+    const runIn = numInput('budgetRun', '不限');
+    const dayIn = numInput('budgetDay', '不限');
+    const bwrap = document.createElement('div');
+    bwrap.style.display = 'flex'; bwrap.style.gap = '8px';
+    bwrap.appendChild(runIn); bwrap.appendChild(dayIn);
+    body.appendChild(section('预算上限（token）', [
+      srow('单次运行', '超过就停，这一轮记为「预算用尽」。留空 = 不限。', bwrap),
+      srow('每天合计', '跨越所有会话累计，按 provider 自报的用量算。留空 = 不限。',
+        (() => { const d = document.createElement('span'); d.className = 'val'; d.id = 'budgetToday'; d.textContent = '—'; return d; })()),
+    ]));
+    const loadB = () => fetch('/api/budget').then(r => r.json()).then(b => {
+      runIn.value = b.perRun ? String(b.perRun) : '';
+      dayIn.value = b.perDay ? String(b.perDay) : '';
+      const t = document.getElementById('budgetToday');
+      if (t) t.textContent = b.dayUsed ? b.dayUsed.toLocaleString() + ' 今日已用' : '今日 0';
+    }).catch(() => {});
+    const saveB = () => fetch('/api/budget', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        perRun: Number(runIn.value) || 0,
+        perDay: Number(dayIn.value) || 0,
+      }),
+    }).then(loadB).catch(() => {});
+    runIn.onchange = saveB;
+    dayIn.onchange = saveB;
+    void loadB();
+
     const wrap = section('Token 用量', [])
     const holder = document.createElement('div');
     holder.className = 'dim';
@@ -1958,6 +1993,13 @@ function render(kind, p){
         addQueued(p.text || '');
       }
       break;
+    // 预算：warn 是一次性提醒，exceeded 说明这一轮为什么停
+    case 'budget/warning':
+      procRow('warn', '⚠ ' + esc(p.message || 'token budget is nearly used up'));
+      break;
+    case 'budget/exceeded':
+      procRow('bad', '■ ' + esc(p.message || 'stopped: token budget used up'));
+      break;
     case 'plan/updated': {
       procRow('dim','plan:');
       for (const st of p.steps || []) procRow('dim','  ' + (st.status==='completed'?'✓':st.status==='in_progress'?'▸':' ') + ' ' + esc(st.step));
@@ -1995,6 +2037,7 @@ function render(kind, p){
         const why = p.stop_reason === 'interrupted' ? 'Stopped'
           : p.stop_reason === 'error' ? 'Stopped on an error'
           : p.stop_reason === 'max-steps' ? 'Hit the step limit'
+          : p.stop_reason === 'budget' ? 'Stopped: budget used up'
           : 'Finished';
         row('step', why + ' · ' + p.steps + (p.steps === 1 ? ' step' : ' steps'));
       }
