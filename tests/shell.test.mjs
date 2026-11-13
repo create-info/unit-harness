@@ -427,3 +427,57 @@ test('an image pasted in the browser reaches the model, and is not copied into t
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('usage adds up what the providers actually reported', async () => {
+  let n = 0
+  const llm = http.createServer((req, res) => {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ id: 'mock' }] }))
+      return
+    }
+    let b = ''
+    req.on('data', (c) => (b += c))
+    req.on('end', () => {
+      n++
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        model: 'mock',
+        choices: [{ message: { role: 'assistant', content: 'done ' + n }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
+      }))
+    })
+  })
+  await new Promise((r) => llm.listen(0, '127.0.0.1', r))
+  const port = llm.address().port
+
+  const home = mkdtempSync(join(tmpdir(), 'uh-usage-'))
+  mkdirSync(join(home, 'work'), { recursive: true })
+  const srv = await startServer({
+    ...process.env, UH_HOME: home, UH_WORKSPACE: join(home, 'work'),
+    UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock',
+  })
+  try {
+    await post('/api/settings', { provider: 'deepseek', model: 'mock', apiKey: 'sk-x' })
+    assert.equal((await get('/api/usage')).calls, 0, 'nothing yet')
+
+    for (const t of ['one', 'two']) {
+      await post('/api/run', { task: t })
+      // 等这次跑完再发下一条，否则两次跑会抢同一个工作区
+      await new Promise((r) => setTimeout(r, 900))
+    }
+
+    const u = await get('/api/usage')
+    assert.equal(u.calls, 2, 'two model calls recorded')
+    assert.equal(u.total, 240, 'tokens summed, not estimated')
+    assert.equal(u.prompt, 200)
+    assert.equal(u.completion, 40)
+    assert.equal(u.byModel[0].model, 'mock')
+    assert.equal(u.byModel[0].calls, 2)
+    assert.match(u.byDay[0].day, /^\d{4}-\d{2}-\d{2}$/, 'bucketed by the event timestamp, not "unknown"')
+  } finally {
+    srv.kill()
+    llm.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})

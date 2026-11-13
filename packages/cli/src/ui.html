@@ -153,6 +153,18 @@
   .setitem:hover{background:#181d25;color:var(--fg)}
   .setitem.cur{background:#1d2530;color:var(--fg)}
   .setitem.cur::before{content:'';width:3px;height:13px;border-radius:2px;background:#4a8cff;margin-left:-10px;margin-right:7px}
+  .ustat{display:flex;gap:26px;flex-wrap:wrap;margin:4px 0 18px}
+  .ustat>div{display:flex;flex-direction:column;gap:3px}
+  .ustat b{font-size:19px;font-family:var(--mono);color:#e6ebf3;line-height:1.1}
+  .ustat span{font-size:10.5px;color:#6d7a8f}
+  .utab{width:100%;border-collapse:collapse;font-size:11.5px;font-family:var(--mono);table-layout:auto}
+  .utab th{text-align:left;color:#6d7a8f;font-weight:500;padding:6px 8px;border-bottom:1px solid #232b36;font-size:10.5px}
+  .utab td{padding:6px 8px;color:#c7cedb;border-bottom:1px solid #1b222c}
+  .urow{display:flex;align-items:center;gap:10px;margin-bottom:5px;font-size:11px;font-family:var(--mono)}
+  .urow .ud{color:#6d7a8f;width:82px;flex:0 0 82px}
+  .urow .ubar{flex:1;height:7px;background:#1b222c;border-radius:4px;overflow:hidden}
+  .urow .ubar i{display:block;height:100%;background:#3f6db5;border-radius:4px}
+  .urow .un{color:#8b95a6;width:56px;flex:0 0 56px;text-align:right}
   .setmain{flex:1;display:flex;flex-direction:column;min-width:0}
   .settop{display:flex;align-items:center;padding:16px 26px 10px}
   .settop h2{margin:0;font-size:17px;font-weight:600;flex:1}
@@ -294,6 +306,7 @@
       <div class="setitem" data-p="sandbox">沙箱</div>
       <div class="setgrp">Data</div>
       <div class="setitem" data-p="storage">存储</div>
+      <div class="setitem" data-p="usage">用量</div>
       <div class="setgrp">About</div>
       <div class="setitem" data-p="about">关于</div>
     </aside>
@@ -805,7 +818,7 @@ async function openSettings(page) {
 
 function navHighlight() {
   for (const it of document.querySelectorAll('.setitem')) it.classList.toggle('cur', it.dataset.p === SETPAGE);
-  const title = { general: '常规', model: '模型', sandbox: '沙箱', storage: '存储', about: '关于' };
+  const title = { general: '常规', model: '模型', sandbox: '沙箱', storage: '存储', usage: '用量', about: '关于' };
   $('#setTitle').textContent = title[SETPAGE] || '设置';
 }
 
@@ -967,6 +980,43 @@ function renderSettings() {
       srow('配置文件', '模型与 key。权限 0600。', (() => { const d = document.createElement('span'); d.className = 'val'; d.textContent = '~/.uh/config.json'; return d; })()),
       srow('账号令牌', ACCOUNT.signedIn ? '已登录。登出会删除这个文件。' : '未登录——不影响使用。', (() => { const d = document.createElement('span'); d.className = 'val'; d.textContent = '~/.uh/account.json'; return d; })()),
     ]));
+    return;
+  }
+
+  if (SETPAGE === 'usage') {
+    const wrap = section('Token 用量', [])
+    const holder = document.createElement('div');
+    holder.className = 'dim';
+    holder.textContent = '正在读会话日志…';
+    wrap.appendChild(holder);
+    body.appendChild(wrap);
+    fetch('/api/usage').then(r => r.json()).then(u => {
+      const kb = (n) => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+      if (!u.calls){
+        holder.textContent = '还没有模型调用记录。';
+        return;
+      }
+      const rows = (u.byModel || []).map(m =>
+        '<tr><td>' + esc(m.provider + ' / ' + m.model) + '</td><td style="text-align:right">' + m.calls + '</td>'
+        + '<td style="text-align:right">' + kb(m.prompt) + '</td><td style="text-align:right">' + kb(m.completion) + '</td>'
+        + '<td style="text-align:right"><b>' + kb(m.total) + '</b></td></tr>').join('');
+      const days = (u.byDay || []).map(d =>
+        '<div class="urow"><span class="ud">' + esc(d.day) + '</span>'
+        + '<span class="ubar"><i style="width:' + Math.max(2, Math.round(d.total / Math.max(1, u.byDay[0].total) * 100)) + '%"></i></span>'
+        + '<span class="un">' + kb(d.total) + '</span></div>').join('');
+      holder.className = '';
+      holder.innerHTML =
+        '<div class="ustat"><div><b>' + kb(u.total) + '</b><span>tokens / ' + u.sessions + ' 个会话</span></div>'
+        + '<div><b>' + u.calls + '</b><span>模型调用</span></div>'
+        + '<div><b>' + kb(u.prompt) + '</b><span>输入</span></div>'
+        + '<div><b>' + kb(u.completion) + '</b><span>输出</span></div></div>'
+        + '<table class="utab"><thead><tr><th>模型</th><th style="text-align:right">调用</th>'
+        + '<th style="text-align:right">输入</th><th style="text-align:right">输出</th>'
+        + '<th style="text-align:right">合计</th></tr></thead><tbody>' + rows + '</tbody></table>'
+        + (days ? '<h3 style="margin:18px 0 9px">最近 14 天</h3>' + days : '')
+        + '<p class="dim" style="margin-top:12px">数字来自各 provider 在事件日志里自己报的 usage，不是估算。'
+        + 'provider 不报就没有——这里显示为零，说明没有数据，不代表没花钱。</p>';
+    }).catch(err => { holder.textContent = '读不到用量：' + err.message; });
     return;
   }
 
