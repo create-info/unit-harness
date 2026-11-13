@@ -302,6 +302,15 @@ async function boot(){
   await loadSettings();
   await loadProjects();
   await loadAccount();
+
+  // 全新用户：没有模型就别让他先去踩一次 Run
+  if (!SETTINGS.model){
+    openDrawer('settings');
+    $('#dMsg').className = 'msg';
+    $('#dMsg').textContent = SETTINGS.hasKey
+      ? 'pick a model — hit List to see what this provider serves'
+      : 'pick a provider and paste a key to get started';
+  }
 }
 
 /** 左栏：项目 → 会话。跟 Codex 一样，会话属于某个工作区，不是一锅平铺 */
@@ -859,7 +868,12 @@ $('#run').addEventListener('submit', async (e) => {
   try {
     const r = await fetch('/api/run', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ task }) });
     const j = await r.json();
-    if (j.error){ row('bad', 'ERROR: ' + j.error); setRunning(false); return; }
+    if (j.error){
+      row('bad', 'ERROR: ' + j.error);
+      setRunning(false);
+      if (j.needsSetup){ openDrawer('settings'); $('#dMsg').className = 'msg err'; $('#dMsg').textContent = j.error; }
+      return;
+    }
     $('#task').value = '';
     attach(j.sessionId);
     loadProjects();

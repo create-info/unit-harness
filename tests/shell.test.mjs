@@ -253,3 +253,31 @@ test('an unreachable unitai.site keeps you signed in instead of kicking you out'
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('running without a usable model says so instead of pretending to start', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'uh-nomodel-'))
+  const srv = await startServer({ ...process.env, UH_HOME: home })
+  try {
+    // 1) 全新：连 provider 都没选过
+    const r1 = await post('/api/run', { task: 'hello' })
+    assert.ok(r1.error, 'a run with no model must be refused')
+    assert.equal(r1.needsSetup, true, 'and must tell the UI to open settings')
+    assert.equal(r1.sessionId, undefined, 'nothing may be started')
+
+    // 2) 选了 provider 和模型，但没 key
+    await post('/api/settings', { provider: 'deepseek', model: 'deepseek-v4-flash' })
+    const r2 = await post('/api/run', { task: 'hello' })
+    assert.ok(r2.error)
+    assert.match(r2.error, /API key/, 'the message must name the actual missing piece')
+
+    // 3) 本地服务不需要 key —— 不能因为没 key 就把 ollama 拦掉
+    await post('/api/settings', { provider: 'ollama', model: 'qwen3:8b' })
+    const r3 = await post('/api/run', { task: 'hello' })
+    assert.equal(r3.needsSetup, undefined, 'a local provider with no key must be allowed to start')
+    assert.ok(r3.sessionId, 'the run must be accepted')
+    await post('/api/stop', { sessionId: r3.sessionId })
+  } finally {
+    srv.kill()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
