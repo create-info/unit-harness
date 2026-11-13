@@ -8,7 +8,7 @@
 import http from 'node:http'
 import os from 'node:os'
 import pathMod, { join as pjoin } from 'node:path'
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import fs6 from 'node:fs'
 import { spawn } from 'node:child_process'
@@ -37,6 +37,8 @@ const subs = new Map<string, Set<Subscriber>>()
  * 每次 run 都把它传给 Harness。刷新页面不丢（服务端内存），重启回到默认。
  */
 let currentWorkspace = process.env.UH_WORKSPACE || workspaceDir()
+/** 用量要读全部会话日志，别让设置页每开一次就重扫一遍 */
+let usageCache: { at: number; data: Record<string, unknown> } | null = null
 
 /**
  * 审批档位，抄 Codex 的三档（AskForApproval）：
@@ -325,6 +327,65 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     }
 
     // ---- 维护 --------------------------------------------------------------
+    // 用量：把每个会话的 llm/response 加起来。模型名和 token 数只存在于事件里，
+    // 所以这里必须读日志，不能问 provider —— 问 provider 只会给「当前余额」，
+    // 而用户想知道的是「我这些天在它身上花了多少、花在哪个模型上」。
+    if (req.method === 'GET' && url.pathname === '/api/usage') {
+      const now = Date.now()
+      if (usageCache && now - usageCache.at < 30_000) { json(res, 200, usageCache.data); return }
+
+      const byModel = new Map<string, { model: string; provider: string; calls: number; prompt: number; completion: number; total: number }>()
+      const byDay = new Map<string, { day: string; calls: number; total: number }>()
+      let calls = 0, prompt = 0, completion = 0, total = 0, sessions = 0
+
+      const store = new EventStore()
+      for (const meta of store.list({ limit: 500 })) {
+        const dir = store.sessionDir(meta.id)
+        if (!dir) continue
+        let lines: string[] = []
+        try { lines = readFileSync(pathMod.join(dir, 'events.jsonl'), 'utf8').split('\n') } catch { continue }
+        sessions++
+        for (const line of lines) {
+          if (!line.includes('llm/response')) continue
+          let ev: { kind?: string; timestamp?: string; payload?: Record<string, unknown> }
+          try { ev = JSON.parse(line) } catch { continue }
+          if (ev.kind !== 'llm/response') continue
+          const u = (ev.payload?.usage ?? {}) as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+          const t = u.total_tokens ?? 0
+          if (t === 0) continue
+          const model = String(ev.payload?.model ?? 'unknown')
+          const provider = String(ev.payload?.provider ?? 'unknown')
+          calls++
+          prompt += u.prompt_tokens ?? 0
+          completion += u.completion_tokens ?? 0
+          total += t
+
+          const mk = provider + '/' + model
+          const m = byModel.get(mk) ?? { model, provider, calls: 0, prompt: 0, completion: 0, total: 0 }
+          m.calls++; m.prompt += u.prompt_tokens ?? 0; m.completion += u.completion_tokens ?? 0; m.total += t
+          byModel.set(mk, m)
+
+          const day = String(ev.timestamp ?? '').slice(0, 10) || 'unknown'
+          const d = byDay.get(day) ?? { day, calls: 0, total: 0 }
+          d.calls++; d.total += t
+          byDay.set(day, d)
+        }
+      }
+
+      const data = {
+        sessions,
+        calls,
+        prompt,
+        completion,
+        total,
+        byModel: [...byModel.values()].sort((a, b) => b.total - a.total),
+        byDay: [...byDay.values()].sort((a, b) => (a.day < b.day ? 1 : -1)).slice(0, 14),
+      }
+      usageCache = { at: now, data }
+      json(res, 200, data)
+      return
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/prune') {
       let body: { olderThanDays?: number; dryRun?: boolean } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
@@ -674,6 +735,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
           broadcast(sid, 'error', { message: err instanceof Error ? err.message : String(err) })
           broadcast(sid, 'done', {})
         } finally {
+          usageCache = null  // 这次 run 产生了新 token，旧的汇总立刻作废
           running.delete(sid)
           h.dispose()
         }
