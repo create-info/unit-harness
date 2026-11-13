@@ -119,6 +119,16 @@
   .diffbox .ln.del{background:#1d1113}
   .diffbox .ln.del .c{color:#e2999c}
   .diffbox .ln.hunk .c{color:#6b7688}
+  .attach{display:flex;gap:7px;flex-wrap:wrap;padding:0 2px 7px}
+  .attach:empty{display:none}
+  .thumb{position:relative;width:54px;height:54px;border-radius:7px;overflow:hidden;border:1px solid #2a3240}
+  .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .thumb .x{position:absolute;top:1px;right:1px;width:15px;height:15px;border:0;border-radius:50%;
+    background:rgba(10,13,18,.85);color:#c7cedb;font-size:10px;line-height:15px;text-align:center;cursor:pointer;padding:0}
+  .plus{background:transparent;border:1px solid #2a3240;color:var(--dim);width:30px;height:30px;
+    border-radius:8px;font-size:16px;line-height:1;cursor:pointer;flex:0 0 30px;margin-right:6px}
+  .plus:hover{color:var(--fg);border-color:#3a4557}
+  .drop{outline:2px dashed #4a8cff;outline-offset:-6px}
   .qzone{display:none}
   .qzone.on{display:block}
   .qstate{font-size:11px;color:#5c6676;padding:0 4px 5px}
@@ -258,11 +268,14 @@
       <button class="appr" id="apprBtn" title="How runs are approved"><span id="apprIco">🛡</span><span id="apprName">Request approval</span></button>
       <span class="mbdim" id="mpWork"></span>
     </div>
+    <div class="attach" id="attach"></div>
     <div class="qzone" id="qzone">
       <div class="qstate" id="qstate"></div>
       <div class="qlist" id="qlist"></div>
     </div>
     <form id="run">
+      <button class="plus" id="plusBtn" type="button" title="Attach an image">+</button>
+      <input type="file" id="filePick" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
       <button class="mic" id="micBtn" type="button" title="Speak instead of typing">🎤</button>
       <textarea id="task" placeholder="Describe the task. It runs in a sandbox; every write is logged and undoable."></textarea>
       <button class="go" id="go" type="submit">Run</button>
@@ -1290,6 +1303,63 @@ function setupMic(){
   btn.onclick = () => (on ? stop() : start());
 }
 
+/** 附在图上的截图。只存 dataURL，提交时一起发；后端落成文件，base64 不进日志 */
+let ATTACH = [];
+
+function addAttach(name, mediaType, dataUrl){
+  if (ATTACH.length >= 5) return;
+  const item = { name, mediaType, data: dataUrl.split(',')[1] || '' };
+  ATTACH.push(item);
+  const el = document.createElement('div');
+  el.className = 'thumb';
+  el.innerHTML = '<img alt=""><button class="x" type="button">✕</button>';
+  el.querySelector('img').src = dataUrl;
+  el.querySelector('.x').onclick = () => {
+    const i = ATTACH.indexOf(item);
+    if (i >= 0) ATTACH.splice(i, 1);
+    el.remove();
+  };
+  $('#attach').appendChild(el);
+}
+
+function clearAttach(){
+  ATTACH = [];
+  $('#attach').innerHTML = '';
+}
+
+function readFiles(files){
+  for (const f of files){
+    if (!/^image\//.test(f.type)) continue;
+    const fr = new FileReader();
+    fr.onload = () => addAttach(f.name || 'pasted', f.type, String(fr.result));
+    fr.readAsDataURL(f);
+  }
+}
+
+function setupAttach(){
+  const plus = $('#plusBtn'), pick = $('#filePick');
+  if (!plus || !pick) return;
+  plus.onclick = () => pick.click();
+  pick.onchange = () => { readFiles(pick.files); pick.value = ''; };
+
+  // 截图更常见的方式是粘贴，不是选文件
+  document.addEventListener('paste', (e) => {
+    const items = [...(e.clipboardData?.items || [])].filter(i => i.type.startsWith('image/'));
+    if (!items.length) return;
+    e.preventDefault();
+    readFiles(items.map(i => i.getAsFile()).filter(Boolean));
+  });
+
+  const form = $('#run');
+  for (const t of ['dragenter', 'dragover']){
+    form.addEventListener(t, (e) => { e.preventDefault(); form.classList.add('drop'); });
+  }
+  for (const t of ['dragleave', 'drop']){
+    form.addEventListener(t, (e) => { e.preventDefault(); form.classList.remove('drop'); });
+  }
+  form.addEventListener('drop', (e) => readFiles(e.dataTransfer?.files || []));
+}
+
 /** 待发队列：说出来但还没轮到它的那些话 */
 function addQueued(text){
   $('#qzone').classList.add('on');
@@ -1484,7 +1554,10 @@ $('#run').addEventListener('submit', async (e) => {
 
   setRunning(true);
   try {
-    const r = await fetch('/api/run', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ task }) });
+    const r = await fetch('/api/run', {
+      method: 'POST', headers: {'content-type':'application/json'},
+      body: JSON.stringify({ task, ...(ATTACH.length ? { images: ATTACH } : {}) }),
+    });
     const j = await r.json();
     if (j.error){
       row('bad', 'ERROR: ' + j.error);
@@ -1493,6 +1566,7 @@ $('#run').addEventListener('submit', async (e) => {
       return;
     }
     $('#task').value = '';
+    clearAttach();
     attach(j.sessionId);
     loadProjects();
   } catch (err) {
@@ -1506,6 +1580,7 @@ $('#task').addEventListener('keydown', (e) => {
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
 
+setupAttach();
 boot();
 </script>
 </body>

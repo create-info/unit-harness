@@ -7,8 +7,9 @@
  */
 import http from 'node:http'
 import os from 'node:os'
-import pathMod from 'node:path'
-import { mkdirSync } from 'node:fs'
+import pathMod, { join as pjoin } from 'node:path'
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import fs6 from 'node:fs'
 import { spawn } from 'node:child_process'
 import {
@@ -566,7 +567,11 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     }
 
     if (req.method === 'POST' && url.pathname === '/api/run') {
-      let body: { task?: string; maxSteps?: number } = {}
+      let body: {
+        task?: string
+        maxSteps?: number
+        images?: { name?: string; mediaType?: string; data?: string }[]
+      } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* ignore */ }
       const task = (body.task ?? '').trim()
       if (!task) { json(res, 400, { error: 'task is empty' }); return }
@@ -591,6 +596,24 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
           needsSetup: true,
         })
         return
+      }
+
+      // 网页传来的图是 base64。存成文件而不是把 base64 塞进事件/state：
+      // 续跑要按路径重读，而一条 3 MB 的 base64 写进日志会让 cat 都打不开。
+      // 放 .uh/uploads 而不是工作区根：快照本来就跳过 .uh，交付物里不该多出用户截图。
+      const images: { path: string; mediaType: string; data: string }[] = []
+      for (const im of body.images ?? []) {
+        const data = (im.data ?? '').trim()
+        if (!data) continue
+        const buf = Buffer.from(data, 'base64')
+        if (buf.length === 0 || buf.length > 12 * 1024 * 1024) continue
+        const sha = createHash('sha256').update(buf).digest('hex').slice(0, 16)
+        const ext = ((im.name ?? '').split('.').pop() ?? 'png').toLowerCase().replace(/[^a-z0-9]/g, '') || 'png'
+        const dir = pjoin(currentWorkspace, '.uh', 'uploads')
+        mkdirSync(dir, { recursive: true })
+        const file = pjoin(dir, `${sha}.${ext}`)
+        if (!existsSync(file)) writeFileSync(file, buf)
+        images.push({ path: file, mediaType: im.mediaType ?? 'image/png', data })
       }
 
       let sid = ''
@@ -634,7 +657,11 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
 
       void (async () => {
         try {
-          const out = await h.runTask({ task, ...(body.maxSteps ? { maxSteps: body.maxSteps } : {}) })
+          const out = await h.runTask({
+            task,
+            ...(body.maxSteps ? { maxSteps: body.maxSteps } : {}),
+            ...(images.length ? { images } : {}),
+          })
           broadcast(sid, 'answer', { text: out.text })
           broadcast(sid, 'deliverables', {
             items: out.artifacts,
