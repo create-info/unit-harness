@@ -1,0 +1,9 @@
+{
+  "name": "@unit-harness/plugin-phone",
+  "version": "0.1.0",
+  "description": "Drive a real Android, HarmonyOS or iOS phone: read the screen, tap, type, swipe.",
+  "type": "module",
+  "main": "index.js",
+  "license": "Apache-2.0",
+  "keywords": ["unit-harness", "plugin", "android", "harmonyos", "ios", "adb", "hdc"]
+}
