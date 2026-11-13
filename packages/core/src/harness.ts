@@ -36,7 +36,7 @@ import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/t
 import { McpRegistry } from './mcp/bridge.ts'
 import { loadMcpServers } from './mcp/config.ts'
 import { allowAll, denyAll, needsApproval } from './approval/gate.ts'
-import type { ApprovalGate, ApprovalPolicy, ApprovalRequest } from './approval/gate.ts'
+import type { ApprovalDecision, ApprovalGate, ApprovalPolicy, ApprovalRequest } from './approval/gate.ts'
 import { uhHome } from './paths.ts'
 import type { Message, ImageInput } from './llm/types.ts'
 import { discoverSkills, renderSkillIndex } from './skill/registry.ts'
@@ -443,9 +443,16 @@ export class Harness {
           summary: cmdline.length > 160 ? `${cmdline.slice(0, 157)}...` : cmdline,
           detail: cmdline,
         }
-        const requested = this.ev('approval/requested', { ...req }, 'agent')
-        const decision = await this.approvalGate().request(req)
-        this.ev('approval/resolved', { kind: 'exec', risk, decision }, 'user', requested?.id ?? null)
+        // approval/requested 的含义是「问过人了」。--yes 并不问人，只是自动批准，
+        // 记一条 requested 会让审计日志撒谎
+        let decision: ApprovalDecision = 'allow'
+        if (this.opts.approval === 'allow') {
+          this.ev('approval/resolved', { kind: 'exec', risk, decision: 'allow', auto: true }, 'user')
+        } else {
+          const requested = this.ev('approval/requested', { ...req }, 'agent')
+          decision = await this.approvalGate().request(req)
+          this.ev('approval/resolved', { kind: 'exec', risk, decision }, 'user', requested?.id ?? null)
+        }
         if (decision === 'deny') {
           this.ev('tool/result', {
             tool: 'exec',
