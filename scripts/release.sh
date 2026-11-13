@@ -56,31 +56,18 @@ api() { # api <method> <url> [json-body]
   fi
 }
 
-# 先确认 token 能不能写。仓库的 Actions 默认权限如果是只读，
-# workflow 里的 `permissions: contents: write` 会被静默降级，
-# 症状是「选 run、下产物、生成校验和全都成功，卡在创建 release」——
-# 与其让用户去猜 403，不如在这里说清楚该改哪个开关
+# 这里只打印诊断，**不阻断**。
+# GITHUB_TOKEN 调 GET /repos 时 permissions 字段经常是 false，即使 workflow 里
+# 已经声明了 contents: write —— 拿它当判据会把真权限误杀。真正的判据是
+# 「创建 release 这一步成没成」，所以下面那个 403 分支才是权威。
 if [ "$DRY" = 0 ]; then
-echo "→ checking token permissions"
-PERM=$(api GET "${API}" | python3 -c '
+  PERM=$(api GET "${API}" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 p = d.get("permissions") or {}
-print("write" if p.get("push") else "read-only")
+print("push" if p.get("push") else "read-only")
 ' 2>/dev/null || echo unknown)
-echo "  token: ${PERM}"
-if [ "$PERM" != "write" ]; then
-  cat >&2 <<'EOM'
-ERROR: this token cannot create a release.
-
-  GitHub repo settings → Actions → General → Workflow permissions
-  → "Read and write permissions" → Save, then re-push the tag.
-
-  Or publish from a machine with a personal access token:
-    GITHUB_TOKEN=<pat> bash scripts/release.sh <tag>
-EOM
-  exit 1
-fi
+  echo "  (token reports: ${PERM}; this is advisory — GITHUB_TOKEN often reports read-only even when it is not)"
 fi
 
 # ---------------------------------------------------------------- 收集产物
@@ -181,12 +168,32 @@ print(json.dumps({
   "draft": False,
   "prerelease": False,
 }))')
-  RELEASE_ID=$(api POST "${API}/releases" "$PAYLOAD" | json "
+  CREATE_OUT=$(api POST "${API}/releases" "$PAYLOAD")
+  RELEASE_ID=$(printf '%s' "$CREATE_OUT" | json "
 import json,sys
 d=json.load(sys.stdin)
 if not d.get('id'):
-    sys.exit('create failed: '+str(d)[:300])
-print(d['id'])")
+    sys.exit('')
+print(d['id'])" 2>/dev/null || echo "")
+
+  if [ -z "$RELEASE_ID" ]; then
+    echo "ERROR: could not create the release." >&2
+    printf '%s\n' "$CREATE_OUT" | head -c 400 >&2
+    echo "" >&2
+    case "$CREATE_OUT" in
+      *"Resource not accessible"*|*"Bad credentials"*|*403*|*401*)
+        cat >&2 <<'EOM'
+
+  This token cannot write to the repository. Either:
+    - repo → Settings → Actions → General → Workflow permissions
+      → "Read and write permissions" → Save (then re-push the tag), or
+    - publish from a machine with a personal access token:
+      GITHUB_TOKEN=<pat> bash scripts/release.sh <tag>
+EOM
+        ;;
+    esac
+    exit 1
+  fi
   echo "  release ${RELEASE_ID}"
 fi
 
