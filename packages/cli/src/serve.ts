@@ -15,7 +15,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import {
   EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey,
   readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig } from '@unit-harness/core'
-import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget } from '@unit-harness/core'
+import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget, WatchManager } from '@unit-harness/core'
 import { loadMcpServers, discoverSkills } from '@unit-harness/core'
 import type { ApprovalGate, ApprovalRequest } from '@unit-harness/core'
 import UI from './ui.html'
@@ -152,6 +152,26 @@ const running = new Map<string, Harness>()
  * CLI 里是 readline，网页里必须是同一件事：把请求推给前端、挂一个 promise、
  * 等人点。五分钟没人理就当拒绝——把「没人回答」当成允许是最坏的那种默认。
  */
+/**
+ * 工作区文件监听。一个进程一个，所有 SSE 连接共享底层 watcher。
+ *
+ * 200ms 与 Codex 一致：编辑器保存一次文件通常会触发好几个事件，
+ * 窗口太短前端会被刷爆，太长会显得迟钝。
+ */
+const watchManager = new WatchManager({
+  debounceMs: 200,
+  onBatch: (clientId: string, _watchId: string, ev: { paths: string[] }) => {
+    const sub = fileSubs.get(clientId)
+    if (!sub) return
+    try {
+      sub.write(`event: fs/changed\ndata: ${JSON.stringify({ paths: ev.paths })}\n\n`)
+    } catch { /* 连接已断 */ }
+  },
+})
+/** clientId → 这条 SSE 连接的写入口 */
+const fileSubs = new Map<string, Subscriber>()
+let nextWatchClient = 1
+
 const pendingApprovals = new Map<string, (d: 'allow' | 'allow-always' | 'deny') => void>()
 
 /**
@@ -1189,10 +1209,27 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         try { res.write(': ping\n\n') } catch { /* closed */ }
       }, 15_000)
 
+      // 文件监听：跟着这条连接走。
+      // 工作区变了要能推给页面，否则 agent 改了文件、界面还停在旧内容上。
+      const clientId = '__fs' + nextWatchClient++
+      const wsRoot = currentWorkspace || process.cwd()
+      fileSubs.set(clientId, sub)
+      try {
+        // 递归听整个工作区；听不上就算了，界面照样能用
+        if (!watchManager.watch(clientId, 'workspace', { path: wsRoot, recursive: true })) {
+          fileSubs.delete(clientId)
+        }
+      } catch {
+        fileSubs.delete(clientId)
+      }
+
       req.on('close', () => {
         clearInterval(keepAlive)
         subs.get(sessionId)?.delete(sub)
         if (subs.get(sessionId)?.size === 0) subs.delete(sessionId)
+        // 不清就漏句柄：反复刷新页面会让文件数 × 连接数 的 watcher 都留在进程里
+        watchManager.clientClosed(clientId)
+        fileSubs.delete(clientId)
       })
       return
     }

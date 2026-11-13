@@ -6,6 +6,12 @@
 <title>UnitHarness</title>
 <style>
   /* 「一直都行」的勾选项：显式写出会记住什么前缀、在哪个目录 */
+  .fshint{position:fixed;left:50%;transform:translateX(-50%);bottom:96px;z-index:60;
+    max-width:min(560px,calc(100vw - 48px));padding:7px 14px;border-radius:999px;
+    background:var(--card,#fff);color:var(--dim);font-size:12.5px;cursor:pointer;
+    border:1px solid var(--line);box-shadow:0 4px 16px rgba(0,0,0,.10);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;user-select:none}
+  .fshint:hover{color:var(--fg)}
   .apalways{display:none;align-items:flex-start;gap:8px;margin:0 0 10px;font-size:12.5px;color:var(--dim);line-height:1.5;cursor:pointer}
   .apalways.on{display:flex}
   .apalways input{margin-top:2px;flex:0 0 auto}
@@ -499,6 +505,36 @@ const logEl = $('#log'), delivEl = $('#deliverables');
 let es = null, started = Date.now(), firstTs = 0, lastTs = 0;
 let SETTINGS = null, PROVIDERS = [], drawerMode = 'settings';
 let CURRENT_SID = '', RUNNING = false, ALL_PROJECTS = [];
+
+/**
+ * 「工作区有外部改动」的小条。
+ *
+ * 只显示条数、不自动刷新界面：正在读的内容被人从外部改动时自动重载，
+ * 会让人以为是自己手滑。让用户决定什么时候看。
+ */
+let fsHintTimer = null;
+function showFsHint(count, paths){
+  let bar = document.getElementById('fsHint');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'fsHint';
+    bar.className = 'fshint';
+    bar.onclick = () => {
+      // 点了就当看过：重载项目列表，再把条收掉
+      if (typeof loadProjects === 'function') loadProjects().catch(() => {});
+      bar.remove();
+    };
+    // 挂 body 而不是过程流容器：它不是对话的一部分，不该参与那块区域的布局
+    document.body.appendChild(bar);
+  }
+  window.__fsCount = (window.__fsCount || 0) + count;
+  bar.textContent = '↻ ' + window.__fsCount + ' file' + (window.__fsCount === 1 ? '' : 's')
+    + ' changed outside this session — click to refresh';
+  bar.title = paths.slice(0, 12).join('\n');
+  clearTimeout(fsHintTimer);
+  // 十分钟没人理就自己收掉，免得一直挂着
+  fsHintTimer = setTimeout(() => { bar.remove(); window.__fsCount = 0; }, 600000);
+}
 
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function row(cls, text){
@@ -1993,6 +2029,14 @@ function render(kind, p){
         addQueued(p.text || '');
       }
       break;
+    // 工作区变了（通常是用户在外面的编辑器里改的；agent 自己改的走 tool/result）
+    // 不往过程流里塞——那不是 agent 做的一步，塞进去会打乱顺序感
+    case 'fs/changed': {
+      const n = Array.isArray(p.paths) ? p.paths.length : 0;
+      if (!n) break;
+      showFsHint(n, p.paths);
+      break;
+    }
     // 预算：warn 是一次性提醒，exceeded 说明这一轮为什么停
     case 'budget/warning':
       procRow('warn', '⚠ ' + esc(p.message || 'token budget is nearly used up'));
@@ -2094,7 +2138,7 @@ function attach(id){
   es = new EventSource('/api/stream?session=' + encodeURIComponent(id));
   for (const kind of ['turn/start','step/start','llm/request','llm/response','tool/call','tool/result','plan/updated',
                       'steering/message','text/delta','reasoning/delta','checkpoint/file','approval/needs','approval/requested','approval/resolved','session/compacted','artifact/emitted',
-                      'turn/end','answer','deliverables','done','error']){
+                      'turn/end','answer','deliverables','done','error','budget/warning','budget/exceeded','fs/changed']){
     es.addEventListener(kind, (e) => render(kind, JSON.parse(e.data)));
   }
   es.onerror = () => { /* the browser retries */ };

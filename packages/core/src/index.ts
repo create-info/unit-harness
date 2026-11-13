@@ -79,3 +79,7 @@ export type { ApprovalRule } from './approval/rules.ts'
 // 成本预算：到线就叫停（与上下文压缩不是一回事）
 export { checkBudget, normalizeBudget, formatTokens, describeBudget } from './agent/budget.ts'
 export type { BudgetConfig, BudgetState, BudgetVerdict } from './agent/budget.ts'
+
+// 文件监听：工作区变了，界面要知道（照 Codex 的三层结构）
+export { FileWatcher, DebouncedWatchReceiver, WatchManager } from './watch/index.ts'
+export type { WatchPath, WatchEvent, Subscription } from './watch/index.ts'
