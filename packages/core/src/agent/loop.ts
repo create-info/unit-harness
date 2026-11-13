@@ -341,6 +341,9 @@ export async function runAgent(
     try {
       args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>
     } catch {
+      // 这里必须先收尾再返回：tool/call 已经写进日志了，少一条 tool/result
+      // 就变成「调用过、没有结果」——审计链断在半空，事后无法判断到底执行没执行
+      finish('error', { error: 'arguments are not valid JSON' })
       return `ERROR: arguments are not valid JSON: ${call.function.arguments.slice(0, 200)}`
     }
 
@@ -358,6 +361,7 @@ export async function runAgent(
       if (name === 'run_command') {
         const a = args as unknown as RunCommandArgs
         if (!Array.isArray(a.argv) || a.argv.length === 0 || a.argv.some((x) => typeof x !== 'string')) {
+          finish('error', { error: 'bad argv' })
           return 'ERROR: run_command expects argv: string[] with at least one element'
         }
         return (await deps.runCommand(a)).content
@@ -440,7 +444,7 @@ export async function runAgent(
 
       if (name === 'update_plan') {
         const raw = args.steps
-        if (!Array.isArray(raw)) return 'ERROR: update_plan expects steps: [{step,status}]'
+        if (!Array.isArray(raw)) { finish('error', { error: 'steps must be an array' }); return 'ERROR: update_plan expects steps: [{step,status}]' }
         plan = raw.map((s) => {
           const o = s as { step?: unknown; status?: unknown }
           const status = o.status === 'completed' || o.status === 'in_progress' ? o.status : 'pending'

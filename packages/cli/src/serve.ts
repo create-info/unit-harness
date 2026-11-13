@@ -10,11 +10,10 @@ import os from 'node:os'
 import pathMod from 'node:path'
 import { mkdirSync } from 'node:fs'
 import fs6 from 'node:fs'
-import { uhHome } from '@unit-harness/core'
 import { spawn } from 'node:child_process'
 import {
-  Harness, EventStore, resolveProvider,
-  PROVIDERS, findProvider, maskKey, readConfig, writeConfig, setProviderEntry, workspaceDir,
+  EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey,
+  readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig,
 } from '@unit-harness/core'
 import type { ApprovalGate, ApprovalRequest } from '@unit-harness/core'
 import UI from './ui.html'
@@ -69,6 +68,12 @@ function writeProjectName(path: string, name: string): void {
   else delete names[path]
   fs6.mkdirSync(pathMod.dirname(projectNamesFile()), { recursive: true })
   fs6.writeFileSync(projectNamesFile(), JSON.stringify(names, null, 2) + '\n', { mode: 0o600 })
+}
+
+/** 沙箱偏好，默认什么都不开 */
+function sandboxPrefs(): { allowHome: boolean; denyNetwork: boolean; unconfined: boolean } {
+  const sp = readConfig().sandbox ?? {}
+  return { allowHome: sp.allowHome === true, denyNetwork: sp.denyNetwork === true, unconfined: sp.unconfined === true }
 }
 
 function approvalMode(): ApprovalMode {
@@ -147,6 +152,23 @@ const pendingApprovals = new Map<string, (d: 'allow' | 'deny') => void>()
  */
 const pendingInfo = new Map<string, { sid: string; payload: Record<string, unknown> }>()
 
+/**
+ * 每个会话最近的广播，等前端接上来时补发。
+ *
+ * `POST /api/run` 是先开始跑、再返回 sessionId 的，而前端拿到 id 才连 SSE——
+ * 这中间的几百毫秒正好是模型的第一轮思考。不缓冲的话，用户永远看不到
+ * 「它一开始在想什么」，只看得见后半截，看起来就像模型没思考。
+ */
+const evBuf = new Map<string, Array<{ kind: string; payload: Record<string, unknown> }>>()
+const EV_BUF_MAX = 800
+
+function bufferEvent(sid: string, kind: string, payload: Record<string, unknown>): void {
+  const arr = evBuf.get(sid) ?? []
+  arr.push({ kind, payload })
+  if (arr.length > EV_BUF_MAX) arr.splice(0, arr.length - EV_BUF_MAX)
+  evBuf.set(sid, arr)
+}
+
 function makeWebGate(sidRef: { id: string }): ApprovalGate {
   return {
     async request(req: ApprovalRequest) {
@@ -183,9 +205,14 @@ function makeWebGate(sidRef: { id: string }): ApprovalGate {
 }
 
 function broadcast(sessionId: string, kind: string, payload: Record<string, unknown>): void {
+  // 盖上发送时刻：前端算「+2.3s」要用事件自己的时间，不然补发的那一批全显示成 +0.0s
+  const stamped = { ...payload, _ts: Date.now() }
+  // 先记账，再看有没有人订阅。没有人听的时候正是最需要缓冲的时候——
+  // 早退之前就 return，等于「没人在场就不留证据」，前端后来接上只能看到后半截
+  bufferEvent(sessionId, kind, stamped)
   const set = subs.get(sessionId)
   if (!set) return
-  const frame = `event: ${kind}\ndata: ${JSON.stringify(payload)}\n\n`
+  const frame = `event: ${kind}\ndata: ${JSON.stringify(stamped)}\n\n`
   for (const s of set) {
     try { s.write(frame) } catch { /* client gone */ }
   }
@@ -249,13 +276,66 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         const p = await resolveProvider()
         model = `${p.def.id}/${p.model}`
       } catch { /* no model configured */ }
-      json(res, 200, { isolation, model, workspace: currentWorkspace })
+      json(res, 200, {
+        isolation,
+        model,
+        workspace: currentWorkspace,
+        version: process.env.UH_VERSION || '0.1.0',
+        home: pathMod.join(uhHome(), 'sessions'),
+      })
       return
     }
 
     if (req.method === 'GET' && url.pathname === '/api/sessions') {
       const ws = url.searchParams.get('workspace') ?? undefined
       json(res, 200, collectSessions(ws))
+      return
+    }
+
+    // ---- 文件改动的前后对比 ------------------------------------------------
+    // 事件里存的是引用（大正文外置到 blobs），所以 diff 在服务端算，前端只看结果
+    if (req.method === 'GET' && url.pathname === '/api/diff') {
+      const sessionId = url.searchParams.get('session') ?? ''
+      const want = url.searchParams.get('path') ?? ''
+      const seq = Number(url.searchParams.get('seq') ?? '0')
+      if (!sessionId || !want) { json(res, 400, { error: 'session and path are required' }); return }
+      try {
+        const store = new EventStore()
+        const dir = store.sessionDir(sessionId)
+        if (!dir) { json(res, 404, { error: 'no such session' }); return }
+        const events = store.read(sessionId)
+        const hit = events.find((e) => e.kind === 'checkpoint/file'
+          && (e.payload as { path?: string }).path === want
+          && (!seq || e.seq === seq))
+        if (!hit) { json(res, 404, { error: 'no checkpoint for that file in this session' }); return }
+        const edits = hydrateEdits([hit.payload as never], dir)
+        const ed = edits[0]
+        if (!ed) { json(res, 404, { error: 'could not hydrate that edit' }); return }
+        json(res, 200, {
+          path: want,
+          before: ed.before ?? '',
+          after: ed.after ?? '',
+          existed: (ed.before ?? '') !== '',
+        })
+      } catch (err) {
+        json(res, 500, { error: err instanceof Error ? err.message : String(err) })
+      }
+      return
+    }
+
+    // ---- 维护 --------------------------------------------------------------
+    if (req.method === 'POST' && url.pathname === '/api/prune') {
+      let body: { olderThanDays?: number; dryRun?: boolean } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const days = Number(body.olderThanDays ?? 30)
+      if (!Number.isFinite(days) || days <= 0) { json(res, 400, { error: 'olderThanDays must be a positive number' }); return }
+      try {
+        const store = new EventStore()
+        const pruned = store.prune({ olderThanDays: days, dryRun: body.dryRun === true })
+        json(res, 200, { ok: true, moved: pruned.moved.length, kept: pruned.kept, dryRun: body.dryRun === true })
+      } catch (err) {
+        json(res, 500, { error: err instanceof Error ? err.message : String(err) })
+      }
       return
     }
 
@@ -326,6 +406,10 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         modelHint: def?.modelHint ?? '',
         protocol: def?.protocol ?? 'openai',
         approval: approvalMode(),
+        // 三个沙箱开关必须落到 Harness 上，否则设置面板就是个备忘录
+        allowHome: sandboxPrefs().allowHome,
+        denyNetwork: sandboxPrefs().denyNetwork,
+        unconfined: sandboxPrefs().unconfined,
         workspace: currentWorkspace,
         // 前端拿这个列表画下拉框：不写死任何一家，加 provider 只改注册表
         providers: PROVIDERS.map((p) => ({
@@ -352,6 +436,20 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       cfg.approval = m
       writeConfig(cfg)
       json(res, 200, { ok: true, approval: m })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/sandbox') {
+      let body: { allowHome?: unknown; denyNetwork?: unknown; unconfined?: unknown } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const cfg = readConfig()
+      const cur = cfg.sandbox ?? {}
+      for (const k of ['allowHome', 'denyNetwork', 'unconfined'] as const) {
+        if (typeof body[k] === 'boolean') cur[k] = body[k] as boolean
+      }
+      cfg.sandbox = cur
+      writeConfig(cfg)
+      json(res, 200, { ok: true, sandbox: sandboxPrefs() })
       return
     }
 
@@ -495,6 +593,9 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
 
       let sid = ''
       const sidRef = { id: '' }
+      // session/start、turn/start、第一轮思考都发生在 start() 之前，那时还没有 id。
+      // 先攒着，拿到 id 再倒进缓冲——否则前几百毫秒发生的事对网页来说不存在
+      const earlyEvents: Array<{ kind: string; payload: Record<string, unknown> }> = []
       const h = new Harness({
         record: true,
         label: task.slice(0, 60),
@@ -502,11 +603,28 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         // 网页里也要能审批：不接这个门，破坏性命令在 UI 里只能一律失败
         gate: makeWebGate(sidRef),
         // session 在 start() 里创建，所以这里先缓冲，拿到 id 后再推送
-        onEvent: (kind, payload) => { if (sid) broadcast(sid, kind, payload) },
+        onEvent: (kind, payload) => {
+          if (sid) broadcast(sid, kind, payload)
+          else earlyEvents.push({ kind, payload: { ...payload, _ts: Date.now() } })
+        },
+        // 流式：模型说一个字就推一个字。没有这两行，网页就是「跑完才知道」，
+        // 长任务里用户只能盯着一个不动的转圈——CLI 早就有流式了，网页不该更差。
+        onText: (d) => {
+          const ev = { text: d, _ts: Date.now() }
+          if (sid) broadcast(sid, 'text/delta', ev)
+          else earlyEvents.push({ kind: 'text/delta', payload: ev })
+        },
+        onReasoning: (d) => {
+          const ev = { text: d, _ts: Date.now() }
+          if (sid) broadcast(sid, 'reasoning/delta', ev)
+          else earlyEvents.push({ kind: 'reasoning/delta', payload: ev })
+        },
       })
       await h.start()          // ← 少这一句就拿不到 sessionId
       sid = h.sessionId ?? ''
       sidRef.id = sid
+      // 把拿 id 之前攒下的事件按原顺序补进缓冲，前端一接上就能看到完整过程
+      for (const ev of earlyEvents) bufferEvent(sid, ev.kind, ev.payload)
       running.set(sid, h)
 
       // 立刻把 sessionId 交给前端，任务在后台跑
@@ -567,6 +685,12 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         'x-accel-buffering': 'no',
       })
       res.write(': connected\n\n')
+
+      // 先补发这个会话已经发生的事，再往下走实时：否则 run 到 attach 之间的
+      // 第一轮思考和工具调用会永远丢掉
+      for (const ev of evBuf.get(sessionId) ?? []) {
+        res.write(`event: ${ev.kind}\ndata: ${JSON.stringify(ev.payload)}\n\n`)
+      }
 
       // 重放这个会话还没被回答的审批：页面刚连上时，请求可能早就发过了
       for (const [, info] of pendingInfo) {

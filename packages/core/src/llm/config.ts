@@ -23,6 +23,17 @@ export interface UhConfig {
   providers: Record<string, ProviderConfigEntry>
   /** 审批档位：ask（逐次问）/ auto（只问不可逆的）/ allow（不问） */
   approval?: 'ask' | 'auto' | 'allow'
+  /** 沙箱开关。默认全关：默认值要能兜住，不能靠人记得去打开 */
+  sandbox?: SandboxPrefs
+}
+
+export interface SandboxPrefs {
+  /** 允许沙箱内读 home（.ssh/.aws 也在里面，所以默认 false） */
+  allowHome?: boolean
+  /** 禁止沙箱内建 TCP 连接（landlock ABI >= 4 才有） */
+  denyNetwork?: boolean
+  /** 沙箱只做到 path-guard 时仍然执行：那是真正的降级，默认拒绝 */
+  unconfined?: boolean
 }
 
 const CONFIG_PATH = () => path.join(uhHome(), 'config.json')
@@ -41,6 +52,7 @@ export function readConfig(): UhConfig {
       // 不带上这个字段，写进去的档位下次读就没了：writeConfig(approval:'allow')
       // 之后 readConfig().approval === undefined，于是静默退回 'ask'
       ...(parsed.approval ? { approval: parsed.approval } : {}),
+      ...(parsed.sandbox && typeof parsed.sandbox === 'object' ? { sandbox: parsed.sandbox } : {}),
     }
   } catch {
     return { providers: {} }
