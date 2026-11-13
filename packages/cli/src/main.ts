@@ -26,6 +26,7 @@ import * as readline from 'node:readline'
 import { VERSION } from './version.ts'
 import { startServer, openBrowser } from './serve.ts'
 import { startA2A } from './a2a.ts'
+import { startAcp } from './acp.ts'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0] ?? 'help'
@@ -1174,6 +1175,7 @@ Usage:
                             (default: ask when a terminal is attached, refuse otherwise)
   uh do [name]              run a recipe: fixed task, then our own acceptance checks
   uh serve [--port N]       local web UI (default 127.0.0.1:7878)
+  uh acp                    speak ACP over stdio (for editors: Zed, JetBrains, …)
   uh a2a [--port N] [--host H] [--token T] [--public-url U]
                             expose this workspace as an A2A agent (default 127.0.0.1:9300)
   uh desktop                same, and open it in your browser
@@ -1234,6 +1236,17 @@ async function main(): Promise<void> {
       const srv = await startServer({ port })
       console.log(`UnitHarness UI  ${srv.url}`)
       console.log('press Ctrl+C to stop')
+      return
+    }
+    case 'acp': {
+      // stdio JSON-RPC：编辑器把我们当子进程起，所以这里绝不能往 stdout 写别的
+      const acp = startAcp({ version: VERSION, cwd: process.cwd() })
+      await new Promise<void>((resolve) => {
+        const done = () => { acp.stop(); resolve() }
+        process.once('SIGINT', done)
+        process.once('SIGTERM', done)
+        process.stdin.once('end', done)
+      })
       return
     }
     case 'a2a': {
