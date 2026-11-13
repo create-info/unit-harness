@@ -45,6 +45,8 @@ export interface AgentDeps {
   listTree: (rel: string, depth: number) => string | null
   /** 内容检索；路径非法返回 null */
   grep: (rel: string, pattern: string, opts: { glob?: string | undefined; max: number }) => { text: string; count: number } | null
+  /** 起一个子 agent 干活，返回它的最终文本（不给就是禁用了子 agent） */
+  spawnSubAgent?: (task: string, opts: { maxSteps?: number }) => Promise<string>
   writeFile: (rel: string, content: string) => void
   deleteFile: (rel: string) => void
   ev: (
@@ -189,6 +191,26 @@ function clip(s: string): string {
   return s.length <= MAX_RESULT_CHARS ? s : `${s.slice(0, MAX_RESULT_CHARS)}\n… [truncated ${s.length - MAX_RESULT_CHARS} chars]`
 }
 
+const SPAWN_AGENT: ToolSpec = {
+  type: 'function',
+  function: {
+    name: 'spawn_agent',
+    description:
+      'Delegate a self-contained subtask to a sub-agent. It gets its own context and works in the ' +
+      'same workspace, then returns a written summary. Use it for exploring a big tree, or for ' +
+      'several independent lookups you would otherwise do one after another. Do NOT use it for ' +
+      'steps that depend on what you just learned — you already have that context, it does not.',
+    parameters: {
+      type: 'object',
+      properties: {
+        task: { type: 'string', description: 'A complete, standalone instruction' },
+        max_steps: { type: 'integer', description: 'Budget for the sub-agent. Default 6.' },
+      },
+      required: ['task'],
+    },
+  },
+}
+
 const READ_FILE: ToolSpec = {
   type: 'function',
   function: {
@@ -282,6 +304,7 @@ export async function runAgent(
     READ_FILE,
     LIST_DIR,
     GREP,
+    SPAWN_AGENT,
     APPLY_PATCH,
     ...(planEnabled ? [UPDATE_PLAN] : []),
     ...(skills.length > 0 ? [USE_SKILL] : []),
@@ -301,7 +324,7 @@ export async function runAgent(
     // apply_patch / update_plan 在进程内执行，不经过 exec，因此这里自己补审计
     const needsOwnEvent =
       name === 'apply_patch' || name === 'update_plan' || name === 'use_skill' ||
-      name === 'read_file' || name === 'list_dir' || name === 'grep'
+      name === 'read_file' || name === 'list_dir' || name === 'grep' || name === 'spawn_agent'
     let callEvId: string | null = null
     if (needsOwnEvent) {
       callEvId = deps.ev('tool/call', { tool: name, args_preview: String(call.function.arguments).slice(0, 200) })
@@ -325,6 +348,21 @@ export async function runAgent(
           return 'ERROR: run_command expects argv: string[] with at least one element'
         }
         return (await deps.runCommand(a)).content
+      }
+
+      if (name === 'spawn_agent') {
+        const subTask = String(args.task ?? '').trim()
+        if (!subTask) { finish('error', { error: 'missing task' }); return 'ERROR: spawn_agent needs a `task`' }
+        if (!deps.spawnSubAgent) { finish('error', { error: 'not available' }); return 'ERROR: sub-agents are disabled for this run' }
+        try {
+          const text = await deps.spawnSubAgent(subTask, { maxSteps: Number(args.max_steps ?? 6) })
+          finish('ok', { task: subTask.slice(0, 80) })
+          return text
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          finish('error', { error: msg.slice(0, 200) })
+          return `ERROR: sub-agent failed: ${msg}`
+        }
       }
 
       if (name === 'read_file') {

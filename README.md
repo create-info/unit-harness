@@ -278,6 +278,10 @@ things that decide whether an agent finishes a real task:
   Before this the model had to shell out to `cat`: no line numbers to point at, and a
   big file would flood the context in one go. They run in-process, read-only, and every
   path goes through the same escape check as `apply_patch`.
+- **Sub-agents.** `spawn_agent` hands a self-contained subtask to an agent with its own
+  context, working in the same sandbox, and gets a written summary back. Depth is capped
+  at 2 **and** a run may start at most 8 of them — a depth limit alone does not bound
+  cost (6 steps × 6 spawns each reaches 36 agents at depth 2).
 - **Checkpoints.** Every run leaves a restore point in a git repo of its own, keyed by
   workspace and kept outside whatever repo the user has there. `uh undo` rewinds the
   last run — including files the agent changed through a shell command, which is how
