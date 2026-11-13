@@ -537,6 +537,8 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         name: names[p.path] || '',
         items: collectSessions(p.path).slice(0, 30).map((s) => ({
           id: s.id, label: s.label, created: s.created, events: s.events,
+          // 左栏要画「这个还在跑」。事件数是静态的，跑着的会话和跑完的长得一样
+          running: running.has(s.id),
         })),
       }))
       json(res, 200, { current: currentWorkspace, projects: withItems })
