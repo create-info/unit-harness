@@ -160,6 +160,26 @@ const USE_SKILL: ToolSpec = {
   },
 }
 
+const RUN_SKILL_SCRIPT: ToolSpec = {
+  type: 'function',
+  function: {
+    name: 'run_skill_script',
+    description:
+      'Run a script that ships with a skill you already loaded. Only use script paths listed when ' +
+      'you loaded the skill. Runs through the same sandbox and approval gate as run_command.',
+    parameters: {
+      type: 'object',
+      properties: {
+        skill: { type: 'string', description: 'skill name' },
+        script: { type: 'string', description: 'path as listed by use_skill, e.g. scripts/check.sh' },
+        args: { type: 'array', items: { type: 'string' }, description: 'arguments passed through' },
+      },
+      required: ['skill', 'script'],
+      additionalProperties: false,
+    },
+  },
+}
+
 const UPDATE_PLAN: ToolSpec = {
   type: 'function',
   function: {
@@ -318,6 +338,7 @@ export async function runAgent(
     LIST_DIR,
     GREP,
     SPAWN_AGENT,
+    ...(skills.some((s) => s.scripts.length) ? [RUN_SKILL_SCRIPT] : []),
     APPLY_PATCH,
     ...(planEnabled ? [UPDATE_PLAN] : []),
     ...(skills.length > 0 ? [USE_SKILL] : []),
@@ -336,7 +357,7 @@ export async function runAgent(
     const name = call.function.name
     // apply_patch / update_plan 在进程内执行，不经过 exec，因此这里自己补审计
     const needsOwnEvent =
-      name === 'apply_patch' || name === 'update_plan' || name === 'use_skill' ||
+      name === 'apply_patch' || name === 'update_plan' || name === 'use_skill' || name === 'run_skill_script' ||
       name === 'read_file' || name === 'list_dir' || name === 'grep' || name === 'spawn_agent'
     let callEvId: string | null = null
     if (needsOwnEvent) {
@@ -447,9 +468,44 @@ export async function runAgent(
           finish('error', { error: `unknown skill ${wanted}` })
           return `ERROR: unknown skill "${wanted}". Available: ${skills.map((s) => s.name).join(', ')}`
         }
-        finish('ok', { skill: wanted, root: skill.root, chars: skill.body.length })
-        deps.log(`skill loaded: ${wanted} (${skill.body.length} chars)`)
+        finish('ok', {
+          skill: wanted,
+          root: skill.root,
+          chars: skill.body.length,
+          scripts: skill.scripts.length,
+          allowed_tools: skill.allowedTools,
+        })
+        deps.log(`skill loaded: ${wanted} (${skill.body.length} chars, ${skill.scripts.length} scripts)`)
+        const extras: string[] = []
+        if (skill.allowedTools.length) {
+          extras.push(`Declared tools: ${skill.allowedTools.join(', ')}`)
+        }
+        if (skill.scripts.length) {
+          // 只列相对路径：绝对路径把用户的 home 目录结构泄进上下文，换台机器也不一样
+          extras.push(
+            'Scripts bundled with this skill:\n'
+            + skill.scripts.map((sc) => `- ${sc.rel}`).join('\n')
+            + '\nRun one with run_skill_script. They execute inside the sandbox like any other command.',
+          )
+        }
         return `# Skill: ${skill.name}\n\n${skill.body}`
+          + (extras.length ? `\n\n---\n\n${extras.join('\n\n')}` : '')
+      }
+
+      if (name === 'run_skill_script') {
+        const skillName = String(args.skill ?? '')
+        const rel = String(args.script ?? '')
+        const skill = skills.find((sk) => sk.name === skillName)
+        if (!skill) { finish('error', { error: `unknown skill ${skillName}` }); return `ERROR: unknown skill "${skillName}"` }
+        // 只认 use_skill 列出来的那几个，不接受拼出来的路径
+        const target = skill.scripts.find((sc) => sc.rel === rel)
+        if (!target) {
+          finish('error', { error: 'script not found', scripts: skill.scripts.map((sc) => sc.rel) })
+          return `ERROR: "${rel}" is not a script of skill "${skillName}". Available: ${skill.scripts.map((sc) => sc.rel).join(', ') || '(none)'}`
+        }
+        const extra = Array.isArray(args.args) ? args.args.map((a) => String(a)) : []
+        finish('ok', { skill: skillName, script: rel })
+        return (await deps.runCommand({ argv: [target.path, ...extra] })).content
       }
 
       if (name === 'update_plan') {

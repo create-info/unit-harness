@@ -13,6 +13,12 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { uhHome } from '../paths.ts'
 
+export interface SkillScript {
+  /** 相对 skill 目录的路径，模型看到的是这个 */
+  rel: string
+  path: string
+}
+
 export interface Skill {
   name: string
   description: string
@@ -22,6 +28,16 @@ export interface Skill {
   body: string
   /** 来源 root，便于解释"为什么这个 skill 在这里" */
   root: string
+  /**
+   * frontmatter 里声明的 allowed-tools。
+   *
+   * 这是一个**声明**，不是沙箱：它告诉模型「这个技能预期会用到这些」，
+   * 也让人一眼看出某个技能会碰什么。真正的门在审批层，不在这里——
+   * 拿它当白名单会让「技能没写全」变成一次静默的能力缺失。
+   */
+  allowedTools: string[]
+  /** skill 目录下 scripts/ 里的可执行文件 */
+  scripts: SkillScript[]
 }
 
 export interface SkillRoot {
@@ -65,10 +81,37 @@ function readSkillFile(file: string, fallbackName: string, root: string): Skill 
     const raw = fs.readFileSync(file, 'utf8')
     const { meta, body } = parseFrontmatter(raw)
     const name = meta.name || fallbackName
-    return { name, description: describe(meta, body), path: file, body, root }
+    const allowedTools = (meta['allowed-tools'] ?? meta.allowedTools ?? '')
+      .split(/[,\s]+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+    return {
+      name,
+      description: describe(meta, body),
+      path: file,
+      body,
+      root,
+      allowedTools,
+      scripts: listScripts(file),
+    }
   } catch {
     return null
   }
+}
+
+/** skill 目录里的 scripts/。扁平 <name>.md 没有目录，自然就是空 */
+function listScripts(file: string): SkillScript[] {
+  const dir = path.join(path.dirname(file), 'scripts')
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  return entries
+    .filter((e) => e.isFile() && !String(e.name).startsWith('.'))
+    .map((e) => ({ rel: path.posix.join('scripts', String(e.name)), path: path.join(dir, String(e.name)) }))
+    .sort((a, b) => a.rel.localeCompare(b.rel))
 }
 
 /** 发现所有 skill；同名时 rank 高的（后扫描的）胜出 */
@@ -104,7 +147,8 @@ export function discoverSkills(cwd = process.cwd()): Skill[] {
 /** 注入 prompt 的索引段落：只有名字和一句话 */
 export function renderSkillIndex(skills: Skill[]): string {
   if (skills.length === 0) return ''
-  const lines = skills.map((s) => `- ${s.name}: ${s.description || '(no description)'}`)
+  const lines = skills.map((s) => `- ${s.name}: ${s.description || '(no description)'}`
+    + (s.scripts.length ? ` [${s.scripts.length} script(s)]` : ''))
   return [
     '<available_skills>',
     'Load one with the `use_skill` tool when the task matches — do not guess its contents.',
