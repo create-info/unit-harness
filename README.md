@@ -304,6 +304,38 @@ how `install.sh` fetches it. A local dry run needs no token either:
 $ bash scripts/release.sh v0.1.0 --dry-run
 ```
 
+## Approvals
+
+The positioning says "spending actions need approval". This is that, wired up:
+
+```console
+  ⚠ approval needed: destructive — it cannot be undone by the sandbox
+    sh -c cd /tmp/uh/ work && chmod -R 777 .
+    run it? [y/N] n
+  ✗ refused
+```
+
+What gets asked, and what doesn't, follows the sandbox:
+
+| Case | Asked? |
+|---|---|
+| read-only (`ls`, `cat`, `git status`) | never |
+| write, **sandbox enforcing** (`npm i`, `mkdir`) | no — it can only touch the workspace |
+| write, sandbox **not** enforcing | yes |
+| destructive (`rm -rf`, `mkfs`, `chmod -R 777`, `find -delete`) | always |
+| remote write / destructive | always — the sandbox does not cover the remote host |
+
+Default is **deny**, not allow: a caller with no terminal (CI, script, API) does not
+get permission to run dangerous commands just because nobody answered. `--yes`
+approves everything, `--no-ask` refuses everything.
+
+Both outcomes are recorded: `approval/requested` carries the exact command,
+`approval/resolved` carries the decision. So the log shows what was attempted, not
+just what was allowed.
+
+> The web UI (`uh serve`) currently refuses dangerous actions rather than prompting —
+> there is no approval widget yet. That failure is loud, not silent.
+
 ## Remote hosts
 
 ```console

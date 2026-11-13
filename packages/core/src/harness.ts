@@ -35,6 +35,8 @@ import { buildSeatbeltProfile, findSeatbelt } from './sandbox/seatbelt.ts'
 import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/toolchains.ts'
 import { McpRegistry } from './mcp/bridge.ts'
 import { loadMcpServers } from './mcp/config.ts'
+import { allowAll, denyAll, needsApproval } from './approval/gate.ts'
+import type { ApprovalGate, ApprovalPolicy, ApprovalRequest } from './approval/gate.ts'
 import { uhHome } from './paths.ts'
 import type { Message, ImageInput } from './llm/types.ts'
 import { discoverSkills, renderSkillIndex } from './skill/registry.ts'
@@ -59,6 +61,10 @@ const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error:
 
 export interface HarnessOptions {
   pluginDirs?: string[]
+  /** 审批策略：ask 逐次问（默认），allow 全放行，deny 一律拒 */
+  approval?: ApprovalPolicy
+  /** 自定义审批门（覆盖 approval 策略，用于 UI / API 场景） */
+  gate?: ApprovalGate
   configs?: Record<string, unknown>
   /** path-guard 级别下是否允许执行（fail-closed 默认 false） */
   unconfined?: boolean
@@ -146,6 +152,12 @@ export class Harness {
 
   /** 中断：Ctrl+C 走这里，而不是直接杀进程 */
   private readonly abortCtl = new AbortController()
+
+  /** 审批门：显式 gate 优先，否则按策略挑 */
+  private approvalGate(): ApprovalGate {
+    if (this.opts.gate) return this.opts.gate
+    return this.opts.approval === 'allow' ? allowAll : denyAll
+  }
 
   /** 请求中断（可重入：已中断时无副作用） */
   abort(): void {
@@ -413,6 +425,42 @@ export class Harness {
       cwd: workdir0,
     }, 'agent')
 
+    // ---- 审批门：模型发起的危险动作在人点头之前不执行 ----
+    if (spec.source === 'model') {
+      const cmdline = spec.argv.join(' ')
+      const risk = classify(cmdline)
+      const verdict = needsApproval(risk, {
+        // path-guard / none 时沙箱其实没在管写入
+        isolationEnforced: level !== 'path-guard' && level !== 'none',
+        kind: 'exec',
+      })
+      if (verdict.needed) {
+        const req: ApprovalRequest = {
+          kind: 'exec',
+          risk,
+          reason: verdict.reason,
+          summary: cmdline.length > 160 ? `${cmdline.slice(0, 157)}...` : cmdline,
+          detail: cmdline,
+        }
+        const requested = this.ev('approval/requested', { ...req }, 'agent')
+        const decision = await this.approvalGate().request(req)
+        this.ev('approval/resolved', { kind: 'exec', risk, decision }, 'user', requested?.id ?? null)
+        if (decision === 'deny') {
+          this.ev('tool/result', {
+            tool: 'exec',
+            status: 'refused',
+            isolation: level,
+            refused: true,
+            denied_by: 'approval',
+          }, 'user', attempted?.id ?? null)
+          throw new Error(
+            `E_APPROVAL_DENIED: ${verdict.reason}. The command was not run. ` +
+            `Tell the user what it does and why it is needed; do not retry it silently.`,
+          )
+        }
+      }
+    }
+
     if ((level === 'path-guard' || level === 'none') && this.opts.unconfined !== true) {
       this.ev('tool/result', {
         tool: 'exec',
@@ -649,6 +697,7 @@ export class Harness {
             argv: [a.argv[0] as string, ...a.argv.slice(1)],
             ...(a.timeoutMs ? { timeoutMs: a.timeoutMs } : {}),
             signal: this.abortCtl.signal,
+            source: 'model',
           })
           const body = r.stdout + (r.stderr ? `\n[stderr]\n${r.stderr}` : '')
           return { content: `exit=${r.exitCode} isolation=${r.isolation}\n${body}`.trim() }

@@ -66,6 +66,11 @@ export interface ExecSpec {
   isolation?: 'auto' | IsolationLevel
   /** 中断信号：abort 时杀掉子进程（Ctrl+C 不该让用户等到命令自己结束） */
   signal?: AbortSignal
+  /**
+   * 谁发起的。只有 'model' 会过审批门：
+   * 剧本检查、断言、以及用户在 CLI 上亲手敲的 exec 不需要再向用户申请许可。
+   */
+  source?: 'model' | 'internal'
 }
 
 export interface ExecResult {
