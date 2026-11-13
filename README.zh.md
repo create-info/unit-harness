@@ -240,6 +240,9 @@ uh run "看看工作区里有什么"
   落状态，退出码 130。再按一次才强退。
 - **续跑**。`uh run --continue` 从 `state.json` 恢复上一轮对话接着干；没给新指令时自动补一句，
   而不是发一个空 turn。
+- **真正的文件工具**。`read_file`（带行号、支持 offset/limit）、`list_dir`、`grep`。
+  在这之前模型只能 `cat`：拿不到行号指不到位，一个大文件就能把上下文冲掉。它们跑在
+  进程内、只读，路径和 `apply_patch` 走同一道逃逸检查。
 - **图片**。`uh run "..." --image shot.png`，OpenAI 走 data URL、Anthropic 走 base64 image block。
   已用本地视觉模型实测：问它这张界面截图左侧栏有什么，它准确报出了会话列表。
 

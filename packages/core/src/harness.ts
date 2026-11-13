@@ -40,6 +40,7 @@ import type { ApprovalGate, ApprovalPolicy, ApprovalRequest } from './approval/g
 import { uhHome } from './paths.ts'
 import type { Message, ImageInput } from './llm/types.ts'
 import { discoverSkills, renderSkillIndex } from './skill/registry.ts'
+import { sliceLines, formatEntry, formatHits, looksBinary } from './agent/tools/fs.ts'
 import { loadHosts } from './remote/hosts.ts'
 import { runRemote } from './remote/ssh.ts'
 import { classify } from './remote/risk.ts'
@@ -709,6 +710,81 @@ export class Harness {
           } catch {
             return null
           }
+        },
+        readSlice: (rel, offset, limit) => {
+          try {
+            const buf = fsSync.readFileSync(this.safeJoin(rel))
+            if (looksBinary(buf)) return null
+            return sliceLines(buf.toString('utf8'), offset, limit)
+          } catch { return null }
+        },
+        listTree: (rel, depth) => {
+          try {
+            const root = this.safeJoin(rel)
+            if (!fsSync.statSync(root).isDirectory()) return null
+            const lines: string[] = []
+            const walk = (dir: string, level: number): void => {
+              if (level > depth) return
+              const entries = fsSync.readdirSync(dir, { withFileTypes: true })
+                .filter((e) => !e.name.startsWith('.') || e.name === '.env.example')
+                .sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name))
+              for (const e of entries) {
+                const abs = nodePath.join(dir, e.name)
+                if (e.isDirectory()) {
+                  lines.push(formatEntry(e.name, true, 0, level - 1))
+                  if (level < depth) walk(abs, level + 1)
+                } else {
+                  let bytes = 0
+                  try { bytes = fsSync.statSync(abs).size } catch { /* raced with the agent's own write */ }
+                  lines.push(formatEntry(e.name, false, bytes, level - 1))
+                }
+              }
+            }
+            walk(root, 1)
+            return lines.length ? lines.join('\n') : '(empty directory)'
+          } catch { return null }
+        },
+        grep: (rel, pattern, opts) => {
+          try {
+            const root = this.safeJoin(rel)
+            let re: RegExp
+            try { re = new RegExp(pattern, 'i') } catch { return null }
+            const nameRe = opts.glob
+              ? new RegExp('^' + opts.glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$')
+              : undefined
+            const hits: { path: string; line: number; text: string }[] = []
+            let scanned = 0
+
+            const walk = (abs: string): boolean => {
+              let st: fsSync.Stats
+              try { st = fsSync.statSync(abs) } catch { return false }
+              if (st.isDirectory()) {
+                const base = nodePath.basename(abs)
+                if (base === 'node_modules' || base === '.git' || base === '.uh' || base === 'dist') return false
+                for (const e of fsSync.readdirSync(abs)) {
+                  if (walk(nodePath.join(abs, e))) return true
+                }
+                return false
+              }
+              if (st.size > 2_000_000) return false
+              if (nameRe && !nameRe.test(nodePath.basename(abs))) return false
+              let buf: Buffer
+              try { buf = fsSync.readFileSync(abs) } catch { return false }
+              if (looksBinary(buf)) return false
+              scanned++
+              const relPath = nodePath.relative(this.workspace, abs)
+              const lines = buf.toString('utf8').split('\n')
+              for (let i = 0; i < lines.length; i++) {
+                if (re.test(lines[i] as string)) {
+                  hits.push({ path: relPath, line: i + 1, text: lines[i] as string })
+                  if (hits.length >= opts.max) return true
+                }
+              }
+              return false
+            }
+            walk(root)
+            return { text: formatHits(hits, { pattern, max: opts.max, filesScanned: scanned }), count: hits.length }
+          } catch { return null }
         },
         writeFile: (rel, content) => {
           const abs = this.safeJoin(rel)

@@ -12,6 +12,8 @@ import type { ToolDefinition } from '../types.ts'
 import { parsePatch, planPatch } from './tools/apply-patch.ts'
 import { compactMessages, shouldCompact } from './compact.ts'
 import { prepareToolOutput } from './output.ts'
+import { sliceLines, formatEntry, formatHits, looksBinary } from './tools/fs.ts'
+import type { ReadResult } from './tools/fs.ts'
 import type { Skill } from '../skill/registry.ts'
 import type { ImageInput } from '../llm/types.ts'
 
@@ -37,6 +39,12 @@ export interface AgentDeps {
   callTool: (name: string, args: Record<string, unknown>) => Promise<{ content: string }>
   /** 工作区内文件访问（调用方负责 safeJoin，挡住 ../ 逃逸） */
   readFile: (rel: string) => string | null
+  /** 带行号的切片读取；文件不存在返回 null */
+  readSlice: (rel: string, offset: number, limit: number) => ReadResult | null
+  /** 目录树文本；目录不存在返回 null */
+  listTree: (rel: string, depth: number) => string | null
+  /** 内容检索；路径非法返回 null */
+  grep: (rel: string, pattern: string, opts: { glob?: string | undefined; max: number }) => { text: string; count: number } | null
   writeFile: (rel: string, content: string) => void
   deleteFile: (rel: string) => void
   ev: (
@@ -181,6 +189,61 @@ function clip(s: string): string {
   return s.length <= MAX_RESULT_CHARS ? s : `${s.slice(0, MAX_RESULT_CHARS)}\n… [truncated ${s.length - MAX_RESULT_CHARS} chars]`
 }
 
+const READ_FILE: ToolSpec = {
+  type: 'function',
+  function: {
+    name: 'read_file',
+    description:
+      'Read a text file from the workspace. Every line is prefixed with its line number. ' +
+      'For anything long, read it in slices with offset/limit instead of pulling the whole file in.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path relative to the workspace root' },
+        offset: { type: 'integer', description: 'First line to return (1-based). Default 1.' },
+        limit: { type: 'integer', description: 'How many lines. Default 2000.' },
+      },
+      required: ['path'],
+    },
+  },
+}
+
+const LIST_DIR: ToolSpec = {
+  type: 'function',
+  function: {
+    name: 'list_dir',
+    description:
+      'List a directory in the workspace. Prefer this over running `ls`: it cannot fail on shell quirks and reports sizes.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Directory relative to the workspace root. Default "."' },
+        depth: { type: 'integer', description: 'Recursion depth, 1-3. Default 1.' },
+      },
+    },
+  },
+}
+
+const GREP: ToolSpec = {
+  type: 'function',
+  function: {
+    name: 'grep',
+    description:
+      'Search file contents in the workspace with a regular expression. Returns path:line:text. ' +
+      'Skips binaries, .git, node_modules and .uh.',
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'JavaScript regular expression' },
+        path: { type: 'string', description: 'Directory or file to search. Default "."' },
+        glob: { type: 'string', description: 'Only files whose name matches, e.g. "*.ts"' },
+        max: { type: 'integer', description: 'Stop after this many matches. Default 60.' },
+      },
+      required: ['pattern'],
+    },
+  },
+}
+
 export async function runAgent(
   deps: AgentDeps,
   opts: {
@@ -216,6 +279,9 @@ export async function runAgent(
   const skills = deps.skills ?? []
   const tools: ToolSpec[] = [
     RUN_COMMAND,
+    READ_FILE,
+    LIST_DIR,
+    GREP,
     APPLY_PATCH,
     ...(planEnabled ? [UPDATE_PLAN] : []),
     ...(skills.length > 0 ? [USE_SKILL] : []),
@@ -233,7 +299,9 @@ export async function runAgent(
   const execOne = async (call: ToolCall): Promise<string> => {
     const name = call.function.name
     // apply_patch / update_plan 在进程内执行，不经过 exec，因此这里自己补审计
-    const needsOwnEvent = name === 'apply_patch' || name === 'update_plan' || name === 'use_skill'
+    const needsOwnEvent =
+      name === 'apply_patch' || name === 'update_plan' || name === 'use_skill' ||
+      name === 'read_file' || name === 'list_dir' || name === 'grep'
     let callEvId: string | null = null
     if (needsOwnEvent) {
       callEvId = deps.ev('tool/call', { tool: name, args_preview: String(call.function.arguments).slice(0, 200) })
@@ -257,6 +325,35 @@ export async function runAgent(
           return 'ERROR: run_command expects argv: string[] with at least one element'
         }
         return (await deps.runCommand(a)).content
+      }
+
+      if (name === 'read_file') {
+        const rel = String(args.path ?? '')
+        if (!rel) { finish('error', { error: 'missing path' }); return 'ERROR: read_file needs a `path`' }
+        const out = deps.readSlice(rel, Number(args.offset ?? 1), Number(args.limit ?? 2000))
+        if (out === null) { finish('error', { error: `no such file: ${rel}` }); return `ERROR: no such file in workspace: ${rel}` }
+        finish('ok', { path: rel, lines: out.shownTo - out.shownFrom + 1, total: out.totalLines })
+        return out.text
+      }
+
+      if (name === 'list_dir') {
+        const rel = String(args.path ?? '.')
+        const out = deps.listTree(rel, Math.min(Number(args.depth ?? 1), 3))
+        if (out === null) { finish('error', { error: `no such directory: ${rel}` }); return `ERROR: no such directory: ${rel}` }
+        finish('ok', { path: rel })
+        return out
+      }
+
+      if (name === 'grep') {
+        const pattern = String(args.pattern ?? '')
+        if (!pattern) { finish('error', { error: 'missing pattern' }); return 'ERROR: grep needs a `pattern`' }
+        const out = deps.grep(String(args.path ?? '.'), pattern, {
+          glob: args.glob ? String(args.glob) : undefined,
+          max: Math.min(Number(args.max ?? 60), 200),
+        })
+        if (out === null) { finish('error', { error: `bad path: ${String(args.path ?? '.')}` }); return `ERROR: bad path: ${String(args.path ?? '.')}` }
+        finish('ok', { pattern, matches: out.count })
+        return out.text
       }
 
       if (name === 'apply_patch') {
