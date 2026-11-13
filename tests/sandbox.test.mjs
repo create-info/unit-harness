@@ -71,18 +71,33 @@ test('writes outside the workspace are still refused', { skip: POSIX_ONLY }, () 
   }
 })
 
-test('caches are pointed inside the workspace so package managers work', { skip: POSIX_ONLY }, () => {
+test('toolchain caches are pointed inside the workspace so package managers work', { skip: POSIX_ONLY }, () => {
   const { home, work } = setup()
   try {
     // 不真的装包：只看环境变量指哪儿。npm 写 ~/.npm 被拦就是 EACCES，
     // 这是「沙箱里装不了依赖」的真正原因。
     const r = run(home, ['--', 'sh', '-c',
-      `cd ${work} && echo "$NPM_CONFIG_CACHE|$TMPDIR|$XDG_CACHE_HOME"`])
+      `cd ${work} && echo "$NPM_CONFIG_CACHE|$TMPDIR|$PIP_CACHE_DIR"`])
     const line = r.out.trim().split('\n').pop()
     for (const p of line.split('|')) {
       assert.ok(p.startsWith(work), `expected a path inside the workspace, got ${p}`)
       assert.ok(existsSync(p), `${p} should have been created`)
     }
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('XDG_CACHE_HOME is left alone, because installed tools live there', { skip: POSIX_ONLY }, () => {
+  // 回归测试。曾经为了「缓存都留在项目里」把 XDG_CACHE_HOME 也指到工作区，
+  // 结果 Playwright 跑去 <工作区>/.uh/cache/ms-playwright 找浏览器——那里是空的，
+  // 而真正的浏览器在 ~/.cache/ms-playwright。要么每个工作区重下几百兆，
+  // 要么报「浏览器没装」，而报错完全指不到这个变量。
+  const { home, work } = setup()
+  try {
+    const r = run(home, ['--', 'sh', '-c', 'cd ' + work + ' && echo "x${XDG_CACHE_HOME}x"'])
+    const line = r.out.trim().split('\n').pop()
+    assert.equal(line, 'xx', 'XDG_CACHE_HOME must not be repointed into the workspace')
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

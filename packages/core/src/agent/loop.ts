@@ -568,6 +568,9 @@ export async function runAgent(
         role: 'plan',
         ...(deps.onText ? { onText: deps.onText } : {}),
         ...(deps.onReasoning ? { onReasoning: deps.onReasoning } : {}),
+        // 用户点 Stop 时这一层要立刻断，不能等到 step 边界——
+        // 一次请求就是几十秒，那时候"停止"看起来根本没生效
+        ...(opts.signal ? { signal: opts.signal } : {}),
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)

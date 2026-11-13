@@ -323,8 +323,16 @@ export class Harness {
       TMPDIR: nodePath.join(root, 'tmp'),
       TMP: nodePath.join(root, 'tmp'),
       TEMP: nodePath.join(root, 'tmp'),
-      XDG_CACHE_HOME: nodePath.join(root, 'cache'),
-      XDG_DATA_HOME: nodePath.join(root, 'data'),
+      // XDG_CACHE_HOME / XDG_DATA_HOME 故意**不覆盖**。
+      //
+      // 这两个变量影响面太广：Playwright、Electron、各种桌面工具都用它找
+      // 已安装的东西。指到工作区里，等于告诉 Playwright「浏览器在
+      // <工作区>/.uh/cache/ms-playwright」——那里是空的，而真正的浏览器在
+      // ~/.cache/ms-playwright。结果就是每个工作区都要重下几百兆，
+      // 或者干脆报「浏览器没装」。
+      //
+      // 工具链缓存和工作区缓存不是一回事：npm/pip 的缓存按项目隔离是对的，
+      // 浏览器这种「一次装好、到处复用」的资产必须留在 HOME。
       NPM_CONFIG_CACHE: nodePath.join(root, 'cache', 'npm'),
       npm_config_cache: nodePath.join(root, 'cache', 'npm'),
       YARN_CACHE_FOLDER: nodePath.join(root, 'cache', 'yarn'),
@@ -344,6 +352,13 @@ export class Harness {
         // 目录建不出来就别设了：设一个不存在的路径，工具会报一个更难懂的错误
       }
     }
+    // 显式指回真实的浏览器缓存：即使将来有人又把 XDG_CACHE_HOME 改回工作区，
+    // Playwright 也还找得到。存在才设，没装过就别造一个空目录骗它。
+    const pw = nodePath.join(os.homedir(), '.cache', 'ms-playwright')
+    try {
+      if (fsSync.existsSync(pw)) out.PLAYWRIGHT_BROWSERS_PATH = pw
+    } catch { /* 读不到就算了 */ }
+
     // 告诉程序它在被沙箱包着——很多工具会因此跳过不必要的家目录写入
     out.UH_SANDBOXED = '1'
     return out
@@ -876,10 +891,34 @@ export class Harness {
         cwd: workdir,
         env: { ...process.env, ...this.sandboxEnv(workdir), ...(spec.env ?? {}) },
         stdio: ['ignore', 'pipe', 'pipe'],
+        // 自成进程组。照 Codex 的 process_group(0)：一条命令往往是棵进程树
+        // （node 拉起 playwright，playwright 拉起 chromium），只杀直接子进程
+        // 会让孙子进程变成孤儿继续跑——用户按了停止，浏览器还在后台开着。
+        detached: process.platform !== 'win32',
       })
 
+      /**
+       * 杀整棵进程树，不只是直接子进程。
+       *
+       * Unix 上子进程是新的进程组组长，`kill(-pid)` 打的是整个组。
+       * Windows 没有进程组，用 taskkill /T。
+       */
+      const killTree = (): void => {
+        if (child.pid === undefined) return
+        try {
+          if (process.platform === 'win32') {
+            spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+          } else {
+            process.kill(-child.pid, 'SIGKILL')
+          }
+        } catch {
+          // 组已经没了就退回到直接杀；两者都可能失败（进程已退出）
+          try { child.kill('SIGKILL') } catch { /* already gone */ }
+        }
+      }
+
       // 中断要能打断正在跑的命令，否则用户按了 Ctrl+C 还得等它跑完
-      const onAbort = (): void => { try { child.kill('SIGKILL') } catch { /* already gone */ } }
+      const onAbort = (): void => { killTree() }
       if (spec.signal) {
         if (spec.signal.aborted) onAbort()
         else spec.signal.addEventListener('abort', onAbort, { once: true })
@@ -887,7 +926,7 @@ export class Harness {
 
       let truncated = false
       const LIMIT = 256 * 1024
-      const timer = setTimeout(() => { child.kill('SIGKILL') }, timeoutMs)
+      const timer = setTimeout(() => { killTree() }, timeoutMs)
 
       // 保留**头和尾**：超过上限后继续滑动保留最后一段。
       // 只留头会把错误信息（通常在结尾）丢掉，模型于是对着一堆进度日志发呆。
