@@ -74,14 +74,15 @@ function scripted(command, finalText = 'done') {
 }
 
 test('a pre_tool hook blocks the command before it runs', async () => {
-  const server = scripted(['sh', '-c', 'echo pwned > forbidden.txt'])
+  const server = scripted(['node', '-e', 'require("fs").writeFileSync("forbidden.txt","pwned")'])
   await new Promise((r) => server.listen(0, '127.0.0.1', r))
   const port = server.address().port
   const home = mkdtempSync(join(tmpdir(), 'uh-hook-'))
   const work = join(home, 'work')
   mkdirSync(join(work, '.uh'), { recursive: true })
   writeFileSync(join(work, '.uh', 'hooks.json'), JSON.stringify({
-    pre_tool: [{ tool: 'run_command', match: 'forbidden', run: 'echo "no writes named forbidden" >&2; exit 3' }],
+    // 用 node 而不是 sh：hook 在 Windows 上走 cmd，POSIX 语法跑不了
+    pre_tool: [{ tool: 'run_command', match: 'forbidden', run: 'node -e "console.error(\'no writes named forbidden\');process.exit(3)"' }],
   }))
 
   try {
@@ -113,7 +114,9 @@ test('a pre_finish hook rejects "done" until the check passes', async () => {
   writeFileSync(join(work, 'check.marker'), 'present')
   // 第一次失败，把标记文件删掉让它第二次通过
   writeFileSync(join(work, '.uh', 'hooks.json'), JSON.stringify({
-    pre_finish: [{ run: 'if [ -f check.marker ]; then rm -f check.marker; echo "check.marker still there" >&2; exit 1; fi' }],
+    pre_finish: [{
+      run: 'node -e "const fs=require(\'fs\');if(fs.existsSync(\'check.marker\')){fs.unlinkSync(\'check.marker\');console.error(\'check.marker still there\');process.exit(1)}"',
+    }],
   }))
 
   try {
