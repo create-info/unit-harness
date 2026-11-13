@@ -21,6 +21,8 @@ export interface ProviderConfigEntry {
 export interface UhConfig {
   defaultProvider?: string
   providers: Record<string, ProviderConfigEntry>
+  /** 审批档位：ask（逐次问）/ auto（只问不可逆的）/ allow（不问） */
+  approval?: 'ask' | 'auto' | 'allow'
 }
 
 const CONFIG_PATH = () => path.join(uhHome(), 'config.json')
@@ -33,7 +35,13 @@ export function readConfig(): UhConfig {
   try {
     const raw = fs.readFileSync(CONFIG_PATH(), 'utf8')
     const parsed = JSON.parse(raw) as Partial<UhConfig>
-    return { providers: parsed.providers ?? {}, ...(parsed.defaultProvider ? { defaultProvider: parsed.defaultProvider } : {}) }
+    return {
+      providers: parsed.providers ?? {},
+      ...(parsed.defaultProvider ? { defaultProvider: parsed.defaultProvider } : {}),
+      // 不带上这个字段，写进去的档位下次读就没了：writeConfig(approval:'allow')
+      // 之后 readConfig().approval === undefined，于是静默退回 'ask'
+      ...(parsed.approval ? { approval: parsed.approval } : {}),
+    }
   } catch {
     return { providers: {} }
   }
