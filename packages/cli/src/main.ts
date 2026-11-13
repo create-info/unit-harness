@@ -927,6 +927,9 @@ async function cmdRun(task?: string): Promise<void> {
     console.log(`steps=${res.steps} tokens=${res.usage.total} stoppedBy=${res.stoppedBy}${res.compactions ? ` compactions=${res.compactions}` : ''}`)
     console.log(`session: ${h.sessionId ?? '(not recorded)'}`)
     if (res.stoppedBy === 'max-steps') process.exitCode = 2
+    // 预算停下不是成功：脚本拿它判断「跑完了」会得到错的结论，
+    // 用 3 与步数超限区分开
+    if (res.stoppedBy === 'budget') process.exitCode = 3
     if (res.stoppedBy === 'interrupted') {
       console.log('')
       console.log('interrupted. the session is saved and replayable.')

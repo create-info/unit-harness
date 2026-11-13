@@ -75,3 +75,7 @@ export type { ProgressLine } from './agent/progress.ts'
 // 审批记忆：prefix_rule 持久化（破坏性命令永不记）
 export { suggestPrefix, matchesRule, normalizeArgv, loadRules, addRule, removeRule, touchMatching, describeRule } from './approval/rules.ts'
 export type { ApprovalRule } from './approval/rules.ts'
+
+// 成本预算：到线就叫停（与上下文压缩不是一回事）
+export { checkBudget, normalizeBudget, formatTokens, describeBudget } from './agent/budget.ts'
+export type { BudgetConfig, BudgetState, BudgetVerdict } from './agent/budget.ts'

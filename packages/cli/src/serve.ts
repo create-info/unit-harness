@@ -15,7 +15,7 @@ import { spawn, execFileSync } from 'node:child_process'
 import {
   EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey,
   readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig } from '@unit-harness/core'
-import { describeTool, describeToolResult, describeThinking, describeFilesChanged } from '@unit-harness/core'
+import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget } from '@unit-harness/core'
 import { loadMcpServers, discoverSkills } from '@unit-harness/core'
 import type { ApprovalGate, ApprovalRequest } from '@unit-harness/core'
 import UI from './ui.html'
@@ -674,6 +674,41 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     // 界面看起来像卡死，其实是有一个没人看得见的弹窗。
     if (req.method === 'GET' && url.pathname === '/api/pending') {
       json(res, 200, { pending: [...pendingInfo.values()] })
+      return
+    }
+
+    // 成本预算：读写上限，同时报今天已经用了多少
+    if (url.pathname === '/api/budget') {
+      const cfg = readConfig()
+      if (req.method === 'GET') {
+        const b = normalizeBudget(cfg.budget)
+        // 今日用量现算：内存计数器只代表"这个进程见过多少"
+        const store = new EventStore()
+        let today = 0
+        const day = new Date().toISOString().slice(0, 10)
+        for (const meta of store.list({ limit: 200 })) {
+          const dir = store.sessionDir(meta.id)
+          if (!dir) continue
+          let text = ''
+          try { text = readFileSync(pathMod.join(dir, 'events.jsonl'), 'utf8') } catch { continue }
+          for (const line of text.split('\n')) {
+            if (!line.includes('llm/response')) continue
+            let ev: { kind?: string; timestamp?: string; payload?: { usage?: { total_tokens?: number } } }
+            try { ev = JSON.parse(line) } catch { continue }
+            if (ev.kind !== 'llm/response' || !String(ev.timestamp ?? '').startsWith(day)) continue
+            today += ev.payload?.usage?.total_tokens ?? 0
+          }
+        }
+        json(res, 200, { ...b, dayUsed: today })
+        return
+      }
+      let body: { perRun?: unknown; perDay?: unknown } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const next = normalizeBudget({ perRun: body.perRun, perDay: body.perDay })
+      const cur = readConfig()
+      cur.budget = next
+      writeConfig(cur)
+      json(res, 200, { ok: true, ...next })
       return
     }
 

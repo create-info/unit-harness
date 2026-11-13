@@ -16,6 +16,7 @@ import { probeIsolation } from './sandbox/probe.ts'
 import { EventStore } from './evidence/store.ts'
 import { LlmGateway } from './llm/gateway.ts'
 import { resolveProvider } from './llm/resolve.ts'
+import { normalizeBudget, type BudgetConfig } from './agent/budget.ts'
 import { runAgent } from './agent/loop.ts'
 import type { AgentDeps } from './agent/loop.ts'
 import { snapshotDir, diffSnapshots, collectArtifacts, sha256File } from './artifact/snapshot.ts'
@@ -135,6 +136,11 @@ export interface HarnessOptions {
 
 export interface RunTaskOptions {
   task: string
+  /**
+   * 成本预算（token）。到线就停，stoppedBy 会是 'budget'。
+   * 与上下文预算（maxContextTokens）不是一回事：那个负责压缩历史，这个负责叫停。
+   */
+  budget?: { perRun?: number; perDay?: number; dayUsed?: number }
   provider?: string
   model?: string
   baseUrl?: string
@@ -421,6 +427,48 @@ export class Harness {
         (this.opts.denyNetwork ? '; network blocked' : '')
     }
     return this.isolation.enforced
+  }
+
+  /** 预算配置。每次现读文件——改了设置不用重启 */
+  budget(): BudgetConfig {
+    try {
+      const raw = JSON.parse(fsSync.readFileSync(nodePath.join(uhHome(), 'config.json'), 'utf8')) as Record<string, unknown>
+      return normalizeBudget(raw.budget)
+    } catch {
+      return { perRun: 0, perDay: 0 }
+    }
+  }
+
+  /**
+   * 今天已经花掉的 token。
+   *
+   * 现扫日志而不是记在内存：内存里那个数字只代表「这个进程见过多少」，
+   * 而 ACP / Web / CLI 可能是三个进程，用户一天完全可能用其中两个。
+   */
+  todayUsage(): number {
+    try {
+      const store = new EventStore()
+      const today = new Date().toISOString().slice(0, 10)
+      let total = 0
+      for (const meta of store.list({ limit: 200 })) {
+        const dir = store.sessionDir(meta.id)
+        if (!dir) continue
+        let text = ''
+        try { text = fsSync.readFileSync(nodePath.join(dir, 'events.jsonl'), 'utf8') } catch { continue }
+        for (const line of text.split('\n')) {
+          if (!line.includes('llm/response')) continue
+          let ev: { kind?: string; timestamp?: string; payload?: { usage?: { total_tokens?: number } } }
+          try { ev = JSON.parse(line) } catch { continue }
+          if (ev.kind !== 'llm/response') continue
+          // 只算今天：昨天的额度不该吃掉今天的
+          if (!String(ev.timestamp ?? '').startsWith(today)) continue
+          total += ev.payload?.usage?.total_tokens ?? 0
+        }
+      }
+      return total
+    } catch {
+      return 0
+    }
   }
 
   /** 当前实际隔离级别 */
@@ -1189,6 +1237,11 @@ export class Harness {
         signal: this.abortCtl.signal,
         ...(o.resumeFrom ? { initialMessages: o.resumeFrom } : {}),
         ...(o.images?.length ? { images: o.images } : {}),
+        // 预算从配置读，今天已用的量现场算——不能信内存里的计数器，
+        // 那是"这个进程见过多少"，不是"今天花了多少"
+        ...(this.budget().perRun || this.budget().perDay
+          ? { budget: { ...this.budget(), dayUsed: this.todayUsage() } }
+          : {}),
       },
     )
 
