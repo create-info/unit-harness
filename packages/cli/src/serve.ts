@@ -416,6 +416,22 @@ function listWorkspaceFiles(limit = 3000): string[] {
   return out
 }
 
+/**
+ * ISO 时间戳 → 本地时区的 `YYYY-MM-DD HH:MM:SS`。
+ *
+ * 事件里存的是 UTC（这是对的，换台机器也读得懂），但显示必须转成本地时区。
+ * 原来直接 `replace('T',' ').slice(0,19)`，把 UTC 的时分当成本地时间显示，
+ * 东八区的人看到的时间会比手表早 8 小时——而且不会觉得是 bug，
+ * 只会觉得这个软件的时间是错的。
+ */
+function localStamp(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso.replace('T', ' ').slice(0, 19)
+  const p2 = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ` +
+         `${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`
+}
+
 function collectSessions(workspace?: string): Array<{ id: string; label: string; created: string; events: number; status: string; workspace: string }> {
   const store = new EventStore()
   try {
@@ -426,7 +442,7 @@ function collectSessions(workspace?: string): Array<{ id: string; label: string;
       .map((s) => ({
         id: s.id,
         label: s.label ?? '(untitled)',
-        created: s.created_at.replace('T', ' ').slice(0, 19),
+        created: localStamp(s.created_at),
         events: s.last_seq,
         status: s.status,
         workspace: (s as { workspace?: string }).workspace ?? '',
