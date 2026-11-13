@@ -21,6 +21,8 @@ import type { ImageInput } from '../llm/types.ts'
 export interface RunCommandArgs {
   argv: string[]
   timeoutMs?: number
+  /** 沙箱挡住之后，申请这一次跑在外面；必须附理由 */
+  escalate?: string
 }
 
 export interface PlanStep {

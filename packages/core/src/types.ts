@@ -71,6 +71,14 @@ export interface ExecSpec {
    * 剧本检查、断言、以及用户在 CLI 上亲手敲的 exec 不需要再向用户申请许可。
    */
   source?: 'model' | 'internal'
+  /**
+   * 模型申请「这一条必须跑在沙箱外」，附带一句理由。
+   *
+   * 这是被沙箱挡住之后唯一的正规出路：不清空策略、不改全局设置、
+   * 只对这一次调用向人要一次许可。理由会原样出现在审批框里——
+   * 没有理由的越权申请不该被批准。
+   */
+  escalate?: string
 }
 
 export interface ExecResult {
@@ -81,6 +89,8 @@ export interface ExecResult {
   /** 实际生效级别，必填（D7：不得省略） */
   isolation: IsolationLevel
   truncated: boolean
+  /** 这一次是否经人批准跑在沙箱外 */
+  escalated?: boolean
 }
 
 export interface ToolSchema {
