@@ -135,3 +135,38 @@ test('listing models degrades instead of throwing when the key is wrong', async 
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('sessions are grouped under their project, which is what the sidebar draws', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'uh-grp-'))
+  const env = { ...process.env, UH_HOME: home }
+  const srv = await startServer(env)
+  const a = join(home, 'proj-a')
+  const b = join(home, 'proj-b')
+
+  try {
+    await post('/api/project', { path: a })
+    const ra = await post('/api/run', { task: 'task in a' })
+    await new Promise((r) => setTimeout(r, 400))
+    await post('/api/project', { path: b })
+    const rb = await post('/api/run', { task: 'task in b' })
+    await new Promise((r) => setTimeout(r, 400))
+
+    const projects = await get('/api/projects')
+    assert.equal(projects.current, b)
+    const pa = projects.projects.find((x) => x.path === a)
+    const pb = projects.projects.find((x) => x.path === b)
+    assert.ok(pa && pb, 'both projects must be listed')
+    // 左栏是「项目 → 会话」两级：会话必须挂在它自己的项目下面
+    assert.ok(Array.isArray(pa.items) && Array.isArray(pb.items))
+    assert.equal(pa.items.some((i) => i.id === ra.sessionId), true, 'a\'s session belongs to a')
+    assert.equal(pb.items.some((i) => i.id === rb.sessionId), true, 'b\'s session belongs to b')
+    assert.equal(pa.items.some((i) => i.id === rb.sessionId), false, 'and not to the other project')
+
+    const onlyA = await get('/api/sessions?workspace=' + encodeURIComponent(a))
+    assert.ok(onlyA.every((s) => s.workspace === a), 'filtering by workspace must actually filter')
+    assert.equal(onlyA.some((s) => s.id === rb.sessionId), false)
+  } finally {
+    srv.kill()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
