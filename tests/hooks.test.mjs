@@ -112,11 +112,19 @@ test('a pre_finish hook rejects "done" until the check passes', async () => {
   const work = join(home, 'work')
   mkdirSync(join(work, '.uh'), { recursive: true })
   writeFileSync(join(work, 'check.marker'), 'present')
+  writeFileSync(join(work, 'check.js'), [
+    'const fs = require("fs")',
+    'if (fs.existsSync("check.marker")) {',
+    '  fs.unlinkSync("check.marker")',
+    '  console.error("check.marker still there")',
+    '  process.exit(1)',
+    '}',
+  ].join("\n"))
   // 第一次失败，把标记文件删掉让它第二次通过
   writeFileSync(join(work, '.uh', 'hooks.json'), JSON.stringify({
-    pre_finish: [{
-      run: 'node -e "const fs=require(\'fs\');if(fs.existsSync(\'check.marker\')){fs.unlinkSync(\'check.marker\');console.error(\'check.marker still there\');process.exit(1)}"',
-    }],
+    // hook 写成文件由 node 执行，而不是内联一段带引号的脚本：
+    // Windows 上是 `cmd /c`，它对嵌套引号的重解析会让内联脚本默默失败
+    pre_finish: [{ run: 'node check.js' }],
   }))
 
   try {
