@@ -144,3 +144,89 @@ function sessionDirOf(home) {
   }
   return dir
 }
+
+test('a recipe that gets interrupted still runs its checks', { skip: POSIX_ONLY }, async () => {
+  // 模型给一个迟迟不返回的调用，我们从外面把它掐掉
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ id: 'mock' }] }))
+      return
+    }
+    let body = ''
+    req.on('data', (c) => (body += c))
+    req.on('end', () => {
+      const parsed = body ? JSON.parse(body) : {}
+      const done = (parsed.messages ?? []).filter((m) => m.role === 'tool').length
+      const payload = done === 0
+        ? { model: 'mock', choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'apply_patch', arguments: JSON.stringify({ patch: `*** Begin Patch\n*** Add File: cli.py\n${patchBody(CLI_PY)}\n*** End Patch` }) } }] }, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }
+        : { model: 'mock', choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'c2', type: 'function', function: { name: 'run_command', arguments: '{"argv":["node","-e","setTimeout(()=>{},60000)"]}' } }] }, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 } }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(payload))
+    })
+  })
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const port = server.address().port
+  const home = mkdtempSync(join(tmpdir(), 'uh-recipe-int-'))
+
+  try {
+    const out = await new Promise((resolve) => {
+      const p = spawn(process.execPath, [CLI, 'do', 'python-cli'], {
+        env: { ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock' },
+      })
+      let acc = ''
+      p.stdout.on('data', (d) => (acc += d))
+      p.stderr.on('data', (d) => (acc += d))
+      // 文件已经落盘、命令还在跑的时候掐掉
+      setTimeout(() => p.kill('SIGINT'), 2500)
+      p.on('close', () => resolve(acc))
+    })
+
+    // 关键：被打断之后仍然去问「磁盘上的东西过不过」，而不是把交付物丢在地上
+    assert.match(out, /stopped early/, 'it says the run did not finish')
+    assert.match(out, /--- checks ---/, 'the checks still run')
+    assert.match(out, /✓ cli\.py 已创建/, 'the file the model already wrote is still judged')
+
+    // 剧本身份必须落盘，否则事后没法知道该拿哪张验收单
+    const events = readFileSync(join(sessionDirOf(home), 'events.jsonl'), 'utf8')
+      .trim().split('\n').map((l) => JSON.parse(l))
+    const started = events.find((e) => e.kind === 'recipe/started')
+    assert.ok(started, 'recipe/started is recorded')
+    assert.equal(started.payload.name, 'python-cli')
+    const checked = events.find((e) => e.kind === 'recipe/checked')
+    assert.ok(checked, 'recipe/checked is recorded')
+    assert.equal(checked.payload.interrupted, true, 'and it admits the run was cut short')
+  } finally {
+    server.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('--check re-runs the acceptance without calling the model again', { skip: POSIX_ONLY }, async () => {
+  let modelCalls = 0
+  const server = startModel(CLI_PY)
+  const counting = http.createServer((req, res) => {
+    if (req.method !== 'GET') modelCalls++
+    server.emit('request', req, res)
+  })
+  await new Promise((r) => counting.listen(0, '127.0.0.1', r))
+  const port = counting.address().port
+  const home = mkdtempSync(join(tmpdir(), 'uh-recipe-chk-'))
+
+  try {
+    // 先放一个合格的交付物进去，再 --check：检查应该只看文件
+    const first = await runDo(['python-cli'], home, port)
+    assert.equal(first.code, 0, first.out)
+    const afterFirst = modelCalls
+    assert.ok(afterFirst > 0)
+
+    const second = await runDo(['python-cli', '--check'], home, port)
+    assert.equal(modelCalls, afterFirst, '--check must not call the model')
+    assert.match(second.out, /re-checking only/)
+    assert.match(second.out, /✓ --help 可用/)
+    assert.equal(second.code, 0, 'and it still passes on the same files')
+  } finally {
+    counting.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})

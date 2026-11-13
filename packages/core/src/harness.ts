@@ -238,6 +238,16 @@ export class Harness {
    * 工具调用能正常收尾（事件日志不会停在「调用了但没结果」），而人看到走偏时
    * 仍然能立刻说一句，不用等它跑完再重来。
    */
+  /**
+   * 给上层（CLI / 剧本 / 宿主）记一条会话事实。
+   *
+   * `ev` 是私有的：内部的 step 事件顺序由 loop 决定，放开会让人乱插。
+   * 但「这一次跑的是哪个剧本」这种事实只有上层知道，所以留一个窄口。
+   */
+  note(kind: SessionKind, payload: Record<string, unknown>): void {
+    this.ev(kind, payload)
+  }
+
   steer(text: string): boolean {
     const t = text.trim()
     if (!t) return false
