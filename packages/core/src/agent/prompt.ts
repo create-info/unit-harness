@@ -17,6 +17,15 @@ export interface PromptContext {
   workspace: string
   isolation: string
   networkBlocked: boolean
+  /**
+   * $HOME 能不能读。
+   *
+   * 必须传真实值：写死成 false 而实际可读时，模型会绕开一切看起来像
+   * 家目录的东西——`~/.cache/ms-playwright` 里明明装着浏览器，它宁可去
+   * 猜「是不是 harness 注入的路径」也不去 ls 一下。提示词撒谎的代价不是
+   * 报错，是模型在错误的世界模型里做出了一个看着合理、但永远找不到东西的决定。
+   */
+  homeReadable?: boolean
   tools: Array<{ name: string; description: string }>
   /** 计划工具是否启用（关闭时 base 里不提它，学 Codex 的"手术式切除"） */
   planEnabled?: boolean
@@ -97,12 +106,22 @@ function environmentSection(ctx: PromptContext): string {
     `  <workspace>${ctx.workspace}</workspace>`,
     `  <platform>${process.platform}/${process.arch} ${os.release()}</platform>`,
     `  <sandbox>${sandbox}</sandbox>`,
-    `  <home_readable>false</home_readable>`,
+    `  <home_readable>${ctx.homeReadable !== false}</home_readable>`,
     `  <date>${new Date().toISOString().slice(0, 10)}</date>`,
     '</environment_context>',
     '',
-    'Everything you write must land inside <workspace>. The user\'s home directory is not readable,',
-    'so do not try to inspect dotfiles, keys or ~/.config — it will fail and waste a step.',
+    'Everything you write must land inside <workspace>.',
+    ctx.homeReadable !== false
+      ? [
+          'Reading $HOME is allowed: tool configs, package caches and installed runtimes live there,',
+          'so `~/.cache/...`, `~/.npm`, `~/.config/git` and the like are legitimately readable.',
+          'Only *writing* outside the workspace is blocked. Do not assume a tool is missing just',
+          'because it is not on PATH or not in the workspace — check $HOME first.',
+        ].join('\n')
+      : [
+          'The user\'s home directory is NOT readable, so do not inspect dotfiles, keys or ~/.config',
+          '— it will fail and waste a step. Installed runtimes are already reachable through PATH.',
+        ].join('\n'),
   ].join('\n')
 }
 
