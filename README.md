@@ -350,6 +350,26 @@ just what was allowed.
 > The web UI (`uh serve`) currently refuses dangerous actions rather than prompting —
 > there is no approval widget yet. That failure is loud, not silent.
 
+## Where sessions live
+
+```
+~/.uh/sessions/2026/11/13/<session-id>/
+  events.jsonl   one JSON event per line, append-only
+  meta.json      who/what/when
+  state.json     messages, for --continue
+  blobs/         any before/after body over 4 KB, by content hash
+```
+
+Same shape as Codex's `sessions/YYYY/MM/DD/rollout-*.jsonl`, for the same reason:
+listing "the last 20 sessions" should not read a year of disk.
+
+`uh sessions [n]` lists newest-first, `uh session prune --older-than 30d` moves old
+ones to `~/.uh/archived_sessions/`. Archive, not delete — the log is the evidence.
+Retention is opt-in; nothing is pruned until you ask.
+
+Large bodies move to `blobs/` so an event line stays readable: `cat events.jsonl` and
+`grep` still work, and `uh undo` reads the body back when it needs it.
+
 ## Hooks
 
 `.uh/hooks.json` in the workspace, no restart needed:

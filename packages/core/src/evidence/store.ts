@@ -44,17 +44,79 @@ export interface AppendOptions {
 
 const now = (): string => new Date().toISOString()
 
+/** 会话按 YYYY/MM/DD 分层：列「最近 N 个」时不用扫全库 */
+function dateParts(d = new Date()): [string, string, string] {
+  return [String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')]
+}
+
+/** 从新到旧的日期目录 */
+function dateDirsDesc(rootDir: string): string[] {
+  const out: string[] = []
+  let years: string[] = []
+  try { years = fs.readdirSync(rootDir).filter((n) => /^\d{4}$/.test(n)) } catch { return out }
+  for (const y of years.sort().reverse()) {
+    let months: string[] = []
+    try { months = fs.readdirSync(path.join(rootDir, y)).filter((n) => /^\d{2}$/.test(n)) } catch { continue }
+    for (const m of months.sort().reverse()) {
+      let days: string[] = []
+      try { days = fs.readdirSync(path.join(rootDir, y, m)).filter((n) => /^\d{2}$/.test(n)) } catch { continue }
+      for (const d of days.sort().reverse()) out.push(path.join(rootDir, y, m, d))
+    }
+  }
+  return out
+}
+
 export class EventStore {
   private readonly root: string
+  private readonly archiveRoot: string
   private readonly metas = new Map<string, SessionMeta>()
+  /** 会话 id → 目录。有了它，append 不用每次都去磁盘上找 */
+  private readonly dirs = new Map<string, string>()
 
   constructor(root?: string) {
     this.root = root ?? path.join(uhHome(), 'sessions')
+    this.archiveRoot = path.join(path.dirname(this.root), 'archived_sessions')
     fs.mkdirSync(this.root, { recursive: true })
   }
 
+  /**
+   * 找到会话目录。先查缓存，再从新到旧扫日期目录。
+   *
+   * 也认老的平铺布局（`sessions/<id>`）——升级不该让已有的会话变成孤儿。
+   */
+  private locate(id: string): string | null {
+    const cached = this.dirs.get(id)
+    if (cached) return cached
+
+    const legacy = path.join(this.root, id)
+    if (fs.existsSync(path.join(legacy, 'meta.json'))) {
+      this.dirs.set(id, legacy)
+      return legacy
+    }
+
+    for (const base of [this.root, this.archiveRoot]) {
+      for (const dayDir of dateDirsDesc(base)) {
+        const candidate = path.join(dayDir, id)
+        if (fs.existsSync(path.join(candidate, 'meta.json'))) {
+          this.dirs.set(id, candidate)
+          return candidate
+        }
+      }
+    }
+    return null
+  }
+
   private dir(id: string): string {
-    return path.join(this.root, id)
+    const found = this.locate(id)
+    if (found) return found
+    // 新会话：落在今天的目录里
+    const [y, m, d] = dateParts()
+    return path.join(this.root, y, m, d, id)
+  }
+
+  /** 会话目录（checkpoint 的 blob 要写在这里） */
+  sessionDir(id: string): string | null {
+    return this.locate(id)
   }
 
   private metaPath(id: string): string {
@@ -87,7 +149,9 @@ export class EventStore {
       last_seq: 0,
       ...(opts.label ? { label: opts.label } : {}),
     }
-    fs.mkdirSync(this.dir(id), { recursive: true })
+    const target = this.dir(id)
+    fs.mkdirSync(target, { recursive: true })
+    this.dirs.set(id, target)
     this.writeMeta(meta)
     return meta
   }
@@ -163,19 +227,77 @@ export class EventStore {
     return out
   }
 
-  list(): SessionMeta[] {
-    let ids: string[] = []
-    try {
-      ids = fs.readdirSync(this.root)
-    } catch {
-      return []
-    }
+  /**
+   * 列会话，新的在前。`limit` 给了就按日期倒序边扫边停——
+   * 这正是分层的意义：要 20 条就不必读一年的量。
+   */
+  list(opts: { limit?: number; archived?: boolean } = {}): SessionMeta[] {
     const out: SessionMeta[] = []
-    for (const id of ids) {
-      const m = this.get(id)
-      if (m) out.push(m)
+    const limit = opts.limit ?? Infinity
+    const roots = opts.archived ? [this.archiveRoot] : [this.root]
+
+    for (const base of roots) {
+      // 老的平铺会话（sessions/<id>/meta.json）
+      let legacy: string[] = []
+      try { legacy = fs.readdirSync(base).filter((n) => !/^\d{4}$/.test(n)) } catch { /* fine */ }
+      for (const id of legacy) {
+        if (out.length >= limit) break
+        const m = this.get(id)
+        if (m) out.push(m)
+      }
+      for (const dayDir of dateDirsDesc(base)) {
+        if (out.length >= limit) break
+        let ids: string[] = []
+        try { ids = fs.readdirSync(dayDir) } catch { continue }
+        for (const id of ids) {
+          if (out.length >= limit) break
+          const m = this.get(id)
+          if (m) out.push(m)
+        }
+      }
     }
     return out.sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+  }
+
+  /**
+   * 把早于 N 天的会话挪进 archived_sessions/。
+   *
+   * 「归档」而不是「删除」：事件日志是证据，删了就没得查了。
+   * 归档之后 list 默认看不到，但按 id 仍然能读出来。
+   */
+  prune(opts: { olderThanDays: number; dryRun?: boolean }): { moved: string[]; kept: number } {
+    const cutoff = Date.now() - opts.olderThanDays * 86_400_000
+    const moved: string[] = []
+    let kept = 0
+
+    const consider = (src: string): void => {
+      let meta: SessionMeta | null = null
+      try { meta = JSON.parse(fs.readFileSync(path.join(src, 'meta.json'), 'utf8')) as SessionMeta } catch { return }
+      // 还在写的不动：归档一个 active 会话等于让它半路失联
+      if (meta.status === 'active') { kept++; return }
+      const when = Date.parse(meta.updated_at || meta.created_at)
+      if (!Number.isFinite(when) || when > cutoff) { kept++; return }
+
+      if (!opts.dryRun) {
+        const dst = path.join(this.archiveRoot, path.relative(this.root, src))
+        fs.mkdirSync(path.dirname(dst), { recursive: true })
+        fs.renameSync(src, dst)
+        this.dirs.set(meta.id, dst)
+      }
+      moved.push(meta.id)
+    }
+
+    // 老的平铺布局（sessions/<id>）也要认，否则升级之后它们永远不会被归档
+    let legacy: string[] = []
+    try { legacy = fs.readdirSync(this.root).filter((n) => !/^\d{4}$/.test(n)) } catch { /* none */ }
+    for (const id of legacy) consider(path.join(this.root, id))
+
+    for (const dayDir of dateDirsDesc(this.root)) {
+      let ids: string[] = []
+      try { ids = fs.readdirSync(dayDir) } catch { continue }
+      for (const id of ids) consider(path.join(dayDir, id))
+    }
+    return { moved, kept }
   }
 
   end(sessionId: string, reason: string): void {

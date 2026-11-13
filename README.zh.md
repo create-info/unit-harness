@@ -307,6 +307,26 @@ $ bash scripts/release.sh v0.1.0 --dry-run
 > Web UI（`uh serve`）目前对危险动作是直接拒绝而不是弹窗——审批控件还没接。
 > 这个失败是响的，不是静默的。
 
+## 会话存在哪
+
+```
+~/.uh/sessions/2026/11/13/<session-id>/
+  events.jsonl   一行一条事件，append-only
+  meta.json      谁、什么任务、什么时候
+  state.json     messages，给 --continue 用
+  blobs/         超过 4KB 的 before/after 正文，按内容哈希存
+```
+
+和 Codex 的 `sessions/YYYY/MM/DD/rollout-*.jsonl` 是同一个形状，理由也一样：
+列「最近 20 个会话」不该去读一年的盘。
+
+`uh sessions [n]` 按倒序列；`uh session prune --older-than 30d` 把老的挪到
+`~/.uh/archived_sessions/`。是**归档不是删除**——日志是证据。清理要你主动发起，
+不会自己删。
+
+大段正文挪到 `blobs/`，事件行才留得住可读性：`cat events.jsonl` 和 `grep` 仍然
+好使，`uh undo` 需要时再把正文读回来。
+
 ## Hooks
 
 工作区里的 `.uh/hooks.json`，改完不用重启：

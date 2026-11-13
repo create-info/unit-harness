@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -77,10 +77,7 @@ test('agent loop emits the full turn/step/tool event chain', async () => {
     assert.match(res.out, /finished/, 'final assistant text should be shown')
 
     // 事件日志
-    const sessions = join(home, 'sessions')
-    const ids = readdirSync(sessions)
-    assert.equal(ids.length, 1, 'exactly one session')
-    const raw = readFileSync(join(sessions, ids[0], 'events.jsonl'), 'utf8')
+    const raw = readFileSync(join(sessionDirOf(home), 'events.jsonl'), 'utf8')
     const kinds = raw.trim().split('\n').map((l) => JSON.parse(l).kind)
 
     for (const k of ['session/start', 'turn/start', 'step/start', 'llm/request', 'llm/response',
@@ -114,9 +111,7 @@ test('files created during a run are recorded and asserted', { skip: process.pla
     assert.match(res.out, /deploy\.sh/, 'the created file should be listed')
     assert.match(res.out, /4\/4/, 'exists + nonempty + sha256 + sh -n should all pass')
 
-    const sessions = join(home, 'sessions')
-    const ids = readdirSync(sessions)
-    const kinds = readFileSync(join(sessions, ids[0], 'events.jsonl'), 'utf8')
+    const kinds = readFileSync(join(sessionDirOf(home), 'events.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l).kind)
 
     assert.ok(kinds.includes('artifact/emitted'), 'artifact/emitted must be logged')
@@ -126,3 +121,17 @@ test('files created during a run are recorded and asserted', { skip: process.pla
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+/** 会话按 YYYY/MM/DD 分层了：走到第一个带 meta.json 的目录 */
+function sessionDirOf(home) {
+  let dir = join(home, 'sessions')
+  for (let depth = 0; depth < 5; depth++) {
+    let sub = []
+    try { sub = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) } catch { return dir }
+    if (sub.length === 0) return dir
+    const next = join(dir, sub[0])
+    if (existsSync(join(next, 'meta.json'))) return next
+    dir = next
+  }
+  return dir
+}

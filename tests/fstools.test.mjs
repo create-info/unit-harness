@@ -8,9 +8,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 
 const CLI = join(process.cwd(), 'dist', 'uh.cjs')
 
@@ -71,8 +71,8 @@ async function runWith(calls, setup) {
     p.on('close', () => resolve(s))
   })
 
-  const sid = readdirSync(join(home, 'sessions'))[0]
-  const events = readFileSync(join(home, 'sessions', sid, 'events.jsonl'), 'utf8')
+  const sid = basename(sessionDirOf(home))
+  const events = readFileSync(join(sessionDirOf(home), 'events.jsonl'), 'utf8')
     .trim().split('\n').map((l) => JSON.parse(l))
   server.close()
   rmSync(home, { recursive: true, force: true })
@@ -124,3 +124,17 @@ test('grep finds matches and reports a count', async () => {
   assert.equal(r.payload.status, 'ok')
   assert.equal(r.payload.matches, 1, 'glob *.ts must exclude the markdown file')
 })
+
+/** 会话按 YYYY/MM/DD 分层了：从 sessions/ 往下走到第一个带 meta.json 的目录 */
+function sessionDirOf(home) {
+  let dir = join(home, 'sessions')
+  for (let depth = 0; depth < 5; depth++) {
+    let sub = []
+    try { sub = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) } catch { return dir }
+    if (sub.length === 0) return dir
+    const next = join(dir, sub[0])
+    if (existsSync(join(next, 'meta.json'))) return next
+    dir = next
+  }
+  return dir
+}

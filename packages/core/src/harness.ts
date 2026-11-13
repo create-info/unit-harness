@@ -36,7 +36,7 @@ import { buildSeatbeltProfile, findSeatbelt } from './sandbox/seatbelt.ts'
 import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/toolchains.ts'
 import { McpRegistry } from './mcp/bridge.ts'
 import { loadMcpServers } from './mcp/config.ts'
-import { makeEdit, readMaybeFile as readMaybe } from './checkpoint/store.ts'
+import { makeEdit, toPayload, readMaybeFile as readMaybe } from './checkpoint/store.ts'
 import { loadHooks, matches, hookName } from './hook/hooks.ts'
 import type { HookConfig, HookDef, HookEvent, HookOutcome } from './hook/hooks.ts'
 import { allowAll, denyAll, needsApproval } from './approval/gate.ts'
@@ -217,14 +217,9 @@ export class Harness {
    */
   private recordEdit(rel: string, before: Buffer | null, after: Buffer | null): void {
     const edit = makeEdit(rel.replace(/^\.\//, ''), before, after)
-    const payload: Record<string, unknown> = {
-      path: edit.path,
-      before: edit.before,
-      after: edit.after,
-      binary: edit.binary,
-      too_large: edit.tooLarge,
-    }
-    this.ev('checkpoint/file', payload, 'agent')
+    // 大正文外置：事件行要能一眼看完，日志不该被一个文件原文糊住
+    const dir = this.session ? this.store.sessionDir(this.session.id) : null
+    this.ev('checkpoint/file', toPayload(edit, dir), 'agent')
   }
 
   /** 审批门：显式 gate 优先，否则按策略挑 */
@@ -963,7 +958,9 @@ export class Harness {
     // 只写最后一个会话就够了，但每次覆盖写，保证「最后的状态」永远是最新的。
     if (this.session) {
       try {
-        const statePath = nodePath.join(uhHome(), 'sessions', this.session.id, 'state.json')
+        // 会话目录按 YYYY/MM/DD 分层了，让 store 告诉我们它在哪
+        const sdir = this.store.sessionDir(this.session.id)
+        const statePath = nodePath.join(sdir ?? nodePath.join(uhHome(), 'sessions', this.session.id), 'state.json')
         fsSync.writeFileSync(statePath, JSON.stringify({
           session_id: this.session.id,
           updated_at: new Date().toISOString(),

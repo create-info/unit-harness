@@ -19,23 +19,72 @@
  *     `sed -i`、重定向不经过这里，日志里没有，undo 也就还原不了
  */
 
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
 /** 超过这个大小就不内联正文了（事件日志是给人读的，不是备份仓） */
 export const MAX_INLINE_BYTES = 256_000
 
+/**
+ * 内联进事件行的上限。再大就挪到 `blobs/`，事件里只留引用。
+ *
+ * 事件日志的价值在于「能一眼看完一条记录」。把 200KB 的文件原文塞进一行 JSON，
+ * `cat` 一次就把终端糊住了，grep 也基本失效——日志就不像日志了。
+ */
+export const INLINE_LIMIT_BYTES = 4_096
+
 export interface FileEdit {
   /** 相对工作区 */
   path: string
-  /** 改之前的内容；null = 这个文件原本不存在 */
+  /** 改之前的内容；null = 这个文件原本不存在，或正文在 blob 里（见 beforeRef） */
   before: string | null
-  /** 改之后的内容；null = 被删掉了 */
+  /** 改之后的内容；null = 被删掉了，或正文在 blob 里（见 afterRef） */
   after: string | null
+  /** 正文外置时的 blob 名 */
+  beforeRef?: string
+  afterRef?: string
+  /** 原始大小，blob 外置时唯一还留在事件里的尺寸信息 */
+  beforeSize?: number
+  afterSize?: number
   /** 二进制：没法当文本还原 */
   binary: boolean
   /** 太大没存正文 */
   tooLarge: boolean
+}
+
+/** 正文写进 blobs/，返回文件名（内容哈希，天然去重） */
+export function spillToBlob(sessionDir: string, content: string): string {
+  const hash = createHash('sha256').update(content, 'utf8').digest('hex')
+  const dir = path.join(sessionDir, 'blobs')
+  fs.mkdirSync(dir, { recursive: true })
+  const abs = path.join(dir, hash)
+  if (!fs.existsSync(abs)) fs.writeFileSync(abs, content, 'utf8')
+  return hash
+}
+
+/** 把一条记录变成事件 payload：小就内联，大就外置 */
+export function toPayload(edit: FileEdit, sessionDir: string | null): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    path: edit.path,
+    binary: edit.binary,
+    too_large: edit.tooLarge,
+  }
+
+  const put = (side: 'before' | 'after', value: string | null): void => {
+    if (value === null) { payload[side] = null; return }
+    const size = Buffer.byteLength(value, 'utf8')
+    payload[`${side}_size`] = size
+    if (sessionDir && size > INLINE_LIMIT_BYTES) {
+      payload[`${side}_ref`] = spillToBlob(sessionDir, value)
+      payload[side] = null
+    } else {
+      payload[side] = value
+    }
+  }
+  put('before', edit.before)
+  put('after', edit.after)
+  return payload
 }
 
 export function looksBinary(buf: Buffer): boolean {
@@ -96,6 +145,12 @@ export function editsForLastTurn(events: AnyEvent[]): { turn: number; edits: Fil
       binary: ev.payload.binary === true,
       tooLarge: ev.payload.too_large === true,
     }
+    const beforeRef = ev.payload.before_ref
+    const afterRef = ev.payload.after_ref
+    if (typeof beforeRef === 'string') edit.beforeRef = beforeRef
+    if (typeof afterRef === 'string') edit.afterRef = afterRef
+    if (typeof ev.payload.before_size === 'number') edit.beforeSize = ev.payload.before_size
+    if (typeof ev.payload.after_size === 'number') edit.afterSize = ev.payload.after_size
     const seen = collected.get(p)
     // 只保留第一次的 before，after 始终取最新
     collected.set(p, seen ? { ...edit, before: seen.before } : edit)
@@ -126,6 +181,25 @@ export function markTurnUndone(sessionDir: string, turn: number): void {
   } catch { /* first undo */ }
   if (!turns.includes(turn)) turns.push(turn)
   fs.writeFileSync(undoneMarkerPath(sessionDir), JSON.stringify({ turns, at: new Date().toISOString() }, null, 2), 'utf8')
+}
+
+/** 把外置的正文读回来，供 undo 使用 */
+export function hydrateEdits(edits: FileEdit[], sessionDir: string): FileEdit[] {
+  const read = (ref: string): string | null => {
+    try { return fs.readFileSync(path.join(sessionDir, 'blobs', ref), 'utf8') } catch { return null }
+  }
+  return edits.map((e) => {
+    const out = { ...e }
+    if (e.beforeRef) {
+      const v = read(e.beforeRef)
+      if (v !== null) out.before = v
+    }
+    if (e.afterRef) {
+      const v = read(e.afterRef)
+      if (v !== null) out.after = v
+    }
+    return out
+  })
 }
 
 export interface UndoResult {

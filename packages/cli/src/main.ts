@@ -6,7 +6,7 @@
  * 不含 LLM 与剧本执行——那是 P1。
  */
 import os from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 
 import {
   Harness, EventStore, describeIsolation, describeAssertion, resolveProvider,
@@ -17,6 +17,7 @@ import {
   loadHosts, upsertHost, removeHost, runRemote, classify, describeRisk,
   latestResumable, uhHome, sessionsDir,
   readSessionEvents, editsForLastTurn, applyUndo, isRestorable, isTurnUndone, markTurnUndone,
+  hydrateEdits,
 } from '@unit-harness/core'
 import type { Message, ImageInput, ApprovalRequest } from '@unit-harness/core'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
@@ -693,13 +694,12 @@ function loadImages(): ImageInput[] {
 
 /** 最近动过的那个 session（undo / checkpoints 都看它） */
 function latestSessionDir(): { id: string; dir: string } | null {
-  try {
-    const root = sessionsDir()
-    const names = readdirSync(root).filter((n) => statSync(join(root, n)).isDirectory())
-    names.sort((a, b) => statSync(join(root, b)).mtimeMs - statSync(join(root, a)).mtimeMs)
-    const id = names[0]
-    return id ? { id, dir: join(root, id) } : null
-  } catch { return null }
+  const store = new EventStore()
+  for (const meta of store.list({ limit: 20 })) {
+    const dir = store.sessionDir(meta.id)
+    if (dir) return { id: meta.id, dir }
+  }
+  return null
 }
 
 /** `uh checkpoints` —— 列出最近一轮改了什么（它就是日志，不是另存的一份东西） */
@@ -720,8 +720,9 @@ function cmdCheckpoints(): void {
   console.log(`last turn in ${session.id} — ${edits.length} file(s), recorded as events:`)
   for (const e of edits) {
     const verb = e.before === null ? 'created' : e.after === null ? 'deleted' : 'modified'
-    const size = e.after !== null ? Buffer.byteLength(e.after, 'utf8') : 0
-    const note = isRestorable(e) ? '' : e.binary ? '  [binary — undo will skip]' : '  [too large — undo will skip]'
+    const size = e.afterSize ?? (e.after !== null ? Buffer.byteLength(e.after, 'utf8') : 0)
+    const spilled = e.beforeRef || e.afterRef ? '  [content in blobs/]' : ''
+    const note = isRestorable(e) ? spilled : e.binary ? '  [binary — undo will skip]' : '  [too large — undo will skip]'
     console.log(`  ${verb.padEnd(8)} ${e.path}  (${size} B)${note}`)
   }
   console.log('')
@@ -738,7 +739,7 @@ function cmdUndo(_raw?: string): void {
   if (isTurnUndone(session.dir, turn)) fail(`turn ${turn} of ${session.id} has already been undone`)
 
   const h = new Harness({ pluginDirs: [], logLevel: 'error' })
-  const result = applyUndo(h.workspaceDir, edits)
+  const result = applyUndo(h.workspaceDir, hydrateEdits(edits, session.dir))
   // 事件日志是 append-only，撤销状态单独记
   markTurnUndone(session.dir, turn)
 
@@ -758,6 +759,48 @@ function cmdUndo(_raw?: string): void {
     )
     console.log('only writes made through the agent are recorded; edits from a shell command are not in the log.')
   }
+}
+
+/** `uh sessions [n]` —— 列会话（按日期倒序，要几条读几条） */
+function cmdSessions(raw?: string): void {
+  const limit = raw ? Number(raw) : 20
+  const store = new EventStore()
+  const metas = store.list({ limit: Number.isFinite(limit) ? limit : 20 })
+  if (metas.length === 0) { console.log('no sessions yet'); return }
+  console.log(`sessions (newest first, ${metas.length} shown)`)
+  for (const m of metas) {
+    const dir = store.sessionDir(m.id) ?? ''
+    const where = dir.includes(`${sep}archived_sessions${sep}`) ? 'archived' : ''
+    const when = (m.updated_at || m.created_at).replace('T', ' ').slice(0, 19)
+    console.log(`  ${m.id}  ${when}  ${String(m.last_seq).padStart(4)} events  ${m.status.padEnd(6)} ${where}`)
+  }
+  console.log('')
+  console.log('archive old ones:  uh session prune --older-than 30d [--dry-run]')
+}
+
+/** `uh session prune --older-than 30d` —— 归档，不是删除 */
+function cmdSessionPrune(args: string[]): void {
+  const i = args.indexOf('--older-than')
+  const raw = i >= 0 ? args[i + 1] : undefined
+  if (!raw) fail('usage: uh session prune --older-than <N>d [--dry-run]')
+  const m = /^(\d+)d?$/.exec(raw as string)
+  if (!m) fail(`could not read "${raw}" — expected something like 30d`)
+  const days = Number(m[1])
+  const dryRun = args.includes('--dry-run')
+
+  const store = new EventStore()
+  const res = store.prune({ olderThanDays: days, dryRun })
+  if (res.moved.length === 0) {
+    console.log(`nothing older than ${days}d — ${res.kept} session(s) kept`)
+    return
+  }
+  console.log(`${dryRun ? 'would archive' : 'archived'} ${res.moved.length} session(s), ${res.kept} kept`)
+  for (const id of res.moved.slice(0, 10)) console.log(`  ${id}`)
+  if (res.moved.length > 10) console.log(`  ... and ${res.moved.length - 10} more`)
+  if (dryRun) console.log('')
+  if (dryRun) console.log('run again without --dry-run to move them')
+  else console.log('')
+  if (!dryRun) console.log('moved to archived_sessions/ — still readable by id, just not listed')
 }
 
 async function cmdRun(task?: string): Promise<void> {
@@ -1066,7 +1109,10 @@ function cmdHelp(): void {
 Usage:
   uh run "<task>"           run a task with the model agent (sandboxed)
   uh host [list|add|test]   manage remote hosts (ssh targets, key paths only)
-  uh checkpoints            list the workspace's restore points (one per run)
+  uh sessions [n]           list recent sessions (newest first)
+  uh session prune --older-than 30d [--dry-run]
+                            archive old sessions (moved, not deleted)
+  uh checkpoints            what the last turn changed
   uh undo [n]               rewind the workspace n runs (default 1)
   uh run --continue [task]  resume the previous session instead of starting over
   uh run "..." --image f    attach an image (png/jpg/webp/gif) to the task
@@ -1121,6 +1167,7 @@ async function main(): Promise<void> {
     case 'sandbox':
       await cmdSandbox(argv[1]); return
     case 'session':
+      if (argv[1] === 'prune') { cmdSessionPrune(argv.slice(1)); return }
       await cmdSession(argv[1], argv[2]); return
     case 'provider':
       await cmdProvider(argv[1]); return
@@ -1149,6 +1196,8 @@ async function main(): Promise<void> {
       await cmdMcp(argv[1], argv.slice(2)); return
     case 'exec':
       await cmdExec(argv.slice(1)); return
+    case 'sessions':
+      cmdSessions(argv[1]); return
     case 'checkpoints':
       cmdCheckpoints(); return
     case 'undo':
