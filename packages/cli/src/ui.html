@@ -1593,7 +1593,18 @@ function render(kind, p){
     case 'checkpoint/file': closeStreams(); fileCard(p, p.seq || 0); break;
     case 'approval/needs': void askApproval(p); break;
     case 'approval/requested': row('warn','⚠ approval needed: ' + esc(p.reason || '')); break;
-    case 'approval/resolved': row(p.approved ? 'ok' : 'bad', (p.approved ? '✓ approved' : '✗ refused') + (p.auto ? ' (policy)' : '')); break;
+    case 'approval/resolved': {
+      // 事件里写的是 decision: 'allow' | 'deny'。这里以前读 p.approved——
+      // 那个字段从来不存在，于是一次批准也会显示成「✗ refused」，
+      // 让人以为自己刚拒掉了一条命令。
+      const ok = p.decision === 'allow' || p.approved === true
+      let label = ok ? '✓ approved' : '✗ refused'
+      if (p.cached) label += ' (remembered this session)'
+      else if (p.auto) label += ' (policy)'
+      if (p.escalation) label += ' — runs outside the sandbox'
+      row(ok ? 'ok' : 'bad', label)
+      break
+    }
     case 'session/compacted': row('warn','⟳ compacted: dropped ' + p.dropped_messages + ' msg(s), summary ~' + p.summary_chars + ' chars'); break;
     case 'artifact/emitted': row('ok','◆ artifact ' + esc(p.path) + '  ' + p.bytes + ' B'); break;
     case 'turn/end':
@@ -1603,7 +1614,11 @@ function render(kind, p){
       break;
     // 已经流式显示过就不再贴一遍：同一段回答出现两次，看起来像模型说了两遍
     case 'answer':
-      if (!sawText) row('answer','<div class="answer">' + esc(p.text || '(no text)') + '</div>');
+      if (!sawText) {
+        // 非字符串一律当成"没有文本"：把对象塞进 esc 会让页面上出现 [object Object]
+        const t = typeof p.text === 'string' ? p.text : ''
+        row('answer','<div class="answer">' + esc(t || '(no text)') + '</div>')
+      }
       break;
     case 'deliverables': renderDeliverables(p.items || [], p.verifications || []); break;
     case 'done':
@@ -1728,7 +1743,19 @@ document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawe
 
 setupAttach();
 setupRefs();
+async function restorePending(){
+  try {
+    const r = await fetch('/api/pending').then((x) => x.json());
+    for (const item of r.pending || []) {
+      // 已经在当前会话里弹着的不重复弹
+      if (document.querySelector('.mask.on')) return;
+      void askApproval(item.payload);
+    }
+  } catch { /* 拿不到就算了，别挡住正常使用 */ }
+}
+
 boot();
+restorePending();
 </script>
 </body>
 </html>

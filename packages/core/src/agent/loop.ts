@@ -57,6 +57,7 @@ export interface AgentDeps {
   ev: (
     kind:
       | 'turn/start' | 'turn/end' | 'step/start' | 'step/end' | 'plan/updated'
+      | 'assistant/message'
       | 'tool/call' | 'tool/result' | 'session/compacted' | 'steering/message',
     payload: Record<string, unknown>,
   ) => string | null
@@ -638,6 +639,10 @@ export async function runAgent(
     if (steps >= maxSteps) stoppedBy = 'max-steps'
   }
 
+  // 模型最后说了什么，必须落盘。
+  // 之前只有实时广播带着这段文本，日志里没有——重放会话时回答区是空的，
+  // 追问"它当时怎么解释的"根本查不到。可审计的前提是话也得记下来。
+  if (lastText) deps.ev('assistant/message', { role: 'assistant', text: lastText, chars: lastText.length })
   deps.ev('turn/end', { turn_index: 1, stop_reason: stoppedBy, steps })
   return { text: lastText, steps, usage, stoppedBy, plan, compactions, messages }
 }
