@@ -100,7 +100,7 @@ for a in d.get("artifacts", []):
   mkdir -p "${WORK}/unpacked"
   for id in "${ARTIFACT_IDS[@]}"; do
     echo "  artifact ${id}"
-    curl -sSL -H "$AUTH_HEADER" "${API}/artifacts/${id}/zip" -o "${WORK}/${id}.zip"
+    curl -sSL -H "$AUTH_HEADER" "${API}/actions/artifacts/${id}/zip" -o "${WORK}/${id}.zip"
     unzip -qo "${WORK}/${id}.zip" -d "${WORK}/unpacked" 2>/dev/null || echo "  (skipped: not a zip)"
   done
 
