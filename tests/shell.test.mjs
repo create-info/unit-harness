@@ -361,3 +361,69 @@ test('a note sent mid-run reaches the model at the next step', async () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('an image pasted in the browser reaches the model, and is not copied into the log', async () => {
+  const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  let sawImage = false
+  let urlPrefix = ''
+  const llm = http.createServer((req, res) => {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ id: 'mock' }] }))
+      return
+    }
+    let b = ''
+    req.on('data', (c) => (b += c))
+    req.on('end', () => {
+      for (const m of JSON.parse(b || '{}').messages || []) {
+        if (Array.isArray(m.content)) {
+          for (const part of m.content) {
+            if (part.type === 'image_url') {
+              sawImage = true
+              urlPrefix = String(part.image_url?.url ?? '').slice(0, 30)
+            }
+          }
+        }
+      }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        model: 'mock',
+        choices: [{ message: { role: 'assistant', content: 'I see it.' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+      }))
+    })
+  })
+  await new Promise((r) => llm.listen(0, '127.0.0.1', r))
+  const port = llm.address().port
+
+  const home = mkdtempSync(join(tmpdir(), 'uh-img-'))
+  const work = join(home, 'work')
+  mkdirSync(work, { recursive: true })
+  const srv = await startServer({
+    ...process.env, UH_HOME: home, UH_WORKSPACE: work,
+    UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock',
+  })
+  try {
+    await post('/api/settings', { provider: 'deepseek', model: 'mock', apiKey: 'sk-x' })
+    const r = await post('/api/run', {
+      task: 'what is this',
+      images: [{ name: 'shot.png', mediaType: 'image/png', data: PNG }],
+    })
+    assert.ok(r.sessionId, 'run accepted')
+
+    const deadline = Date.now() + 20000
+    while (Date.now() < deadline && !sawImage) await new Promise((r2) => setTimeout(r2, 200))
+    assert.equal(sawImage, true, 'the model must receive an image_url part')
+    assert.ok(urlPrefix.startsWith('data:image/png;base64,'), 'shape must be OpenAI image_url')
+
+    // 图片要落盘（续跑按路径重读），但 base64 不能出现在事件里
+    const up = join(work, '.uh', 'uploads')
+    assert.equal(readdirSync(up).length, 1, 'the image is written to .uh/uploads')
+    const raw = JSON.stringify(sessionEvents(home))
+    assert.equal(raw.includes(PNG), false, 'base64 must not leak into the event log')
+  } finally {
+    srv.kill()
+    llm.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
