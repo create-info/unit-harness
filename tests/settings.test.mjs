@@ -177,3 +177,25 @@ test('sessions are grouped under their project, which is what the sidebar draws'
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('appearance saves and survives a reload', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'uh-ui-'))
+  const srv = await startServer({ ...process.env, UH_HOME: home })
+  try {
+    assert.deepEqual(await get('/api/ui'), { ui: {} }, 'a fresh install has no opinion about colours')
+
+    await post('/api/ui', { mode: 'dark', bg: '#101010' })
+    const after = await get('/api/ui')
+    assert.equal(after.ui.mode, 'dark')
+    assert.equal(after.ui.bg, '#101010', 'writing a field and not reading it back is the same as not saving it')
+
+    // 重置是真正的删除，不是存一个 null
+    await post('/api/ui', { bg: null })
+    const reset = await get('/api/ui')
+    assert.equal('bg' in reset.ui, false, 'reset means gone, so the theme default applies again')
+    assert.equal(reset.ui.mode, 'dark', 'resetting one field must not wipe the rest')
+  } finally {
+    srv.kill()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
