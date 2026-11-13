@@ -11,7 +11,7 @@ import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 
 const CLI = join(process.cwd(), 'dist', 'uh.cjs')
 
@@ -108,11 +108,25 @@ test('apply_patch is atomic: one bad hunk writes nothing', async () => {
   assert.equal(readFileSync(join(work, 'keep.txt'), 'utf8'), 'original content\n', 'failed hunk must leave the file untouched')
   assert.equal(existsSync(join(work, 'new.txt')), false, 'later hunk must not be applied either')
   // 失败必须留痕：事件里要有 tool/result{status:error}
-  const sid = readdirSync(join(home, 'sessions'))[0]
-  const events = readFileSync(join(home, 'sessions', sid, 'events.jsonl'), 'utf8')
+  const sid = basename(sessionDirOf(home))
+  const events = readFileSync(join(sessionDirOf(home), 'events.jsonl'), 'utf8')
     .trim().split('\n').map((l) => JSON.parse(l))
   const failed = events.filter((e) => e.kind === 'tool/result' && e.payload.status === 'error')
   assert.ok(failed.length > 0, 'a failed patch must be recorded as an error event')
   assert.match(JSON.stringify(failed[0].payload), /E_PATCH_NOMATCH/, 'the reason must be recorded')
   void out
 })
+
+/** 会话按 YYYY/MM/DD 分层了：从 sessions/ 往下走到第一个带 meta.json 的目录 */
+function sessionDirOf(home) {
+  let dir = join(home, 'sessions')
+  for (let depth = 0; depth < 5; depth++) {
+    let sub = []
+    try { sub = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) } catch { return dir }
+    if (sub.length === 0) return dir
+    const next = join(dir, sub[0])
+    if (existsSync(join(next, 'meta.json'))) return next
+    dir = next
+  }
+  return dir
+}

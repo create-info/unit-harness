@@ -19,6 +19,7 @@ export { needsApproval, denyAll, allowAll } from './approval/gate.ts'
 export {
   makeEdit, applyUndo, editsForLastTurn, readSessionEvents,
   readMaybeFile, isRestorable, MAX_INLINE_BYTES, isTurnUndone, markTurnUndone,
+  hydrateEdits, toPayload, spillToBlob, INLINE_LIMIT_BYTES,
 } from './checkpoint/store.ts'
 export type { FileEdit, UndoResult } from './checkpoint/store.ts'
 export type { ApprovalGate, ApprovalPolicy, ApprovalRequest, ApprovalDecision } from './approval/gate.ts'

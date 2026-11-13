@@ -10,9 +10,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 
 const CLI = join(process.cwd(), 'dist', 'uh.cjs')
 
@@ -69,8 +69,8 @@ test('a destructive command is refused by default, and the attempt is recorded',
       ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock',
     })
 
-    const sid = readdirSync(join(home, 'sessions'))[0]
-    const events = readFileSync(join(home, 'sessions', sid, 'events.jsonl'), 'utf8')
+    const sid = basename(sessionDirOf(home))
+    const events = readFileSync(join(sessionDirOf(home), 'events.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l))
 
     const asked = events.find((e) => e.kind === 'approval/requested')
@@ -102,8 +102,8 @@ test('--yes runs it', async () => {
     })
     assert.equal(s.includes('E_APPROVAL_DENIED'), false, s)
 
-    const sid = readdirSync(join(home, 'sessions'))[0]
-    const events = readFileSync(join(home, 'sessions', sid, 'events.jsonl'), 'utf8')
+    const sid = basename(sessionDirOf(home))
+    const events = readFileSync(join(sessionDirOf(home), 'events.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l))
     assert.ok(!events.some((e) => e.kind === 'approval/requested'), '--yes should not prompt at all')
   } finally {
@@ -122,8 +122,8 @@ test('read-only commands are never gated', async () => {
     await run(['run', 'list files', '--max-steps', '2'], {
       ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock',
     })
-    const sid = readdirSync(join(home, 'sessions'))[0]
-    const events = readFileSync(join(home, 'sessions', sid, 'events.jsonl'), 'utf8')
+    const sid = basename(sessionDirOf(home))
+    const events = readFileSync(join(sessionDirOf(home), 'events.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l))
     assert.ok(!events.some((e) => e.kind === 'approval/requested'), 'ls must not ask permission')
   } finally {
@@ -131,3 +131,17 @@ test('read-only commands are never gated', async () => {
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+/** 会话按 YYYY/MM/DD 分层了：从 sessions/ 往下走到第一个带 meta.json 的目录 */
+function sessionDirOf(home) {
+  let dir = join(home, 'sessions')
+  for (let depth = 0; depth < 5; depth++) {
+    let sub = []
+    try { sub = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) } catch { return dir }
+    if (sub.length === 0) return dir
+    const next = join(dir, sub[0])
+    if (existsSync(join(next, 'meta.json'))) return next
+    dir = next
+  }
+  return dir
+}
