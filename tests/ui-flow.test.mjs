@@ -113,7 +113,10 @@ function sessionEvents(home) {
   } catch { return [] }
 }
 
-test('approving in the browser lets a destructive command through; denying does not', async () => {
+test('approving in the browser lets a destructive command through; denying does not', {
+  // chmod 在 Windows 上既不是那条命令，也不按同样的方式被判成 destructive
+  skip: process.platform === 'win32' ? 'POSIX command semantics' : false,
+}, async () => {
   for (const approve of [false, true]) {
     const srv = toolCallServer(['chmod', '-R', '777', '.'])
     await new Promise((r) => srv.listen(0, '127.0.0.1', r))
@@ -157,7 +160,8 @@ test('approving in the browser lets a destructive command through; denying does 
 })
 
 test('stop interrupts a run that is stuck in a command', async () => {
-  const srv = toolCallServer(['sleep', '45'])
+  // 跨平台的长命令：Windows 没有 sleep
+  const srv = toolCallServer(['node', '-e', 'setTimeout(() => {}, 60000)'])
   await new Promise((r) => srv.listen(0, '127.0.0.1', r))
   const llmPort = srv.address().port
   const home = mkdtempSync(join(tmpdir(), 'uh-stop-'))
