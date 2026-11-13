@@ -1899,15 +1899,20 @@ function render(kind, p){
       sawText = false;
       closeRun();
       break;
-    case 'llm/request': procRow('dim','→ ' + (p.provider||'') + ' ' + (p.model||'')); break;
-    case 'llm/response': procRow('dim','← ' + p.tool_calls + ' tool call(s), ' + ((p.usage&&p.usage.total_tokens)||0) + ' tokens'); break;
+    // 屏幕上不出现 provider / 模型名 / token 数——那是我们的账，不是用户的进度。
+    // 模型在想什么由 reasoning/delta 实时流出来；这里只在没有思考内容的模型上占位。
+    case 'llm/request': procRow('dim','Thinking'); break;
+    // llm/response 不显示：工具调用行紧接着就会出现，多一行统计只是噪音
     case 'tool/call': {
-      const d = p.argv ? p.argv.join(' ') : (p.args_preview || JSON.stringify(p.args||{}));
-      procRow('tool','⚙ ' + p.tool + ': ' + esc(String(d).slice(0,160)));
+      // label 是服务端翻译好的人话（"Reading src/cli.ts"），永远优先用它。
+      // 只有翻译缺失时才退回原始信息，绝不会把 run_command 这种词直接扔到屏幕上。
+      const text = p.label || (p.tool === 'run_command' && p.argv ? p.argv.join(' ') : String(p.tool || 'working'))
+      procRow('tool', '● ' + esc(String(text)));
       break;
     }
     case 'tool/result':
-      procRow(p.status === 'ok' ? 'ok' : 'bad', (p.status === 'ok' ? '✓' : '✗') + ' ' + (p.exit_code !== undefined ? 'exit=' + p.exit_code : p.status));
+      // 「✗」只留给真的失败；exit=0 显示成 Done，别让用户去读退出码
+      procRow(p.status === 'ok' ? 'ok' : 'bad', (p.status === 'ok' ? '✓ ' : '✗ ') + esc(String(p.label || (p.status === 'ok' ? 'Done' : 'That did not work'))));
       break;
     case 'steering/message':
       // 排队时只进输入框上方的暂存区，应用了才落到对话里——这样「还没轮到」
@@ -1951,7 +1956,14 @@ function render(kind, p){
     case 'turn/end':
       closeStreams();
       closeRun();
-      row('step','turn end (' + p.stop_reason + ', ' + p.steps + ' steps)');
+      // stop_reason 是内部枚举（model / error / interrupted），屏幕上不该出现
+      {
+        const why = p.stop_reason === 'interrupted' ? 'Stopped'
+          : p.stop_reason === 'error' ? 'Stopped on an error'
+          : p.stop_reason === 'max-steps' ? 'Hit the step limit'
+          : 'Finished';
+        row('step', why + ' · ' + p.steps + (p.steps === 1 ? ' step' : ' steps'));
+      }
       break;
     // 已经流式显示过就不再贴一遍：同一段回答出现两次，看起来像模型说了两遍
     case 'answer':

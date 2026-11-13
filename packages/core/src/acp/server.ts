@@ -22,6 +22,7 @@ import type {
   RequestPermissionResult, ContentBlock,
 } from './types.ts'
 import { ACP_ERR } from './types.ts'
+import { describeTool } from '../agent/progress.ts'
 
 export interface AcpHarnessLike {
   sessionId?: string | null
@@ -107,10 +108,13 @@ export function createAcpServer(hooks: AcpHooks, io: {
       if (kind === 'tool/call') {
         const id = `call_${openCalls.length}_${randomUUID().slice(0, 6)}`
         openCalls.push(id)
+        // 编辑器里显示的是 title，用户会把它当成"它在干什么"。
+        // 所以这里必须是"Reading src/a.ts"，不能是 run_command。
+        const described = describeTool(String(p.tool ?? ''), p)
         emitUpdate(sessionId, {
           sessionUpdate: 'tool_call',
           toolCallId: id,
-          title: String(p.tool ?? p.name ?? 'tool call'),
+          title: described.label,
           kind: 'execute',
           status: 'in_progress',
           rawInput: p.argv ?? p.input ?? null,
