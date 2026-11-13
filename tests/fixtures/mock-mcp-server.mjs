@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 /**
  * 最小可用的 MCP server（stdio），只为测试协议桥接。
- * 暴露两个工具：echo(text) 和 add(a, b)。
+ *
+ * 三块能力都实现：tools（echo / add）、resources（两个文件）、prompts（一个模板）。
+ * 真实 server 常常只实现 tools，所以桥接层必须能容忍其余两项回 -32601——
+ * 另一个 fixture 专门测那个（MOCK_MCP_TOOLS_ONLY=1）。
  */
+const TOOLS_ONLY = process.env.MOCK_MCP_TOOLS_ONLY === '1'
 let buf = ''
 
 function send(obj) {
@@ -29,7 +33,7 @@ process.stdin.on('data', (chunk) => {
           jsonrpc: '2.0', id: msg.id,
           result: {
             protocolVersion: '2024-11-05',
-            capabilities: { tools: {} },
+            capabilities: TOOLS_ONLY ? { tools: {} } : { tools: {}, resources: {}, prompts: {} },
             serverInfo: { name: 'mock-mcp', version: '0.0.1' },
           },
         })
@@ -53,6 +57,54 @@ process.stdin.on('data', (chunk) => {
         else if (name === 'add') text = String(Number(args.a) + Number(args.b))
         else { text = `unknown tool ${name}`; isError = true }
         send({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text }], isError } })
+        break
+      }
+      case 'resources/list': {
+        if (TOOLS_ONLY) { send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'no resources' } }); break }
+        send({
+          jsonrpc: '2.0', id: msg.id,
+          result: {
+            resources: [
+              { uri: 'mock://readme', name: 'readme', mimeType: 'text/markdown' },
+              { uri: 'mock://config', name: 'config', mimeType: 'application/json' },
+            ],
+          },
+        })
+        break
+      }
+      case 'resources/read': {
+        const uri = msg.params?.uri
+        const body = uri === 'mock://readme'
+          ? '# mock readme\nthis came from an MCP resource'
+          : uri === 'mock://config' ? '{"theme":"dark"}' : null
+        if (body === null) { send({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: `no such resource ${uri}` } }); break }
+        send({ jsonrpc: '2.0', id: msg.id, result: { contents: [{ uri, mimeType: 'text/plain', text: body }] } })
+        break
+      }
+      case 'prompts/list': {
+        if (TOOLS_ONLY) { send({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'no prompts' } }); break }
+        send({
+          jsonrpc: '2.0', id: msg.id,
+          result: {
+            prompts: [{
+              name: 'review',
+              description: 'review a diff',
+              arguments: [{ name: 'target', description: 'what to review', required: true }],
+            }],
+          },
+        })
+        break
+      }
+      case 'prompts/get': {
+        const { name, arguments: args = {} } = msg.params ?? {}
+        if (name !== 'review') { send({ jsonrpc: '2.0', id: msg.id, error: { code: -32602, message: `no such prompt ${name}` } }); break }
+        send({
+          jsonrpc: '2.0', id: msg.id,
+          result: {
+            description: 'review a diff',
+            messages: [{ role: 'user', content: { type: 'text', text: `Please review ${args.target ?? '(nothing)'} carefully.` } }],
+          },
+        })
         break
       }
       default:
