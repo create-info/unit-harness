@@ -213,7 +213,25 @@ jobs:
           ls -la src-tauri/binaries/
 
       - name: build desktop bundle
+        # Apple Silicon 上**未签名**的 arm64 app 会被 Gatekeeper 直接判成
+        # 「已损坏，无法打开」——不是真的坏了，是没签名。ad-hoc 签名（"-"）不需要
+        # 开发者证书，就能把这个错误消掉；首次打开仍要点「右键 → 打开」。
+        env:
+          APPLE_SIGNING_IDENTITY: "-"
         run: npx tauri build
+
+      - name: assert the macOS bundle is signed
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -e
+          APP=$(find src-tauri/target/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)
+          test -n "$APP" || { echo "::error::no .app produced"; exit 1; }
+          echo "checking $APP"
+          # 没签名的话，用户拿到手就是「已损坏」——这里必须拦住，别等下载了才发现
+          codesign --verify --deep --strict "$APP"
+          codesign -dv "$APP" 2>&1 | grep -E 'Signature|Identifier' || true
+          echo "signature ok — the dmg opens without the damaged-app error"
 
       - name: smoke-test the bundled sidecar
         shell: bash
