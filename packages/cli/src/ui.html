@@ -12,17 +12,27 @@
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;display:flex;height:100vh;overflow:hidden}
-  aside{width:240px;flex:0 0 240px;border-right:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column}
-  aside h1{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:16px 16px 8px}
+  aside{width:250px;flex:0 0 250px;border-right:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column}
+  aside h1{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:14px 16px 6px;font-weight:600}
+  /* 项目就是工作区：模型能换，跑在哪个目录也要能换 */
+  .proj{padding:10px 12px;margin:10px 8px 4px;border:1px solid var(--line);border-radius:8px;background:#12161d}
+  .proj .lbl{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .proj .path{display:flex;align-items:center;gap:6px;margin-top:3px}
+  .proj .path span{flex:1;font-family:var(--mono);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .icon{background:#1d232c;border:1px solid var(--line);color:var(--dim);border-radius:6px;width:24px;height:24px;cursor:pointer;font-size:12px;line-height:1;padding:0}
+  .icon:hover{color:var(--fg);border-color:#35507a}
   #sessions{flex:1;overflow:auto;padding:0 8px 8px}
-  .sess{padding:8px 10px;border-radius:8px;cursor:pointer;font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sess{padding:7px 10px;border-radius:8px;cursor:pointer;font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .sess:hover{background:#1d232c;color:var(--fg)}
   .sess.active{background:#1d232c;color:var(--fg)}
   .sess b{display:block;color:var(--fg);font-weight:500;font-size:12px}
+  .side-foot{border:0;border-top:1px solid var(--line);background:transparent;color:var(--dim);text-align:left;padding:11px 18px;cursor:pointer;font-size:12px}
+  .side-foot:hover{color:var(--fg);background:#1a1f27}
   main{flex:1;display:flex;flex-direction:column;min-width:0}
-  header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;font-size:12px;color:var(--dim)}
+  header{padding:12px 20px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;font-size:12px;color:var(--dim)}
   header .brand{color:var(--fg);font-weight:600;letter-spacing:.02em}
-  header .pill{background:#1d232c;border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-family:var(--mono);font-size:11px;white-space:nowrap}
+  header .pill{background:#1d232c;border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-family:var(--mono);font-size:11px;white-space:nowrap;cursor:pointer}
+  header .pill:hover{border-color:#35507a}
   #sid{max-width:200px;overflow:hidden;text-overflow:ellipsis}
   header .pill.ok{color:var(--ok);border-color:#1f4a3a}
   header .pill.bad{color:var(--bad);border-color:#4a2020}
@@ -35,11 +45,11 @@
   .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.dim{color:var(--dim)}
   .answer{margin-top:14px;padding:12px;border-left:2px solid var(--accent);background:#141a24;color:var(--fg);font-family:-apple-system,system-ui,sans-serif;font-size:13.5px;white-space:pre-wrap;border-radius:0 6px 6px 0}
   footer{border-top:1px solid var(--line);padding:12px 20px;background:var(--panel)}
-  form{display:flex;gap:10px}
+  form#run{display:flex;gap:10px}
   textarea{flex:1;resize:none;height:56px;overflow:auto;background:#0c0f14;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:13px/1.5 var(--mono);outline:none}
   textarea:focus{border-color:#35507a}
-  button{background:var(--accent);color:#0b0e13;border:0;border-radius:8px;padding:0 20px;font-weight:600;cursor:pointer}
-  button:disabled{opacity:.45;cursor:default}
+  button.go{background:var(--accent);color:#0b0e13;border:0;border-radius:8px;padding:0 20px;font-weight:600;cursor:pointer}
+  button.go:disabled{opacity:.45;cursor:default}
   #deliverables{padding:0 20px 12px;font-family:var(--mono);font-size:12.5px}
   .art{display:flex;gap:10px;align-items:center;padding:4px 0;border-bottom:1px solid #1a2029}
   .art .n{flex:1;color:var(--fg)}
@@ -47,35 +57,125 @@
   .badge{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line)}
   .badge.g{color:var(--ok);border-color:#1f4a3a}
   .badge.r{color:var(--bad);border-color:#4a2020}
+  /* ---- 设置抽屉 ---- */
+  #veil{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none}
+  #veil.on{display:block}
+  #drawer{position:fixed;top:0;right:0;bottom:0;width:420px;max-width:92vw;background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);transition:transform .18s ease;display:flex;flex-direction:column;z-index:5}
+  #drawer.on{transform:none}
+  .dhead{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center}
+  .dhead b{flex:1;font-size:13px}
+  .dbody{flex:1;overflow:auto;padding:16px 18px}
+  .field{margin-bottom:14px}
+  .field label{display:block;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--dim);margin-bottom:5px}
+  .field input,.field select{width:100%;background:#0c0f14;color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:8px 10px;font:12.5px/1.4 var(--mono);outline:none}
+  .field input:focus,.field select:focus{border-color:#35507a}
+  .field .hint{font-size:11px;color:var(--dim);margin-top:5px;line-height:1.45}
+  .field .hint a{color:var(--accent);text-decoration:none}
+  .rowline{display:flex;gap:8px}
+  .rowline input{flex:1}
+  .btn{background:#1d232c;border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:8px 12px;font-size:12px;cursor:pointer;white-space:nowrap}
+  .btn:hover{border-color:#35507a}
+  .btn.primary{background:var(--accent);color:#0b0e13;border:0;font-weight:600}
+  .btn:disabled{opacity:.5;cursor:default}
+  .dfoot{border-top:1px solid var(--line);padding:12px 18px;display:flex;gap:8px;align-items:center}
+  .dfoot .msg{flex:1;font-size:11.5px;color:var(--dim);overflow:hidden;text-overflow:ellipsis}
+  .dfoot .msg.err{color:var(--bad)}
+  .dfoot .msg.good{color:var(--ok)}
+  .provtag{font-size:10px;color:var(--dim);margin-left:6px}
+  .provtag.set{color:var(--ok)}
 </style>
 </head>
 <body>
 <aside>
+  <div class="proj">
+    <div class="lbl">Project</div>
+    <div class="path">
+      <span id="projPath">…</span>
+      <button class="icon" id="projBtn" title="Change workspace">⇄</button>
+    </div>
+  </div>
   <h1>Sessions</h1>
   <div id="sessions"></div>
+  <button class="side-foot" id="settingsBtn">⚙ Settings · model &amp; keys</button>
 </aside>
 <main>
   <header>
     <span class="brand">UnitHarness</span>
     <span id="iso" class="pill">isolation …</span>
-    <span id="model" class="pill">model …</span>
+    <span id="model" class="pill" title="Click to configure">model …</span>
     <span id="sid" class="pill dim" style="margin-left:auto">no session</span>
   </header>
   <div id="log"></div>
   <div id="deliverables"></div>
   <footer>
     <form id="run">
-      <textarea id="task" placeholder="Describe the task. It runs in a sandbox; the workspace is ~/.uh/work"></textarea>
-      <button id="go" type="submit">Run</button>
+      <textarea id="task" placeholder="Describe the task. It runs in a sandbox; every write is logged and undoable."></textarea>
+      <button class="go" id="go" type="submit">Run</button>
     </form>
   </footer>
 </main>
+
+<div id="veil"></div>
+<div id="drawer">
+  <div class="dhead">
+    <b id="drawerTitle">Settings</b>
+    <button class="icon" id="closeDrawer">✕</button>
+  </div>
+  <div class="dbody" id="settingsPane">
+    <div class="field">
+      <label>Provider</label>
+      <select id="fProvider"></select>
+      <div class="hint" id="fProvHint"></div>
+    </div>
+    <div class="field">
+      <label>Base URL</label>
+      <input id="fBase" spellcheck="false" placeholder="https://api.example.com/v1">
+    </div>
+    <div class="field">
+      <label>API key</label>
+      <input id="fKey" type="password" spellcheck="false" autocomplete="off" placeholder="paste a key to set or replace it">
+      <div class="hint" id="fKeyHint">Stored in ~/.uh/config.json (0600). Never written to event logs.</div>
+    </div>
+    <div class="field">
+      <label>Model</label>
+      <div class="rowline">
+        <input id="fModel" spellcheck="false" list="modelList" placeholder="e.g. deepseek-v4-flash">
+        <button class="btn" id="fFetch" type="button">List</button>
+      </div>
+      <datalist id="modelList"></datalist>
+      <div class="hint" id="fModelHint"></div>
+    </div>
+    <div class="field">
+      <label>Workspace</label>
+      <input id="fWork" spellcheck="false" placeholder="/absolute/path/to/project">
+      <div class="hint">The sandbox limits writes to this directory.</div>
+    </div>
+  </div>
+  <div class="dbody" id="projPane" style="display:none">
+    <div class="field">
+      <label>Switch to</label>
+      <select id="fProject"></select>
+    </div>
+    <div class="field">
+      <label>Or type a path</label>
+      <input id="fNewProj" spellcheck="false" placeholder="~/code/my-app">
+      <div class="hint">Created if it does not exist. Writes stay inside it.</div>
+    </div>
+  </div>
+  <div class="dfoot">
+    <span class="msg" id="dMsg"></span>
+    <button class="btn" id="dCancel">Close</button>
+    <button class="btn primary" id="dSave">Save</button>
+  </div>
+</div>
+
 <script>
 const $ = (s) => document.querySelector(s);
 const logEl = $('#log'), delivEl = $('#deliverables');
 let es = null, started = 0;
+let SETTINGS = null, PROVIDERS = [], drawerMode = 'settings';
 
-function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function row(cls, text){
   const d = document.createElement('div');
   d.className = 'row';
@@ -85,15 +185,21 @@ function row(cls, text){
   logEl.scrollTop = logEl.scrollHeight;
   return d;
 }
-
 async function boot(){
-  const info = await (await fetch('/api/info')).json();
-  $('#iso').textContent = 'isolation ' + info.isolation;
+  const [info, list] = await Promise.all([
+    fetch('/api/info').then(r => r.json()),
+    fetch('/api/sessions').then(r => r.json()),
+  ]);
+  $('#iso').textContent = 'sandbox ' + info.isolation;
   $('#iso').className = 'pill ' + (info.isolation === 'none' || info.isolation === 'path-guard' ? 'bad' : 'ok');
-  $('#model').textContent = info.model || 'no model';
-  const list = await (await fetch('/api/sessions')).json();
+  await loadSettings();
+  renderSessions(list);
+}
+
+function renderSessions(list){
   const box = $('#sessions');
   box.innerHTML = '';
+  if (!list.length){ box.innerHTML = '<div class="sess dim">no sessions yet</div>'; return; }
   for (const s of list){
     const d = document.createElement('div');
     d.className = 'sess';
@@ -102,6 +208,169 @@ async function boot(){
     box.appendChild(d);
   }
 }
+
+async function loadSettings(){
+  SETTINGS = await fetch('/api/settings').then(r => r.json());
+  PROVIDERS = SETTINGS.providers || [];
+  $('#model').textContent = SETTINGS.hasKey || SETTINGS.provider === 'ollama'
+    ? (SETTINGS.provider + ' / ' + (SETTINGS.model || 'no model'))
+    : 'no model configured';
+  $('#model').className = 'pill ' + (SETTINGS.model ? '' : 'bad');
+  $('#projPath').textContent = SETTINGS.workspace;
+  $('#projPath').title = SETTINGS.workspace;
+  $('#task').placeholder = 'Describe the task. It runs in a sandbox; the workspace is ' + SETTINGS.workspace;
+  fillSettingsForm();
+}
+
+function fillSettingsForm(){
+  const sel = $('#fProvider');
+  sel.innerHTML = '';
+  for (const p of PROVIDERS){
+    const o = document.createElement('option');
+    o.value = p.id;
+    o.textContent = p.label + (p.configured ? '  ✓' : '');
+    sel.appendChild(o);
+  }
+  sel.value = SETTINGS.provider;
+  const cur = PROVIDERS.find(p => p.id === SETTINGS.provider) || {};
+  $('#fBase').value = SETTINGS.baseUrl || '';
+  $('#fKey').value = '';
+  $('#fKey').placeholder = SETTINGS.hasKey ? 'already set (' + SETTINGS.keyMasked + ') — leave blank to keep' : (cur.local ? 'not needed for local models' : 'paste the key here');
+  $('#fModel').value = SETTINGS.model || '';
+  $('#fWork').value = SETTINGS.workspace || '';
+  updateProvHint(cur);
+}
+
+function updateProvHint(p){
+  const bits = [];
+  if (p.protocol) bits.push('protocol ' + p.protocol);
+  if (p.keysUrl) bits.push('<a href="' + p.keysUrl + '" target="_blank" rel="noreferrer">get a key ↗</a>');
+  if (p.envKey) bits.push('<code>' + p.envKey + '</code> also works');
+  if (p.modelHint) bits.push('known: ' + p.modelHint);
+  if (p.local) bits.push('local server, usually no key');
+  $('#fProvHint').innerHTML = bits.join(' · ');
+  $('#fModelHint').textContent = p.modelHint ? 'Try “List” after setting a key to see what this provider actually serves.' : '';
+}
+
+$('#fProvider').addEventListener('change', async () => {
+  const id = $('#fProvider').value;
+  const p = PROVIDERS.find(x => x.id === id) || {};
+  // 换 provider：baseUrl 跟着换回默认，key/model 留空（不同家的模型名不通用）
+  $('#fBase').value = p.baseUrl || '';
+  $('#fKey').value = '';
+  $('#fKey').placeholder = p.local ? 'not needed for local models' : 'paste the key here';
+  $('#fModel').value = '';
+  updateProvHint(p);
+  const r = await fetch('/api/models?provider=' + encodeURIComponent(id)).then(x => x.json());
+  fillModels(r.models || [], r.error);
+});
+
+$('#fFetch').addEventListener('click', async () => {
+  const id = $('#fProvider').value;
+  $('#fFetch').disabled = true;
+  try {
+    const r = await fetch('/api/models?provider=' + encodeURIComponent(id)).then(x => x.json());
+    fillModels(r.models || [], r.error);
+  } finally { $('#fFetch').disabled = false; }
+});
+
+function fillModels(models, error){
+  const dl = $('#modelList');
+  dl.innerHTML = '';
+  for (const m of models){
+    const o = document.createElement('option');
+    o.value = m;
+    dl.appendChild(o);
+  }
+  $('#fModelHint').textContent = models.length
+    ? models.length + ' model(s) available — pick one or type a name'
+    : (error ? 'could not list models: ' + error : 'no models returned; type the name yourself');
+}
+
+function openDrawer(mode){
+  drawerMode = mode;
+  $('#drawerTitle').textContent = mode === 'settings' ? 'Settings · model & keys' : 'Project · workspace';
+  $('#settingsPane').style.display = mode === 'settings' ? '' : 'none';
+  $('#projPane').style.display = mode === 'settings' ? 'none' : '';
+  $('#dMsg').textContent = '';
+  $('#dMsg').className = 'msg';
+  $('#drawer').classList.add('on');
+  $('#veil').classList.add('on');
+  if (mode === 'project') loadProjects();
+}
+function closeDrawer(){
+  $('#drawer').classList.remove('on');
+  $('#veil').classList.remove('on');
+}
+
+async function loadProjects(){
+  const r = await fetch('/api/projects').then(x => x.json());
+  const sel = $('#fProject');
+  sel.innerHTML = '';
+  for (const p of r.projects || []){
+    const o = document.createElement('option');
+    o.value = p.path;
+    o.textContent = p.path + (p.sessions ? '  · ' + p.sessions + ' session(s)' : '');
+    sel.appendChild(o);
+  }
+  const mine = (r.projects || []).find(p => p.path === r.current);
+  if (mine) sel.value = mine.path;
+  $('#fNewProj').value = '';
+}
+
+$('#settingsBtn').addEventListener('click', () => openDrawer('settings'));
+$('#projBtn').addEventListener('click', () => openDrawer('project'));
+$('#model').addEventListener('click', () => openDrawer('settings'));
+$('#closeDrawer').addEventListener('click', closeDrawer);
+$('#dCancel').addEventListener('click', closeDrawer);
+$('#veil').addEventListener('click', closeDrawer);
+
+$('#dSave').addEventListener('click', async () => {
+  const msg = $('#dMsg');
+  msg.className = 'msg';
+  msg.textContent = 'saving…';
+  $('#dSave').disabled = true;
+  try {
+    if (drawerMode === 'project'){
+      const typed = $('#fNewProj').value.trim();
+      const target = typed || $('#fProject').value;
+      const r = await fetch('/api/project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path: target }) });
+      const j = await r.json();
+      if (j.error) throw new Error(j.error);
+      await loadSettings();
+      msg.className = 'msg good';
+      msg.textContent = 'workspace → ' + j.current;
+      setTimeout(closeDrawer, 700);
+      return;
+    }
+
+    const body = {
+      provider: $('#fProvider').value,
+      model: $('#fModel').value.trim(),
+      baseUrl: $('#fBase').value.trim(),
+    };
+    const key = $('#fKey').value.trim();
+    if (key) body.apiKey = key;
+    const work = $('#fWork').value.trim();
+    if (work && work !== SETTINGS.workspace){
+      const pr = await fetch('/api/project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path: work }) });
+      const pj = await pr.json();
+      if (pj.error) throw new Error(pj.error);
+    }
+    const r = await fetch('/api/settings', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    await loadSettings();
+    msg.className = 'msg good';
+    msg.textContent = 'saved — next run uses ' + body.provider + ' / ' + (body.model || 'default');
+    setTimeout(closeDrawer, 700);
+  } catch (err) {
+    msg.className = 'msg err';
+    msg.textContent = String(err.message || err);
+  } finally {
+    $('#dSave').disabled = false;
+  }
+});
 
 function render(kind, p){
   switch(kind){
@@ -122,6 +391,9 @@ function render(kind, p){
       for (const s of p.steps || []) row('dim','  ' + (s.status==='completed'?'✓':s.status==='in_progress'?'▸':' ') + ' ' + esc(s.step));
       break;
     }
+    case 'checkpoint/file': row('warn','⟲ ' + esc(p.path) + '  (' + (p.after_size || 0) + ' B, undoable)'); break;
+    case 'approval/requested': row('warn','⚠ approval needed: ' + esc(p.reason || '')); break;
+    case 'approval/resolved': row(p.approved ? 'ok' : 'bad', (p.approved ? '✓ approved' : '✗ refused') + (p.auto ? ' (policy)' : '')); break;
     case 'session/compacted': row('warn','⟳ compacted: dropped ' + p.dropped_messages + ' msg(s), summary ~' + p.summary_chars + ' chars'); break;
     case 'artifact/emitted': row('ok','◆ artifact ' + esc(p.path) + '  ' + p.bytes + ' B'); break;
     case 'turn/end': row('step','turn end (' + p.stop_reason + ', ' + p.steps + ' steps)'); break;
@@ -157,13 +429,16 @@ function renderDeliverables(items, verifications){
 function attach(id){
   if (es) es.close();
   logEl.innerHTML = '';
+  delivEl.innerHTML = '';
   $('#sid').textContent = id;
   started = Date.now();
   es = new EventSource('/api/stream?session=' + encodeURIComponent(id));
-  for (const kind of ['turn/start','step/start','llm/request','llm/response','tool/call','tool/result','plan/updated','session/compacted','artifact/emitted','turn/end','answer','deliverables','done','error']){
+  for (const kind of ['turn/start','step/start','llm/request','llm/response','tool/call','tool/result','plan/updated',
+                      'checkpoint/file','approval/requested','approval/resolved','session/compacted','artifact/emitted',
+                      'turn/end','answer','deliverables','done','error']){
     es.addEventListener(kind, (e) => render(kind, JSON.parse(e.data)));
   }
-  es.onerror = () => { /* keep the stream; the browser retries */ };
+  es.onerror = () => { /* the browser retries */ };
 }
 
 async function openSession(id){
@@ -171,7 +446,7 @@ async function openSession(id){
   logEl.innerHTML = '';
   delivEl.innerHTML = '';
   const detail = await (await fetch('/api/session/' + id)).json();
-  started = Date.now() - 0;
+  started = Date.now();
   for (const ev of detail.events) render(ev.kind, ev.payload);
   if (detail.answer) render('answer', { text: detail.answer });
   render('deliverables', detail);
@@ -182,17 +457,29 @@ $('#run').addEventListener('submit', async (e) => {
   e.preventDefault();
   const task = $('#task').value.trim();
   if (!task) return;
+  if (!SETTINGS || (!SETTINGS.hasKey && SETTINGS.provider !== 'ollama' && SETTINGS.provider !== 'lmstudio' && SETTINGS.provider !== 'vllm')){
+    openDrawer('settings');
+    $('#dMsg').className = 'msg err';
+    $('#dMsg').textContent = 'pick a provider and paste a key first';
+    return;
+  }
   $('#go').disabled = true;
   try {
     const r = await fetch('/api/run', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ task }) });
     const j = await r.json();
     if (j.error){ row('bad', 'ERROR: ' + j.error); return; }
+    $('#task').value = '';
     attach(j.sessionId);
     boot();
   } finally {
     $('#go').disabled = false;
   }
 });
+
+$('#task').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) $('#run').requestSubmit();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
 
 boot();
 </script>

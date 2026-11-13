@@ -7,8 +7,13 @@
  */
 import http from 'node:http'
 import os from 'node:os'
+import pathMod from 'node:path'
+import { mkdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { Harness, EventStore, resolveProvider } from '@unit-harness/core'
+import {
+  Harness, EventStore, resolveProvider,
+  PROVIDERS, findProvider, maskKey, readConfig, writeConfig, setProviderEntry, workspaceDir,
+} from '@unit-harness/core'
 import UI from './ui.html'
 
 interface Subscriber {
@@ -23,6 +28,12 @@ export interface ServeOptions {
 }
 
 const subs = new Map<string, Set<Subscriber>>()
+
+/**
+ * 当前工作区。桌面端要能切项目，所以它不能是启动时定死的常量——
+ * 每次 run 都把它传给 Harness。刷新页面不丢（服务端内存），重启回到默认。
+ */
+let currentWorkspace = process.env.UH_WORKSPACE || workspaceDir()
 
 function broadcast(sessionId: string, kind: string, payload: Record<string, unknown>): void {
   const set = subs.get(sessionId)
@@ -86,12 +97,142 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         const p = await resolveProvider()
         model = `${p.def.id}/${p.model}`
       } catch { /* no model configured */ }
-      json(res, 200, { isolation, model, workspace: path_join_workspace() })
+      json(res, 200, { isolation, model, workspace: currentWorkspace })
       return
     }
 
     if (req.method === 'GET' && url.pathname === '/api/sessions') {
       json(res, 200, collectSessions())
+      return
+    }
+
+    // ---- 设置：换模型就是换 provider + key + model 三件事 -------------------
+    if (req.method === 'GET' && url.pathname === '/api/settings') {
+      const cfg = readConfig()
+      const active = cfg.defaultProvider ?? 'deepseek'
+      const entry = cfg.providers[active] ?? {}
+      const def = findProvider(active)
+      json(res, 200, {
+        provider: active,
+        model: entry.model ?? '',
+        baseUrl: entry.baseUrl ?? def?.baseUrl ?? '',
+        hasKey: Boolean(entry.apiKey),
+        keyMasked: entry.apiKey ? maskKey(entry.apiKey) : '',
+        modelHint: def?.modelHint ?? '',
+        protocol: def?.protocol ?? 'openai',
+        workspace: currentWorkspace,
+        // 前端拿这个列表画下拉框：不写死任何一家，加 provider 只改注册表
+        providers: PROVIDERS.map((p) => ({
+          id: p.id,
+          label: p.label,
+          protocol: p.protocol,
+          baseUrl: p.baseUrl,
+          envKey: p.envKey ?? '',
+          local: p.local === true,
+          keysUrl: p.keysUrl ?? '',
+          modelHint: p.modelHint ?? '',
+          configured: Boolean(cfg.providers[p.id]?.apiKey || cfg.providers[p.id]?.model),
+        })),
+      })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/settings') {
+      let body: { provider?: string; model?: string; baseUrl?: string; apiKey?: string; clearKey?: boolean } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty body */ }
+
+      const id = body.provider?.trim()
+      if (!id || !findProvider(id)) { json(res, 400, { error: 'unknown provider' }); return }
+
+      // key 只写不读：请求里带空串表示「不改」，clearKey 才是真删
+      const patch: Record<string, unknown> = {}
+      if (typeof body.model === 'string') patch.model = body.model.trim()
+      if (typeof body.baseUrl === 'string') patch.baseUrl = body.baseUrl.trim()
+      if (typeof body.apiKey === 'string' && body.apiKey.trim()) patch.apiKey = body.apiKey.trim()
+
+      if (Object.keys(patch).length > 0) setProviderEntry(id, patch as never)
+      if (body.clearKey) setProviderEntry(id, { apiKey: undefined } as never)
+
+      const cfg = readConfig()
+      cfg.defaultProvider = id
+      writeConfig(cfg)
+
+      json(res, 200, { ok: true, provider: id, model: patch.model ?? cfg.providers[id]?.model ?? '' })
+      return
+    }
+
+    // 这个 provider 到底有哪些模型 —— 只有配上 key 之后才问得出来
+    if (req.method === 'GET' && url.pathname === '/api/models') {
+      const id = url.searchParams.get('provider') ?? ''
+      const def = findProvider(id)
+      if (!def) { json(res, 400, { models: [], error: 'unknown provider' }); return }
+
+      const cfg = readConfig()
+      const entry = cfg.providers[id] ?? {}
+      const base = (entry.baseUrl ?? def.baseUrl).replace(/\/$/, '')
+      const key = entry.apiKey ?? process.env[def.envKey ?? ''] ?? ''
+
+      try {
+        const ctl = new AbortController()
+        const timer = setTimeout(() => ctl.abort(), 6000)
+        const res2 = await fetch(base + '/models', {
+          headers: key ? { authorization: `Bearer ${key}` } : {},
+          signal: ctl.signal,
+        })
+        clearTimeout(timer)
+        if (!res2.ok) { json(res, 200, { models: [], error: `HTTP ${res2.status}` }); return }
+        const data = (await res2.json()) as { data?: Array<{ id?: string }>; models?: Array<{ name?: string }> }
+        const models = (data.data ?? data.models ?? [])
+          .map((m) => (m as { id?: string; name?: string }).id ?? (m as { name?: string }).name ?? '')
+          .filter(Boolean)
+          .sort()
+        json(res, 200, { models })
+      } catch (err) {
+        json(res, 200, { models: [], error: err instanceof Error ? err.message : 'fetch failed' })
+      }
+      return
+    }
+
+    // ---- 项目（工作区）-----------------------------------------------------
+    if (req.method === 'GET' && url.pathname === '/api/projects') {
+      const store = new EventStore()
+      const seen = new Map<string, { path: string; sessions: number; lastUsed: string }>()
+      for (const m of store.list({ limit: 300 })) {
+        const ws = (m as { workspace?: string }).workspace
+        if (!ws) continue
+        const cur = seen.get(ws)
+        const when = m.updated_at || m.created_at
+        if (cur) {
+          cur.sessions++
+          if (when > cur.lastUsed) cur.lastUsed = when
+        } else {
+          seen.set(ws, { path: ws, sessions: 1, lastUsed: when })
+        }
+      }
+      const list = [...seen.values()].sort((a, b) => (a.lastUsed < b.lastUsed ? 1 : -1))
+      if (!seen.has(currentWorkspace)) {
+        list.unshift({ path: currentWorkspace, sessions: 0, lastUsed: new Date().toISOString() })
+      }
+      json(res, 200, { current: currentWorkspace, projects: list })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/project') {
+      let body: { path?: string } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const raw = (body.path ?? '').trim()
+      if (!raw) { json(res, 400, { error: 'path is empty' }); return }
+      const abs = raw.startsWith('~') ? pathMod.join(os.homedir(), raw.slice(1)) : raw
+      if (!abs.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(abs)) {
+        json(res, 400, { error: 'give an absolute path' }); return
+      }
+      try {
+        mkdirSync(abs, { recursive: true })
+      } catch (err) {
+        json(res, 400, { error: err instanceof Error ? err.message : 'cannot create that directory' }); return
+      }
+      currentWorkspace = abs
+      json(res, 200, { current: currentWorkspace })
       return
     }
 
@@ -105,6 +246,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       const h = new Harness({
         record: true,
         label: task.slice(0, 60),
+        workspace: currentWorkspace,
         // session 在 start() 里创建，所以这里先缓冲，拿到 id 后再推送
         onEvent: (kind, payload) => { if (sid) broadcast(sid, kind, payload) },
       })
@@ -197,10 +339,6 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     url: `http://${host}:${port}`,
     close: () => server.close(),
   }
-}
-
-function path_join_workspace(): string {
-  return process.env.UH_HOME ? `${process.env.UH_HOME}/work` : `${os.homedir()}/.uh/work`
 }
 
 /** 用系统默认浏览器打开；返回是否成功 */

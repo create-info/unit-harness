@@ -362,6 +362,20 @@ just what was allowed.
 > The web UI (`uh serve`) currently refuses dangerous actions rather than prompting —
 > there is no approval widget yet. That failure is loud, not silent.
 
+## Settings in the UI
+
+`uh serve` opens a page with the things you cannot guess from a terminal:
+
+- **Settings** — pick any of the twelve providers, paste a key, override the base URL,
+  and hit **List** to ask that provider what models it actually serves (`GET /models`
+  with your key; nothing is hardcoded, because model names retire every few months).
+  The key is written to `~/.uh/config.json` at 0600 and only ever shown masked.
+- **Project** — the workspace is the sandbox root. Switching it changes where runs
+  write; a path that does not exist is created.
+
+Both are plain local endpoints (`/api/settings`, `/api/projects`, `/api/models`), so
+the same controls work from the desktop shell, a browser, or `curl`.
+
 ## Where sessions live
 
 ```
