@@ -8,7 +8,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, statSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, statSync, existsSync, readdirSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -85,6 +85,20 @@ function startServer(env) {
     p.stderr.on('data', (d) => (log += d))
     setTimeout(() => reject(new Error('server did not start:\n' + log)), 15000)
   })
+}
+
+/** 走到像 YYYY/MM/DD/<sid> 的会话目录里读事件 */
+function sessionEvents(home) {
+  let dir = join(home, 'sessions')
+  for (let i = 0; i < 5; i++) {
+    const sub = readdirSync(dir)
+    if (sub.length === 0) return []
+    const next = join(dir, sub[0])
+    try { JSON.parse(readFileSync(join(next, 'meta.json'), 'utf8')); dir = next; break } catch { dir = next }
+  }
+  try {
+    return readFileSync(join(dir, 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+  } catch { return [] }
 }
 
 const get = async (p) => (await fetch('http://127.0.0.1:' + PORT + p)).json()
@@ -278,6 +292,72 @@ test('running without a usable model says so instead of pretending to start', as
     await post('/api/stop', { sessionId: r3.sessionId })
   } finally {
     srv.kill()
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('a note sent mid-run reaches the model at the next step', async () => {
+  // 桩：第一轮给一个慢命令，第二轮回看有没有带上插话
+  const seen = []
+  const llm = http.createServer((req, res) => {
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ id: 'mock' }] }))
+      return
+    }
+    let b = ''
+    req.on('data', (c) => (b += c))
+    req.on('end', () => {
+      const body = JSON.parse(b || '{}')
+      const steered = (body.messages || []).some((m) => /interrupted while you were working/.test(m.content || ''))
+      seen.push(steered)
+      const out = steered
+        ? { model: 'mock', choices: [{ message: { role: 'assistant', content: 'switched' }, finish_reason: 'stop' }], usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 } }
+        : {
+            model: 'mock',
+            choices: [{
+              message: {
+                role: 'assistant', content: '',
+                tool_calls: [{ id: 'c1', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ argv: ['node', '-e', 'setTimeout(() => {}, 2500)'] }) } }],
+              },
+              finish_reason: 'tool_calls',
+            }],
+            usage: { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 },
+          }
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(out))
+    })
+  })
+  await new Promise((r) => llm.listen(0, '127.0.0.1', r))
+  const port = llm.address().port
+
+  const home = mkdtempSync(join(tmpdir(), 'uh-steer-'))
+  mkdirSync(join(home, 'work'), { recursive: true })
+  const srv = await startServer({ ...process.env, UH_HOME: home, UH_BASE_URL: `http://127.0.0.1:${port}/v1`, UH_MODEL: 'mock' })
+  try {
+    await post('/api/settings', { provider: 'deepseek', model: 'mock', apiKey: 'sk-x' })
+    const { sessionId } = await post('/api/run', { task: 'do something long' })
+    await waitFor(sessionId, 'tool/call')
+
+    const queued = await post('/api/steer', { sessionId, text: 'use tabs not spaces' })
+    assert.equal(queued.ok, true, 'a running session must accept a note')
+
+    // 第二轮请求必须带上这句话
+    const deadline = Date.now() + 15000
+    while (Date.now() < deadline && !seen.some(Boolean)) await new Promise((r) => setTimeout(r, 200))
+    assert.equal(seen.some(Boolean), true, 'the note must reach the model')
+
+    const evs = sessionEvents(home).filter((e) => e.kind === 'steering/message')
+    assert.equal(evs.length, 2, 'queued then applied')
+    assert.equal(evs[0].payload.status, 'queued')
+    assert.equal(evs[1].payload.status, 'applied')
+
+    // 跑完之后再发：必须说清楚，不能假装收下了
+    const late = await post('/api/steer', { sessionId, text: 'too late' })
+    assert.ok(late.error, 'steering a finished run must not silently succeed')
+  } finally {
+    srv.kill()
+    llm.close()
     rmSync(home, { recursive: true, force: true })
   }
 })

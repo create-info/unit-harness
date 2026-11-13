@@ -53,7 +53,9 @@ export interface AgentDeps {
   writeFile: (rel: string, content: string) => void
   deleteFile: (rel: string) => void
   ev: (
-    kind: 'turn/start' | 'turn/end' | 'step/start' | 'step/end' | 'plan/updated' | 'tool/call' | 'tool/result' | 'session/compacted',
+    kind:
+      | 'turn/start' | 'turn/end' | 'step/start' | 'step/end' | 'plan/updated'
+      | 'tool/call' | 'tool/result' | 'session/compacted' | 'steering/message',
     payload: Record<string, unknown>,
   ) => string | null
   log: (msg: string) => void
@@ -67,6 +69,14 @@ export interface AgentDeps {
   maxContextTokens?: number
   /** 可用的 skills（正文按需加载） */
   skills?: Skill[]
+  /**
+   * 取走这期间用户追加的指令。
+   *
+   * 每步开头取一次，取到的当成一条新的用户消息插进去——不是改原来的任务，
+   * 是「在它干活的时候插话」。放在 step 边界而不是工具执行中间，是因为
+   * 半路改消息会让这次工具调用的上下文对不上，日志也不好读。
+   */
+  drainSteer?: () => string[]
 }
 
 export interface RunResult {
@@ -468,8 +478,19 @@ export async function runAgent(
     // 半路硬切会让事件日志停在「调用了但没结果」的状态。
     if (opts.signal?.aborted) { stoppedBy = 'interrupted'; break }
     if (Date.now() > deadline) { stoppedBy = 'timeout'; break }
+    // 用户插话：在 step 边界接上。取走而不是 peek，避免同一句被插两遍
+    const steers = deps.drainSteer?.() ?? []
+    for (const text of steers) {
+      messages.push({
+        role: 'user',
+        content: `[the user interrupted while you were working] ${text}`,
+      })
+      deps.ev('steering/message', { text: text.slice(0, 200), status: 'applied' })
+    }
+    if (steers.length > 0) lastText = ''
+
     steps++
-    deps.ev('step/start', { step_index: steps, turn_index: 1 })
+    deps.ev('step/start', { step_index: steps, turn_index: 1, ...(steers.length ? { steered: steers.length } : {}) })
 
     let res: CompletionResult
     try {

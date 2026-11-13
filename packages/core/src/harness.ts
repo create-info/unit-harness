@@ -163,6 +163,8 @@ export class Harness {
 
   /** 中断：Ctrl+C 走这里，而不是直接杀进程 */
   private readonly abortCtl = new AbortController()
+  /** 用户在工作期间插的话，等下一个 step 边界交给模型 */
+  private readonly steerQueue: string[] = []
 
   /** hooks 配置：每次 run 前重新读，改配置不用重启 */
   private hooks: HookConfig = {}
@@ -229,6 +231,21 @@ export class Harness {
   }
 
   /** 请求中断（可重入：已中断时无副作用） */
+  /**
+   * 运行中追加指令。
+   *
+   * 不打断正在跑的步骤：排队，到下一个 step 边界才交给模型。这样已经发出的
+   * 工具调用能正常收尾（事件日志不会停在「调用了但没结果」），而人看到走偏时
+   * 仍然能立刻说一句，不用等它跑完再重来。
+   */
+  steer(text: string): boolean {
+    const t = text.trim()
+    if (!t) return false
+    this.steerQueue.push(t)
+    this.ev('steering/message', { text: t.slice(0, 200), status: 'queued' })
+    return true
+  }
+
   abort(): void {
     if (!this.abortCtl.signal.aborted) this.abortCtl.abort()
   }
@@ -811,6 +828,9 @@ export class Harness {
     const agentDeps: AgentDeps = {
         workspace: this.workspace,
         system: sys,
+        // 每步边界取走积压的插话。放在 step 而不是工具执行中间：半路改消息
+        // 会让正在进行的工具调用上下文对不上，日志也读不懂
+        drainSteer: () => this.steerQueue.splice(0),
         gateway,
         tools: this.tools,
         runCommand: async (a) => {

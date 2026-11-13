@@ -64,11 +64,41 @@ export function spillToBlob(sessionDir: string, content: string): string {
 }
 
 /** 把一条记录变成事件 payload：小就内联，大就外置 */
+/**
+ * 这个文件加了几行、删了几行。
+ *
+ * 用多重集差而不是真 diff：汇总行只要「大概动了多少」，而 LCS 在几千行的文件上
+ * 会把事件记录拖慢。同一个文件里增减一样多的行会互相抵消——但那本来也就叫「改动不大」，
+ * 想看清楚的人点开卡片看逐行对比。
+ */
+function lineStats(before: string | null, after: string | null): { added: number; removed: number } {
+  const split = (v: string | null): string[] | null => (v === null ? null : v.split('\n'))
+  const a = split(before)
+  const b = split(after)
+  if (a === null) return { added: b?.length ?? 0, removed: 0 }
+  if (b === null) return { added: 0, removed: a.length }
+  const counts = new Map<string, number>()
+  for (const line of a) counts.set(line, (counts.get(line) ?? 0) + 1)
+  let added = 0
+  for (const line of b) {
+    const n = counts.get(line) ?? 0
+    if (n > 0) counts.set(line, n - 1)
+    else added++
+  }
+  let removed = 0
+  for (const n of counts.values()) removed += n
+  return { added, removed }
+}
+
 export function toPayload(edit: FileEdit, sessionDir: string | null): Record<string, unknown> {
+  const delta = lineStats(edit.before, edit.after)
   const payload: Record<string, unknown> = {
     path: edit.path,
     binary: edit.binary,
     too_large: edit.tooLarge,
+    // 前端要靠这个画「+123 −45」和文件汇总，不能每次都去算 diff
+    added: delta.added,
+    removed: delta.removed,
   }
 
   const put = (side: 'before' | 'after', value: string | null): void => {
