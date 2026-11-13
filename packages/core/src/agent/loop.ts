@@ -570,7 +570,12 @@ export async function runAgent(
         ...(deps.onReasoning ? { onReasoning: deps.onReasoning } : {}),
       })
     } catch (err) {
-      deps.ev('step/end', { step_index: steps, status: 'error', error: err instanceof Error ? err.message : String(err) })
+      const msg = err instanceof Error ? err.message : String(err)
+      deps.ev('step/end', { step_index: steps, status: 'error', error: msg })
+      // 必须补 turn/end 再抛。turn/start 已经写进日志了，只 throw 的话这一轮
+      // 在回放里永远是"开始了、没结束"——和 tool/call 没有 tool/result 一样，
+      // 审计链断在半空，事后分不清是失败了还是进程被杀了。
+      deps.ev('turn/end', { turn_index: 1, steps, stop_reason: 'error', error: msg.slice(0, 500), usage })
       throw err
     }
 
