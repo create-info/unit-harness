@@ -16,6 +16,7 @@ import {
   EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey,
   readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig,
 } from '@unit-harness/core'
+import { loadMcpServers, discoverSkills } from '@unit-harness/core'
 import type { ApprovalGate, ApprovalRequest } from '@unit-harness/core'
 import UI from './ui.html'
 
@@ -569,6 +570,55 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       cfg.sandbox = cur
       writeConfig(cfg)
       json(res, 200, { ok: true, sandbox: sandboxPrefs() })
+      return
+    }
+
+    // 插件页：把我们真实有的三类东西摊开——MCP server、技能、钩子。
+    // 不假装有 Gmail/Calendar 那种应用，列表里有什么就是真能用的什么。
+    if (req.method === 'GET' && url.pathname === '/api/plugins') {
+      const cwd = currentWorkspace
+      const mcp = loadMcpServers(cwd)
+      const skills = discoverSkills(cwd)
+      const disabled = new Set(readConfig().disabledPlugins ?? [])
+      const hooks = readConfig().hooks ?? {}
+
+      json(res, 200, {
+        mcp: Object.entries(mcp.servers).map(([name, cfg]) => ({
+          id: name,
+          name,
+          // stdio 说命令，http 说地址——"它到底是什么"要在列表里看得见
+          command: cfg.command ? [cfg.command, ...(cfg.args ?? [])].join(' ') : '',
+          url: cfg.url ?? '',
+          transport: cfg.url ? 'http' : 'stdio',
+          enabled: !disabled.has('mcp:' + name),
+        })),
+        skills: skills.map((s) => ({
+          id: s.name,
+          name: s.name,
+          description: s.description ?? '',
+          allowedTools: s.allowedTools ?? [],
+          scripts: (s.scripts ?? []).map((x) => x.rel),
+          scope: s.root ?? '',
+          enabled: !disabled.has('skill:' + s.name),
+        })),
+        hooks: Object.keys(hooks).map((k) => ({ id: 'hook:' + k, name: k, enabled: !disabled.has('hook:' + k) })),
+        sources: mcp.sources,
+        counts: { mcp: Object.keys(mcp.servers).length, skills: skills.length, hooks: Object.keys(hooks).length },
+      })
+      return
+    }
+
+    // 开关：启停是持久化的，不是这一次会话的临时状态
+    if (req.method === 'POST' && url.pathname === '/api/plugins/toggle') {
+      const body = JSON.parse(await readBody(req) || '{}') as { id?: string; enabled?: boolean }
+      if (!body.id) { json(res, 400, { error: 'id required' }); return }
+      const cfg = readConfig()
+      const set = new Set(cfg.disabledPlugins ?? [])
+      if (body.enabled === false) set.add(body.id)
+      else set.delete(body.id)
+      cfg.disabledPlugins = [...set]
+      writeConfig(cfg)
+      json(res, 200, { ok: true, disabled: cfg.disabledPlugins })
       return
     }
 

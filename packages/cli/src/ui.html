@@ -21,6 +21,26 @@
     --okbg:#1f4a3a; --badbg:#4a2020; --warnbg:#54431f;
   }
   :root[data-font="mono"] body{font-family:var(--mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
+  .phead{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+  .ptabs{display:flex;gap:2px;flex:1 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none}
+  .ptab{background:transparent;border:none;color:var(--dim);font-size:12.5px;padding:6px 10px;border-radius:7px;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap;flex:0 0 auto}
+  .ptab:hover{background:var(--hover);color:var(--fg)}
+  .ptab.on{background:var(--hover);color:var(--fg);font-weight:500}
+  .ptab i{font-style:normal;font-size:10.5px;color:var(--dim);background:var(--soft);border-radius:5px;padding:0 5px}
+  .psearch{flex:1 1 130px;min-width:120px;max-width:220px;background:var(--input);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:6px 10px;font-size:12px;outline:none}
+  .psearch:focus{border-color:var(--hoverline)}
+  .plist{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel)}
+  .prow{display:flex;align-items:center;gap:11px;padding:11px 13px;border-bottom:1px solid var(--line);flex-wrap:nowrap}
+  .prow:last-child{border-bottom:none}
+  .prow:hover{background:var(--hover)}
+  .picon{width:28px;height:28px;flex:0 0 28px;border-radius:7px;background:var(--soft);color:var(--fg);
+    display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:600}
+  .ptxt{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .ptxt b{font-size:12.5px;font-weight:500;color:var(--fg)}
+  .ptxt i{font-style:normal;font-size:11.5px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ptag{flex:0 0 auto;font-size:10.5px;color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 6px;white-space:nowrap}
+  .pempty{padding:26px 14px;text-align:center;color:var(--dim);font-size:12px;line-height:1.8}
+  .pempty code{background:var(--hover);padding:1px 5px;border-radius:4px;font-size:11px}
   .modes{display:flex;gap:10px}
   .modecard{display:flex;flex-direction:column;align-items:center;gap:7px;padding:8px;background:transparent;
     border:1.5px solid var(--line);border-radius:10px;cursor:pointer;color:var(--dim);font-size:11.5px}
@@ -189,12 +209,12 @@
   #setModal{position:fixed;inset:0;display:none;background:rgba(0,0,0,.55);z-index:24;align-items:center;justify-content:center}
   #setModal.on{display:flex}
   .setwrap{width:min(1040px,96vw);height:min(760px,92vh);background:var(--panel);border:1px solid var(--line);border-radius:12px;display:flex;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.65)}
-  .setnav{width:214px;flex:0 0 214px;border-right:1px solid var(--line);background:#0f1319;padding:12px 8px;overflow:auto}
+  .setnav{width:214px;flex:0 0 214px;border-right:1px solid var(--line);background:var(--panel);padding:12px 8px;overflow:auto}
   .setsearch input{width:100%;background:var(--input);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 9px;font-size:11.5px;outline:none;margin-bottom:10px}
   .setsearch input:focus{border-color:var(--hoverline)}
   .setgrp{font-size:10px;color:var(--soft);text-transform:uppercase;letter-spacing:.08em;padding:10px 10px 5px}
   .setitem{padding:6px 10px;border-radius:6px;font-size:12.5px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:8px}
-  .setitem:hover{background:#181d25;color:var(--fg)}
+  .setitem:hover{background:var(--hover);color:var(--fg)}
   .setitem.cur{background:var(--hover);color:var(--fg)}
   .setitem.cur::before{content:'';width:3px;height:13px;border-radius:2px;background:var(--accent);margin-left:-10px;margin-right:7px}
   .ustat{display:flex;gap:26px;flex-wrap:wrap;margin:4px 0 18px}
@@ -350,6 +370,9 @@
       <div class="setitem" data-p="general">常规</div>
       <div class="setitem" data-p="model">模型</div>
       <div class="setitem" data-p="sandbox">沙箱</div>
+      <div class="setgrp">集成</div>
+      <div class="setitem" data-p="plugins">插件</div>
+      <div class="setitem" data-p="computer">电脑操控</div>
       <div class="setgrp">Data</div>
       <div class="setitem" data-p="storage">存储</div>
       <div class="setitem" data-p="usage">用量</div>
@@ -664,7 +687,11 @@ $('#projBtn').addEventListener('click', () => openDrawer());
 $('#model').addEventListener('click', () => openSettings('model'));
 $('#setClose').addEventListener('click', () => $('#setModal').classList.remove('on'));
 for (const it of document.querySelectorAll('.setitem')) {
-  it.addEventListener('click', () => { SETPAGE = it.dataset.p; renderSettings(); });
+  it.addEventListener('click', async () => {
+    SETPAGE = it.dataset.p;
+    if (SETPAGE === 'plugins') await loadPlugins();
+    renderSettings();
+  });
 }
 $('#setModal').addEventListener('click', (e) => { if (e.target.id === 'setModal') $('#setModal').classList.remove('on'); });
 $('#modelPick').addEventListener('click', (e) => { e.stopPropagation(); openModelMenu(); });
@@ -799,6 +826,18 @@ function openApprovalMenu(){
  * 「允许读 home」比「allowHome」有用得多，因为前者能让人想到 .ssh。
  */
 let SETPAGE = 'general';
+let PLUGINS = null;        // /api/plugins 的快照
+let PTAB = 'all';          // 全部 / MCP / 技能 / 钩子
+let PFIND = '';            // 搜索框内容
+
+async function loadPlugins() {
+  try {
+    PLUGINS = await fetch('/api/plugins').then((r) => r.json());
+  } catch {
+    PLUGINS = { mcp: [], skills: [], hooks: [], counts: {} };
+  }
+  return PLUGINS;
+}
 
 const srow = (title, desc, ctrl) => ({ title, desc, ctrl });
 /** section() 要的是元素，不是字符串；这个把一小段 HTML 变成节点 */
@@ -863,6 +902,7 @@ function setMsg(text, bad) {
 
 async function openSettings(page) {
   SETPAGE = page || SETPAGE;
+  if (SETPAGE === 'plugins' && !PLUGINS) await loadPlugins();
   $('#setModal').classList.add('on');
   await loadSettings();
   await loadAccount();
@@ -881,6 +921,86 @@ function renderSettings() {
   body.innerHTML = '';
   const S = SETTINGS || {};
   const SB = S.sandbox || {};
+
+  if (SETPAGE === 'plugins') {
+    const P = PLUGINS || { mcp: [], skills: [], hooks: [], counts: {} };
+    const kinds = [
+      ['all', '全部', (P.mcp || []).length + (P.skills || []).length + (P.hooks || []).length],
+      ['mcp', 'MCP', (P.mcp || []).length],
+      ['skills', '技能', (P.skills || []).length],
+      ['hooks', '钩子', (P.hooks || []).length],
+    ];
+    const box = el('<div class="phead"></div>');
+    box.appendChild(el('<div class="ptabs">'
+      + kinds.map(([k, label, n]) =>
+          '<button class="ptab' + (PTAB === k ? ' on' : '') + '" data-k="' + k + '">'
+          + esc(label) + '<i>' + n + '</i></button>').join('')
+      + '</div>'));
+    const search = el('<input class="psearch" id="pFind" placeholder="搜索插件" spellcheck="false">');
+    search.value = PFIND;
+    box.appendChild(search);
+    body.appendChild(box);
+
+    const rows = [];
+    const q = PFIND.trim().toLowerCase();
+    const hit = (t) => !q || String(t).toLowerCase().includes(q);
+    if (PTAB === 'all' || PTAB === 'mcp') {
+      for (const m of P.mcp || []) {
+        if (!hit(m.name + ' ' + m.command + ' ' + m.url)) continue;
+        rows.push({ id: m.id, name: m.name, desc: m.url || m.command || m.transport, tag: m.transport, enabled: m.enabled });
+      }
+    }
+    if (PTAB === 'all' || PTAB === 'skills') {
+      for (const k of P.skills || []) {
+        if (!hit(k.name + ' ' + k.description)) continue;
+        rows.push({ id: k.id, name: k.name, desc: k.description || '（没有描述）', tag: '技能', enabled: k.enabled });
+      }
+    }
+    if (PTAB === 'all' || PTAB === 'hooks') {
+      for (const h of P.hooks || []) {
+        if (!hit(h.name)) continue;
+        rows.push({ id: h.id, name: h.name, desc: '钩子', tag: '钩子', enabled: h.enabled });
+      }
+    }
+
+    if (!rows.length) {
+      body.appendChild(el('<div class="pempty">'
+        + ((P.mcp || []).length + (P.skills || []).length + (P.hooks || []).length
+            ? '没有匹配的项。'
+            : '还没有任何插件。MCP server 写在 <code>~/.uh/mcp.json</code>，技能放在项目或 <code>~/.uh/skills</code>。')
+        + '</div>'));
+    } else {
+      const list = el('<div class="plist"></div>');
+      for (const r of rows) {
+        const row = el('<div class="prow"><span class="picon">' + esc((r.name[0] || '?').toUpperCase()) + '</span>'
+          + '<span class="ptxt"><b>' + esc(r.name) + '</b><i>' + esc(r.desc) + '</i></span>'
+          + '<span class="ptag">' + esc(r.tag) + '</span></div>');
+        row.appendChild(toggle(r.enabled, async (on) => {
+          await fetch('/api/plugins/toggle', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: r.id, enabled: on }),
+          });
+          await loadPlugins();
+          renderSettings();
+        }));
+        list.appendChild(row);
+      }
+      body.appendChild(list);
+    }
+
+    for (const b of box.querySelectorAll('.ptab')) {
+      b.onclick = () => { PTAB = b.dataset.k; renderSettings(); };
+    }
+    const find = body.querySelector('#pFind');
+    if (find) {
+      find.oninput = () => {
+        PFIND = find.value;
+        // 只有搜索框内容变了才重画列表：整个重画会把焦点弄丢
+        clearTimeout(find._t);
+        find._t = setTimeout(() => { const v = find.value; renderSettings(); const n = document.querySelector('#pFind'); if (n) { n.value = v; n.focus(); } }, 200);
+      };
+    }
+  }
 
   if (SETPAGE === 'appearance') {
     const UI = S.ui || {};
