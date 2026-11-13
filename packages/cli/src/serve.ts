@@ -9,6 +9,8 @@ import http from 'node:http'
 import os from 'node:os'
 import pathMod from 'node:path'
 import { mkdirSync } from 'node:fs'
+import fs6 from 'node:fs'
+import { uhHome } from '@unit-harness/core'
 import { spawn } from 'node:child_process'
 import {
   Harness, EventStore, resolveProvider,
@@ -36,6 +38,95 @@ const subs = new Map<string, Set<Subscriber>>()
  */
 let currentWorkspace = process.env.UH_WORKSPACE || workspaceDir()
 
+/**
+ * 审批档位，抄 Codex 的三档（AskForApproval）：
+ *
+ *   ask    每个需要批准的动作都问（默认）
+ *   auto   「帮我批准」：只有 destructive 才问，沙箱兜不住的写自动过
+ *   allow  「完全访问」：不问。只该在你知道自己在干什么时打开
+ *
+ * 默认 ask 而不是 allow：装插件、跑陌生仓库时，静默执行破坏性命令是最贵的错。
+ */
+export type ApprovalMode = 'ask' | 'auto' | 'allow'
+
+/**
+ * 项目显示名：路径 → 名字。
+ *
+ * 路径是真相，名字只是左栏上的标签。分开存是因为「重命名项目」不该动文件系统——
+ * 在 Codex 里也是这个意思：项目名是人给的别名，源文件夹才是它跑的地方。
+ */
+function projectNamesFile(): string {
+  return pathMod.join(uhHome(), 'projects.json')
+}
+
+function readProjectNames(): Record<string, string> {
+  try { return JSON.parse(fs6.readFileSync(projectNamesFile(), 'utf8')) as Record<string, string> } catch { return {} }
+}
+
+function writeProjectName(path: string, name: string): void {
+  const names = readProjectNames()
+  if (name.trim()) names[path] = name.trim()
+  else delete names[path]
+  fs6.mkdirSync(pathMod.dirname(projectNamesFile()), { recursive: true })
+  fs6.writeFileSync(projectNamesFile(), JSON.stringify(names, null, 2) + '\n', { mode: 0o600 })
+}
+
+function approvalMode(): ApprovalMode {
+  const m = readConfig().approval
+  return m === 'auto' || m === 'allow' ? m : 'ask'
+}
+
+/**
+ * UnitAI 账号。
+ *
+ * 登录走的是「浏览器里已经登录 → 复制令牌 → 粘进来」这条路，而不是在自己的壳里
+ * 复刻一遍手机验证码 + 图形滑块：滑块是 go-captcha 的 2D 拼图，x/y 都要对（容差 6px），
+ * 我们这边没有配套的 React 组件，硬凑一套只会让登录比不改还难用。
+ *
+ * 令牌就是网页的 aw_auth_token（unitai.site/mcp 页面上直接能复制），有效期 30 天、
+ * 不续期——所以要把它读出来显示，别让人某天突然被踢下线还找不到原因。
+ * 存在 ~/.uh/account.json，0600，不进事件日志。
+ */
+const UNITAI_BASE = process.env.UH_UNITAI_BASE || 'https://unitai.site'
+
+function accountFile(): string {
+  return pathMod.join(uhHome(), 'account.json')
+}
+
+function readAccountToken(): string {
+  try {
+    const raw = JSON.parse(fs6.readFileSync(accountFile(), 'utf8')) as { token?: string }
+    return raw.token ?? ''
+  } catch { return '' }
+}
+
+function writeAccountToken(token: string): void {
+  fs6.mkdirSync(pathMod.dirname(accountFile()), { recursive: true })
+  fs6.writeFileSync(accountFile(), JSON.stringify({ token }, null, 2) + '\n', { mode: 0o600 })
+  try { fs6.chmodSync(accountFile(), 0o600) } catch { /* windows */ }
+}
+
+async function unitai(path: string, token: string, init?: RequestInit): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const ctl = new AbortController()
+  const timer = setTimeout(() => ctl.abort(), 12000)
+  try {
+    const r = await fetch(UNITAI_BASE + path, {
+      ...init,
+      headers: {
+        ...(init?.headers ?? {}),
+        ...(token ? { authorization: 'Bearer ' + token } : {}),
+      },
+      signal: ctl.signal,
+    })
+    const text = await r.text()
+    let body: unknown = text
+    try { body = JSON.parse(text) } catch { /* keep text */ }
+    return { ok: r.ok, status: r.status, body }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** 正在跑的 harness，`POST /api/stop` 要能找到它 */
 const running = new Map<string, Harness>()
 
@@ -59,6 +150,13 @@ const pendingInfo = new Map<string, { sid: string; payload: Record<string, unkno
 function makeWebGate(sidRef: { id: string }): ApprovalGate {
   return {
     async request(req: ApprovalRequest) {
+      const mode = approvalMode()
+      // 完全访问：不问。事件里仍然记一条 auto，否则事后没法解释「为什么它自己跑了」
+      if (mode === 'allow') return 'allow'
+      // 帮我批准：只拦真正不可逆的。沙箱兜不住的写入让它写——每装一个包点一次 y
+      // 只会训练人闭眼按同意，那是把审批做成仪式
+      if (mode === 'auto' && req.risk !== 'destructive') return 'allow'
+
       const id = 'apr_' + Math.random().toString(36).slice(2, 10)
       const payload = {
         id,
@@ -161,6 +259,58 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       return
     }
 
+    // ---- 账号 --------------------------------------------------------------
+    if (req.method === 'GET' && url.pathname === '/api/account') {
+      const token = readAccountToken()
+      if (!token) { json(res, 200, { signedIn: false, unitai: UNITAI_BASE }); return }
+      try {
+        const r = await unitai('/api/auth/me', token)
+        if (!r.ok) {
+          json(res, 200, { signedIn: false, unitai: UNITAI_BASE, expired: true })
+          return
+        }
+        const b = r.body as { user?: Record<string, unknown>; membership?: unknown; email?: string }
+        json(res, 200, {
+          signedIn: true,
+          unitai: UNITAI_BASE,
+          user: b.user ?? {},
+          membership: b.membership ?? null,
+          email: b.email ?? '',
+        })
+      } catch (err) {
+        // 断网时不要把人踢下线：令牌还在，只是这次问不到
+        json(res, 200, { signedIn: true, unitai: UNITAI_BASE, offline: true, error: err instanceof Error ? err.message : 'unreachable' })
+      }
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/account/token') {
+      let body: { token?: string } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const token = (body.token ?? '').trim()
+      if (!token) { json(res, 400, { error: 'paste the token from ' + UNITAI_BASE + '/mcp' }); return }
+
+      const r = await unitai('/api/auth/me', token)
+      if (!r.ok) {
+        json(res, 400, {
+          error: r.status === 401
+            ? 'that token was rejected — it may have expired (they last 30 days)'
+            : 'unitai.site answered ' + r.status,
+        })
+        return
+      }
+      writeAccountToken(token)
+      const b = r.body as { user?: Record<string, unknown>; membership?: unknown }
+      json(res, 200, { ok: true, user: b.user ?? {}, membership: b.membership ?? null })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/account/logout') {
+      try { fs6.unlinkSync(accountFile()) } catch { /* already gone */ }
+      json(res, 200, { ok: true })
+      return
+    }
+
     // ---- 设置：换模型就是换 provider + key + model 三件事 -------------------
     if (req.method === 'GET' && url.pathname === '/api/settings') {
       const cfg = readConfig()
@@ -175,6 +325,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         keyMasked: entry.apiKey ? maskKey(entry.apiKey) : '',
         modelHint: def?.modelHint ?? '',
         protocol: def?.protocol ?? 'openai',
+        approval: approvalMode(),
         workspace: currentWorkspace,
         // 前端拿这个列表画下拉框：不写死任何一家，加 provider 只改注册表
         providers: PROVIDERS.map((p) => ({
@@ -189,6 +340,18 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
           configured: Boolean(cfg.providers[p.id]?.apiKey || cfg.providers[p.id]?.model),
         })),
       })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/approval') {
+      let body: { mode?: string } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const m = body.mode
+      if (m !== 'ask' && m !== 'auto' && m !== 'allow') { json(res, 400, { error: 'mode must be ask, auto or allow' }); return }
+      const cfg = readConfig()
+      cfg.approval = m
+      writeConfig(cfg)
+      json(res, 200, { ok: true, approval: m })
       return
     }
 
@@ -270,8 +433,10 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       }
 
       // 每个项目挂自己的会话：左栏要画「项目 → 会话」两级，一个请求拿全
+      const names = readProjectNames()
       const withItems = list.map((p) => ({
         ...p,
+        name: names[p.path] || '',
         items: collectSessions(p.path).slice(0, 30).map((s) => ({
           id: s.id, label: s.label, created: s.created, events: s.events,
         })),
@@ -281,7 +446,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     }
 
     if (req.method === 'POST' && url.pathname === '/api/project') {
-      let body: { path?: string } = {}
+      let body: { path?: string; name?: string } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
       const raw = (body.path ?? '').trim()
       if (!raw) { json(res, 400, { error: 'path is empty' }); return }
@@ -295,7 +460,8 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         json(res, 400, { error: err instanceof Error ? err.message : 'cannot create that directory' }); return
       }
       currentWorkspace = abs
-      json(res, 200, { current: currentWorkspace })
+      if (typeof body.name === 'string') writeProjectName(abs, body.name)
+      json(res, 200, { current: currentWorkspace, name: readProjectNames()[abs] || '' })
       return
     }
 

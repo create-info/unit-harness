@@ -30,7 +30,19 @@
   .modelbtn:hover{border-color:#35507a}
   .modelbtn.bad{color:var(--bad);border-color:#4a2020}
   .modelbtn .caret{color:var(--dim);font-size:9px}
-  .mbdim{color:#4d5769;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .appr{display:flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:7px;padding:4px 9px;cursor:pointer;font-size:11.5px}
+  .appr:hover{border-color:#35507a;color:var(--fg)}
+  .appr.full{color:var(--bad);border-color:#4a2020}
+  .appr.auto{color:var(--warn);border-color:#54431f}
+  #apMenu{position:absolute;bottom:96px;left:20px;min-width:290px;background:var(--panel);border:1px solid var(--line);border-radius:9px;box-shadow:0 8px 28px rgba(0,0,0,.5);display:none;z-index:6;padding:5px}
+  #apMenu.on{display:block}
+  .apm{display:flex;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;align-items:flex-start}
+  .apm:hover{background:#1d232c}
+  .apm.cur{background:#1d232c}
+  .apm .ic{font-size:14px;line-height:1.2}
+  .apm .tx b{display:block;font-size:12px;font-weight:500;color:var(--fg)}
+  .apm .tx i{display:block;font-style:normal;font-size:11px;color:var(--dim);margin-top:2px;line-height:1.45}
+  .mbdim{color:#4d5569;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #search{width:calc(100% - 20px);margin:4px 10px 8px;background:#0c0f14;border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 9px;font:11.5px var(--mono);outline:none}
   #search:focus{border-color:#35507a}
   .newchat{display:flex;align-items:center;gap:7px;width:calc(100% - 20px);margin:10px 10px 2px;padding:7px 10px;background:#1d232c;border:1px solid var(--line);border-radius:7px;color:var(--fg);font-size:12px;cursor:pointer}
@@ -66,6 +78,25 @@
   .sess b{display:block;color:var(--fg);font-weight:500;font-size:12px}
   .side-foot{border:0;border-top:1px solid var(--line);background:transparent;color:var(--dim);text-align:left;padding:11px 18px;cursor:pointer;font-size:12px}
   .side-foot:hover{color:var(--fg);background:#1a1f27}
+  .account{border-top:1px solid var(--line);padding:9px 12px;display:flex;align-items:center;gap:8px;cursor:pointer;font-size:11.5px;color:var(--dim)}
+  .account:hover{background:#1a1f27;color:var(--fg)}
+  .account .av{width:21px;height:21px;border-radius:50%;background:#2a3240;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--fg);flex:0 0 21px}
+  .account .who{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .account .who b{display:block;color:var(--fg);font-weight:500;font-size:11.5px}
+  .account .who i{font-style:normal;font-size:10px;color:var(--dim)}
+  .account .mem{font-size:9.5px;border:1px solid #54431f;color:var(--warn);border-radius:999px;padding:1px 6px}
+  .account .mem.free{border-color:var(--line);color:var(--dim)}
+  #loginModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.6);z-index:22}
+  #loginModal.on{display:flex}
+  .lgcard{width:460px;max-width:94vw;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .lgbody{padding:18px;font-size:12.5px}
+  .lgbody p{margin:0 0 12px;color:var(--dim);line-height:1.6}
+  .lgbody code{background:#0c0f14;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:11px;color:var(--fg)}
+  .lgbody input{width:100%;background:#0c0f14;color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:9px 11px;font:12px var(--mono);outline:none}
+  .lgbody input:focus{border-color:#35507a}
+  .lgfoot{border-top:1px solid var(--line);padding:11px 18px;display:flex;gap:8px;align-items:center}
+  .lgfoot .msg{flex:1;font-size:11.5px;color:var(--dim)}
+  .lgfoot .msg.err{color:var(--bad)}
   main{flex:1;display:flex;flex-direction:column;min-width:0}
   header{padding:12px 20px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;font-size:12px;color:var(--dim)}
   header .brand{color:var(--fg);font-weight:600;letter-spacing:.02em}
@@ -130,6 +161,7 @@
   <h1>Projects <button class="icon" id="projBtn" title="Add or switch project">+</button></h1>
   <div id="sessions"></div>
   <button class="side-foot" id="settingsBtn">⚙ Settings · model &amp; keys</button>
+  <div class="account" id="accountRow"></div>
 </aside>
 <main>
   <header>
@@ -143,6 +175,7 @@
   <footer>
     <div class="modelbar">
       <button class="modelbtn" id="modelPick" title="Switch model"><span id="mpName">no model</span><span class="caret">▾</span></button>
+      <button class="appr" id="apprBtn" title="How runs are approved"><span id="apprIco">🛡</span><span id="apprName">Request approval</span></button>
       <span class="mbdim" id="mpWork"></span>
     </div>
     <form id="run">
@@ -153,6 +186,22 @@
   </footer>
 </main>
 
+<div id="loginModal">
+  <div class="lgcard">
+    <div class="dhead"><b>Sign in to UnitAI</b><button class="icon" id="lgClose">✕</button></div>
+    <div class="lgbody" id="lgBody">
+      <p>Open <code id="lgUrl">unitai.site/mcp</code> in your browser (where you are already signed in), copy the token shown there, and paste it below.</p>
+      <p style="font-size:11.5px">The token lasts 30 days and is stored at <code>~/.uh/account.json</code> (0600). It never enters the event log.</p>
+      <input id="lgToken" type="password" spellcheck="false" autocomplete="off" placeholder="paste the token">
+    </div>
+    <div class="lgbody" id="lgWho" style="display:none"></div>
+    <div class="lgfoot">
+      <span class="msg" id="lgMsg"></span>
+      <button class="btn" id="lgOpen">Open browser</button>
+      <button class="btn primary" id="lgGo">Sign in</button>
+    </div>
+  </div>
+</div>
 <div id="apModal">
   <div class="apcard">
     <div class="aphead">
@@ -208,13 +257,18 @@
   </div>
   <div class="dbody" id="projPane" style="display:none">
     <div class="field">
-      <label>Switch to</label>
-      <select id="fProject"></select>
+      <label>Project name</label>
+      <input id="fProjName" spellcheck="false" placeholder="leave blank to use the folder name">
+      <div class="hint">Only a label in the sidebar — the folder below is what actually runs.</div>
     </div>
     <div class="field">
-      <label>Or type a path</label>
+      <label>Source folder</label>
       <input id="fNewProj" spellcheck="false" placeholder="~/code/my-app">
-      <div class="hint">Created if it does not exist. Writes stay inside it.</div>
+      <div class="hint">Created if it does not exist. The sandbox only lets writes land inside it.</div>
+    </div>
+    <div class="field">
+      <label>Or switch to an existing one</label>
+      <select id="fProject"></select>
     </div>
   </div>
   <div class="dfoot">
@@ -247,6 +301,7 @@ async function boot(){
   $('#iso').className = 'pill ' + (info.isolation === 'none' || info.isolation === 'path-guard' ? 'bad' : 'ok');
   await loadSettings();
   await loadProjects();
+  await loadAccount();
 }
 
 /** 左栏：项目 → 会话。跟 Codex 一样，会话属于某个工作区，不是一锅平铺 */
@@ -267,7 +322,8 @@ async function loadProjects(){
 
     const head = document.createElement('div');
     head.className = 'grphead' + (isCur ? ' on' : '');
-    const name = proj.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || proj.path;
+    const base = proj.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || proj.path;
+    const name = proj.name || base;
     head.innerHTML = '<span class="car">' + (isCur ? '▾' : '▸') + '</span>'
       + (isCur ? '<span class="dot"></span>' : '')
       + '<span class="nm" title="' + esc(proj.path) + '">' + esc(name) + '</span>'
@@ -370,6 +426,7 @@ async function loadSettings(){
     : 'pick a model';
   $('#modelPick').className = 'modelbtn' + (configured && SETTINGS.model ? '' : ' bad');
   $('#mpWork').textContent = SETTINGS.workspace;
+  paintApproval(SETTINGS.approval || 'ask');
   $('#task').placeholder = 'Describe the task. It runs in a sandbox; the workspace is ' + SETTINGS.workspace;
   fillSettingsForm();
 }
@@ -441,7 +498,7 @@ function fillModels(models, error){
 
 function openDrawer(mode){
   drawerMode = mode;
-  $('#drawerTitle').textContent = mode === 'settings' ? 'Settings · model & keys' : 'Project · workspace';
+  $('#drawerTitle').textContent = mode === 'settings' ? 'Settings · model & keys' : 'Create project';
   $('#settingsPane').style.display = mode === 'settings' ? '' : 'none';
   $('#projPane').style.display = mode === 'settings' ? 'none' : '';
   $('#dMsg').textContent = '';
@@ -469,15 +526,19 @@ async function fillProjectPicker(){
   const mine = (r.projects || []).find(p => p.path === r.current);
   if (mine) sel.value = mine.path;
   $('#fNewProj').value = '';
+  $('#fProjName').value = '';
 }
 
 $('#settingsBtn').addEventListener('click', () => openDrawer('settings'));
 $('#projBtn').addEventListener('click', () => openDrawer('project'));
 $('#model').addEventListener('click', () => openDrawer('settings'));
 $('#modelPick').addEventListener('click', (e) => { e.stopPropagation(); openModelMenu(); });
+$('#apprBtn').addEventListener('click', (e) => { e.stopPropagation(); openApprovalMenu(); });
 document.addEventListener('click', (e) => {
   const m = document.getElementById('mpMenu');
   if (m && m.classList.contains('on') && !m.contains(e.target) && e.target.id !== 'modelPick') m.classList.remove('on');
+  const a = document.getElementById('apMenu');
+  if (a && a.classList.contains('on') && !a.contains(e.target) && e.target.id !== 'apprBtn') a.classList.remove('on');
 });
 $('#stopBtn').addEventListener('click', async () => {
   if (!CURRENT_SID) return;
@@ -515,7 +576,7 @@ $('#dSave').addEventListener('click', async () => {
     if (drawerMode === 'project'){
       const typed = $('#fNewProj').value.trim();
       const target = typed || $('#fProject').value;
-      const r = await fetch('/api/project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path: target }) });
+      const r = await fetch('/api/project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path: target, name: $('#fProjName').value.trim() }) });
       const j = await r.json();
       if (j.error) throw new Error(j.error);
       await loadSettings();
@@ -583,6 +644,113 @@ function askApproval(req){
     document.addEventListener('keydown', esc);
   });
 }
+
+const APPR = {
+  ask:   { ic: '🛡', name: 'Request approval', cls: '',     desc: 'Ask every time a command needs it' },
+  auto:  { ic: '✅', name: 'Approve for me',    cls: 'auto', desc: 'Only ask about destructive actions' },
+  allow: { ic: '🔓', name: 'Full access',       cls: 'full', desc: 'Never ask — runs whatever the model asks for' },
+};
+
+function paintApproval(mode){
+  const a = APPR[mode] || APPR.ask;
+  $('#apprIco').textContent = a.ic;
+  $('#apprName').textContent = a.name;
+  $('#apprBtn').className = 'appr ' + a.cls;
+}
+
+function openApprovalMenu(){
+  let m = document.getElementById('apMenu');
+  if (!m){ m = document.createElement('div'); m.id = 'apMenu'; document.body.appendChild(m); }
+  m.innerHTML = '';
+  for (const [k, a] of Object.entries(APPR)){
+    const it = document.createElement('div');
+    it.className = 'apm' + (SETTINGS.approval === k ? ' cur' : '');
+    it.innerHTML = '<span class="ic">' + a.ic + '</span><span class="tx"><b>' + a.name + '</b><i>' + a.desc + '</i></span>';
+    it.onclick = async () => {
+      m.classList.remove('on');
+      const r = await fetch('/api/approval', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ mode: k }) });
+      const j = await r.json();
+      if (j.ok){ SETTINGS.approval = j.approval; paintApproval(j.approval); }
+    };
+    m.appendChild(it);
+  }
+  m.classList.toggle('on');
+}
+
+/** 账号：令牌就是网页的 aw_auth_token，30 天不续期，所以要把到期这件事说清楚 */
+let ACCOUNT = { signedIn: false };
+
+async function loadAccount(){
+  try { ACCOUNT = await fetch('/api/account').then(r => r.json()); } catch { ACCOUNT = { signedIn: false }; }
+  paintAccount();
+}
+
+function paintAccount(){
+  const row = $('#accountRow');
+  if (!ACCOUNT.signedIn){
+    row.innerHTML = '<span class="av">?</span><span class="who"><b>Sign in to UnitAI</b><i>' + (ACCOUNT.expired ? 'token expired' : 'optional') + '</i></span>';
+    row.onclick = openLogin;
+    return;
+  }
+  if (ACCOUNT.offline){
+    row.innerHTML = '<span class="av">…</span><span class="who"><b>UnitAI</b><i>offline — token kept</i></span>';
+    row.onclick = openLogin;
+    return;
+  }
+  const u = ACCOUNT.user || {};
+  const name = u.nickname || u.name || 'signed in';
+  const initial = String(name).slice(0, 1).toUpperCase();
+  const mem = ACCOUNT.membership || {};
+  const isMember = mem.active === true || mem.member === true || Boolean(mem.expires_at && mem.active);
+  const label = isMember ? 'member' : 'free';
+  row.innerHTML = '<span class="av">' + esc(initial) + '</span>'
+    + '<span class="who"><b>' + esc(name) + '</b><i>' + esc(u.phone || ACCOUNT.email || '') + '</i></span>'
+    + '<span class="mem' + (isMember ? '' : ' free') + '">' + label + '</span>';
+  row.onclick = openLogin;
+}
+
+async function openLogin(){
+  const m = $('#loginModal');
+  m.classList.add('on');
+  $('#lgMsg').textContent = '';
+  $('#lgMsg').className = 'msg';
+  $('#lgToken').value = '';
+  const signedIn = ACCOUNT.signedIn && !ACCOUNT.offline;
+  $('#lgBody').style.display = signedIn ? 'none' : '';
+  $('#lgWho').style.display = signedIn ? '' : 'none';
+  $('#lgGo').textContent = signedIn ? 'Sign out' : 'Sign in';
+  $('#lgUrl').textContent = (ACCOUNT.unitai || 'https://unitai.site').replace(/^https?:\/\//, '') + '/mcp';
+  if (signedIn){
+    const u = ACCOUNT.user || {};
+    const mem = ACCOUNT.membership || {};
+    $('#lgWho').innerHTML = '<p>Signed in as <b>' + esc(u.nickname || u.name || '') + '</b>'
+      + (u.phone ? ' · ' + esc(u.phone) : '')
+      + '</p><p style="font-size:11.5px;margin:0">Membership: ' + esc(JSON.stringify(mem).slice(0, 120)) + '</p>';
+  }
+}
+
+$('#lgClose').addEventListener('click', () => $('#loginModal').classList.remove('on'));
+$('#lgOpen').addEventListener('click', () => {
+  window.open((ACCOUNT.unitai || 'https://unitai.site') + '/mcp', '_blank', 'noreferrer');
+});
+$('#lgGo').addEventListener('click', async () => {
+  const msg = $('#lgMsg');
+  msg.className = 'msg';
+  if (ACCOUNT.signedIn && !ACCOUNT.offline){
+    await fetch('/api/account/logout', { method: 'POST' });
+    $('#loginModal').classList.remove('on');
+    await loadAccount();
+    return;
+  }
+  const token = $('#lgToken').value.trim();
+  if (!token){ msg.className = 'msg err'; msg.textContent = 'paste a token first'; return; }
+  msg.textContent = 'checking…';
+  const r = await fetch('/api/account/token', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ token }) });
+  const j = await r.json();
+  if (j.error){ msg.className = 'msg err'; msg.textContent = j.error; return; }
+  $('#loginModal').classList.remove('on');
+  await loadAccount();
+});
 
 function setRunning(on){
   RUNNING = on;
