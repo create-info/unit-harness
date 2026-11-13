@@ -348,6 +348,26 @@ just what was allowed.
 > The web UI (`uh serve`) currently refuses dangerous actions rather than prompting —
 > there is no approval widget yet. That failure is loud, not silent.
 
+## Hooks
+
+`.uh/hooks.json` in the workspace, no restart needed:
+
+```json
+{
+  "pre_finish": [{ "run": "npm test" }],
+  "pre_tool":   [{ "tool": "run_command", "match": "deploy", "run": "echo not from here >&2; exit 2" }]
+}
+```
+
+- `pre_tool` — non-zero exit blocks the call; stderr goes back to the model
+- `post_tool` — observe only
+- `pre_finish` — runs when the model says it is done; non-zero **rejects the finish**
+  and feeds the output back as a new instruction, so it has to keep working
+
+That last one is the point. A prompt can say "verify before claiming success" and the
+model can ignore it. An exit code it cannot. Every hook run is recorded as
+`hook/execution` with its decision.
+
 ## Remote hosts
 
 ```console

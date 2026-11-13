@@ -37,6 +37,8 @@ import { toolchainPaths, executableRoots, shellInnerPrograms } from './sandbox/t
 import { McpRegistry } from './mcp/bridge.ts'
 import { loadMcpServers } from './mcp/config.ts'
 import { Checkpoints, checkpointDirFor } from './checkpoint/store.ts'
+import { loadHooks, matches, hookName } from './hook/hooks.ts'
+import type { HookConfig, HookDef, HookEvent, HookOutcome } from './hook/hooks.ts'
 import { allowAll, denyAll, needsApproval } from './approval/gate.ts'
 import type { ApprovalDecision, ApprovalGate, ApprovalPolicy, ApprovalRequest } from './approval/gate.ts'
 import { uhHome } from './paths.ts'
@@ -161,6 +163,51 @@ export class Harness {
 
   /** 中断：Ctrl+C 走这里，而不是直接杀进程 */
   private readonly abortCtl = new AbortController()
+
+  /** hooks 配置：每次 run 前重新读，改配置不用重启 */
+  private hooks: HookConfig = {}
+
+  /**
+   * 执行某个挂点的 hook。返回**被挡下**的那些。
+   *
+   * hook 走 exec（沙箱内、有隔离记录），但它不是模型发起的，所以 source 是 internal：
+   * 审批门不该因为一条用户自己配的检查脚本来问用户。
+   */
+  private async runHooks(event: HookEvent, ctx: { tool?: string; command?: string }): Promise<HookOutcome[]> {
+    const defs = this.hooks[event] ?? []
+    if (defs.length === 0) return []
+    const shell = process.platform === 'win32' ? ['cmd', '/c'] : ['sh', '-c']
+    const blocked: HookOutcome[] = []
+
+    for (let i = 0; i < defs.length; i++) {
+      const def = defs[i] as HookDef
+      if (!matches(def, ctx.tool, ctx.command)) continue
+      const name = hookName(event, def, i)
+      let exitCode = 0
+      let output = ''
+      try {
+        const r = await this.exec({
+          argv: [shell[0] as string, ...shell.slice(1), def.run],
+          timeoutMs: def.timeout_ms ?? 60_000,
+          source: 'internal',
+          env: {
+            ...(ctx.tool ? { UH_TOOL: ctx.tool } : {}),
+            UH_EVENT: event,
+            ...(ctx.command ? { UH_COMMAND: ctx.command.slice(0, 2000) } : {}),
+          },
+        })
+        exitCode = r.exitCode
+        output = (r.stderr || r.stdout || '').trim()
+      } catch (err) {
+        exitCode = 1
+        output = err instanceof Error ? err.message : String(err)
+      }
+      const decision = exitCode === 0 ? 'allow' : 'block'
+      this.ev('hook/execution', { hook_name: name, event, decision, exit_code: exitCode }, 'hook')
+      if (decision === 'block') blocked.push({ name, event, decision, exitCode, output })
+    }
+    return blocked
+  }
 
   /** 工作区快照（每个 run 一个点） */
   private snapshotWorkspace(task: string, phase: 'before' | 'after' = 'before'): void {
@@ -712,6 +759,9 @@ export class Harness {
 
     const before = o.verify === false ? null : snapshotDir(this.workspace)
 
+    // 每次 run 重新读配置：改了 hooks.json 不用重启
+    this.hooks = loadHooks(this.workspace)
+
     // 改动发生之前建点：undo 要能回到「这个 run 还没动过任何东西」的状态
     this.snapshotWorkspace(o.task)
 
@@ -877,6 +927,7 @@ export class Harness {
          * 实测能把限制放穿到三层（1+6+36 次派活）。参数化闭包没有这个漏洞。
          */
         spawnSubAgent: makeSpawner(1),
+        runHooks: (event, ctx) => this.runHooks(event, ctx),
         planEnabled: o.plan !== false,
         skills,
         ...(o.stream !== false ? {
