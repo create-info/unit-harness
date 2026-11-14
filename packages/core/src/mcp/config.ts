@@ -43,10 +43,14 @@ export function loadMcpServers(cwd = process.cwd()): LoadedMcp {
 
   for (const p of [globalMcpConfigPath(), projectMcpConfigPath(cwd)]) {
     if (!fs.existsSync(p)) continue
+    // 全局和项目可能指到同一个文件（工作区就在 UH_HOME 旁边时很常见），
+    // 那样会把同一份配置读两遍、在 sources 里出现两次
+    const real = (() => { try { return fs.realpathSync(p) } catch { return p } })()
+    if (sources.includes(real)) continue
     const servers = readFile(p)
     if (Object.keys(servers).length === 0) continue
     Object.assign(merged, servers)
-    sources.push(p)
+    sources.push(real)
   }
 
   return { servers: merged, sources }

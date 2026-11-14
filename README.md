@@ -380,6 +380,21 @@ just what was allowed.
   ↑/↓ walk your history (kept in `$UH_HOME/history`). Ctrl+C interrupts the running
   turn and keeps the conversation; on an empty prompt it needs a second press to exit.
   Piped input works too (`printf '/help\n' | uh chat`), so it is scriptable.
+- **Installing plugins and MCP servers** — three kinds, three commands:
+
+  ```sh
+  uh skill new my-skill --global          # a folder + SKILL.md, ready to edit
+  uh mcp add fs npx -y @modelcontextprotocol/server-filesystem ~   # stdio server
+  uh mcp add linear https://mcp.linear.app/sse                     # http server
+  uh plugin list                          # what is installed, and from where
+  uh mcp test fs                          # handshake, with a readable failure
+  ```
+
+  Skills are read from `<project>/.uh/skills`, `<project>/.agents/skills` and
+  `$UH_HOME/skills` (the settings pane lists the real paths). MCP servers live in
+  `$UH_HOME/mcp.json` and `<project>/.uh/mcp.json`, both 0600, merged with the
+  project winning. Adding one needs no restart of anything: the next turn picks it
+  up. MCP servers run outside the local sandbox, and their calls are logged that way.
 - **How long a turn may run** — there is no step cap by default. An exploratory task
   (list the tree, read three files, grep once) was already spending twelve steps, and
   being cut off there left the turn with no answer at all. What bounds a turn now is the

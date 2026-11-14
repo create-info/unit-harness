@@ -1427,11 +1427,15 @@ function renderSettings() {
         // 放什么、放哪里、放完怎么让它出现。
         body.appendChild(el('<div class="pempty pguide">'
           + '<div class="pgh">还没有插件</div>'
-          + '<div class="pgl"><b>技能</b>：建一个目录，里面放 <code>SKILL.md</code>（项目内的跟着这个项目走，全局的对所有项目生效）'
+          + '<div class="pgl"><b>技能</b>：一条命令生成骨架（项目内跟着这个项目走，加 <code>--global</code> 对所有项目生效）'
+          + '<div class="pgc">uh skill new my-skill --global</div>'
           + skillDirsHtml() + '</div>'
-          + '<div class="pgl"><b>MCP server</b>：写进 <code>' + esc(pluginPath('mcp')) + '</code>'
-          + '<div class="pgc">{"mcpServers":{"名字":{"command":"命令","args":[]}}}</div></div>'
-          + '<div class="pgl"><b>钩子</b>：放在 <code>' + esc(pluginPath('hooks')) + '</code>，事件名见 docs/plugins.md</div>'
+          + '<div class="pgl"><b>MCP server</b>：stdio 命令行或 HTTP 地址都行，装完用 <code>uh mcp test</code> 握手'
+          + '<div class="pgc">uh mcp add fs npx -y @modelcontextprotocol/server-filesystem ~</div>'
+          + '<div class="pgc">uh mcp add linear https://mcp.linear.app/sse</div>'
+          + '<div class="pgc">' + esc(pluginPath('mcp')) + '</div></div>'
+          + '<div class="pgl"><b>钩子</b>：写在 <code>config.json</code> 的 <code>hooks</code> 里，事件名见 docs/plugins.md</div>'
+          + '<div class="pgl">装完点下面刷新；终端里用 <code>uh plugin list</code> 也能看到全部</div>'
           + '<button class="pgr" id="pRefresh">重新读取</button>'
           + '</div>'));
         $('#pRefresh')?.addEventListener('click', () => loadSettings && loadSettings());
