@@ -53,7 +53,19 @@
   .ptxt b{font-size:12.5px;font-weight:500;color:var(--fg)}
   .ptxt i{font-style:normal;font-size:11.5px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ptag{flex:0 0 auto;font-size:10.5px;color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 6px;white-space:nowrap}
-  .pempty{padding:26px 14px;text-align:center;color:var(--dim);font-size:12px;line-height:1.8}
+  .pempty{ padding:26px 14px;text-align:center;color:var(--dim);font-size:12px;line-height:1.8}
+  /* 空面板不是标语：给出「放什么、放哪里、长什么样」 */
+  .pguide{text-align:left;max-width:720px;margin:0 auto}
+  .pguide .pgh{color:var(--fg);font-size:13.5px;margin:6px 0 14px}
+  .pguide .pgl{margin:0 0 16px;line-height:1.7}
+  .pguide b{color:var(--fg);font-weight:600}
+  .pguide .pgc{margin-top:6px;background:var(--input);border:1px solid var(--line);border-radius:6px;
+    padding:8px 10px;font:11px/1.5 var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-all;
+    display:flex;justify-content:space-between;gap:12px}
+  .pguide .pgs{font-style:normal;color:var(--soft);font-size:10px;flex:0 0 auto}
+  .pguide .pgr{margin-top:2px;background:transparent;border:1px solid var(--line);color:var(--dim);
+    border-radius:6px;padding:5px 11px;font-size:11.5px;cursor:pointer}
+  .pguide .pgr:hover{color:var(--fg);border-color:var(--hoverline)}
   .pempty code{background:var(--hover);padding:1px 5px;border-radius:4px;font-size:11px}
   .modes{display:flex;gap:10px}
   .modecard{display:flex;flex-direction:column;align-items:center;gap:7px;padding:8px;background:transparent;
@@ -176,6 +188,7 @@
   @keyframes blink{50%{opacity:0}}
   .fcard{display:flex;align-items:center;gap:9px;border:1px solid var(--line);background:var(--hover);border-radius:8px;padding:7px 11px;margin:6px 0;font-size:11.5px;cursor:pointer}
   .fcard:hover{border-color:var(--hoverline)}
+  .fcard.gone .fn{color:var(--bad);text-decoration:line-through;text-decoration-thickness:1px}
   .fcard .fn{font-family:var(--mono);color:#9fd0ff;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .fcard .st{color:var(--dim);font-size:10.5px}
   .fcard .add{color:var(--good)}
@@ -309,6 +322,10 @@
   .dphead{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);flex:0 0 auto}
   .dpfile{font:11.5px var(--mono);color:var(--fg);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
   .dpstat{font:10.5px var(--mono);color:var(--dim);white-space:nowrap}
+  .dpopen{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:6px;
+    font:10.5px var(--mono);padding:3px 8px;cursor:pointer;white-space:nowrap}
+  .dpopen:hover{color:var(--fg);border-color:var(--hoverline)}
+  .dpopen[disabled]{opacity:.5;cursor:default}
   .dpclose{background:none;border:0;color:var(--dim);cursor:pointer;font-size:13px;padding:2px 4px;border-radius:5px}
   .dpclose:hover{color:var(--fg);background:var(--hover)}
   .dpbody{flex:1;overflow:auto;font:11.5px/1.55 var(--mono);padding:6px 0}
@@ -443,6 +460,7 @@
       <div class="dphead">
         <span class="dpfile" id="dpFile"></span>
         <span class="dpstat" id="dpStat"></span>
+        <button class="dpopen" id="dpOpen" title="Open this file in an editor">↗ open</button>
         <button class="dpclose" id="dpClose" title="Close (Esc)">✕</button>
       </div>
       <div class="dpbody" id="dpBody"></div>
@@ -682,6 +700,22 @@ function showFsHint(count, paths){
   clearTimeout(fsHintTimer);
   // 十分钟没人理就自己收掉，免得一直挂着
   fsHintTimer = setTimeout(() => { bar.remove(); window.__fsCount = 0; window.__fsPaths = new Set(); }, 600000);
+}
+
+/** 技能会从哪几个目录里被读出来：把真实位置列全，别只报一个 */
+function skillDirsHtml(){
+  const list = ((PLUGINS && PLUGINS.paths && PLUGINS.paths.skills) || []).filter((x) => x && x.dir);
+  if (!list.length) return '<div class="pgc">~/.uh/skills/my-skill/SKILL.md</div>';
+  return list.map((x) => '<div class="pgc">' + esc(x.dir) + '/my-skill/SKILL.md'
+    + '<i class="pgs">' + esc(x.scope === 'user' ? '全局' : '本项目') + '</i></div>').join('');
+}
+
+/** 服务端在 /api/plugins 里给出的真实路径；拿不到才退回到名义位置 */
+function pluginPath(kind){
+  const p = (PLUGINS && PLUGINS.paths) || {};
+  if (kind === 'skills') return (p.skills && p.skills[0] && p.skills[0].dir) || '~/.uh/skills';
+  if (kind === 'mcp') return (p.mcp && p.mcp[0]) || '~/.uh/mcp.json';
+  return p.hooks || '~/.uh/hooks';
 }
 
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -1383,11 +1417,25 @@ function renderSettings() {
     }
 
     if (!rows.length) {
-      body.appendChild(el('<div class="pempty">'
-        + ((P.mcp || []).length + (P.skills || []).length + (P.hooks || []).length
-            ? '没有匹配的项。'
-            : '还没有任何插件。MCP server 写在 <code>~/.uh/mcp.json</code>，技能放在项目或 <code>~/.uh/skills</code>。')
-        + '</div>'));
+      const total = (P.mcp || []).length + (P.skills || []).length + (P.hooks || []).length;
+      if (total && q) {
+        body.appendChild(el('<div class="pempty">没有匹配「' + esc(PFIND) + '」的项。</div>'));
+      } else if (total) {
+        body.appendChild(el('<div class="pempty">这个分类下还没有东西。</div>'));
+      } else {
+        // 空面板最没用的一种写法就是一句「还没有任何插件」。给一条能照着做的最小路径：
+        // 放什么、放哪里、放完怎么让它出现。
+        body.appendChild(el('<div class="pempty pguide">'
+          + '<div class="pgh">还没有插件</div>'
+          + '<div class="pgl"><b>技能</b>：建一个目录，里面放 <code>SKILL.md</code>（项目内的跟着这个项目走，全局的对所有项目生效）'
+          + skillDirsHtml() + '</div>'
+          + '<div class="pgl"><b>MCP server</b>：写进 <code>' + esc(pluginPath('mcp')) + '</code>'
+          + '<div class="pgc">{"mcpServers":{"名字":{"command":"命令","args":[]}}}</div></div>'
+          + '<div class="pgl"><b>钩子</b>：放在 <code>' + esc(pluginPath('hooks')) + '</code>，事件名见 docs/plugins.md</div>'
+          + '<button class="pgr" id="pRefresh">重新读取</button>'
+          + '</div>'));
+        $('#pRefresh')?.addEventListener('click', () => loadSettings && loadSettings());
+      }
     } else {
       const list = el('<div class="plist"></div>');
       for (const r of rows) {
@@ -2087,8 +2135,10 @@ function fileCard(p, seq){
   const el = document.createElement('div');
   el.className = 'fcard';
   const size = p.after_size || 0;
-  el.innerHTML = '<span>✎</span><span class="fn">' + esc(p.path) + '</span>'
-    + '<span class="st">' + size + ' B</span><span class="st">diff ›</span>';
+  // 删掉的文件单独标出来：它不是「0 字节的新文件」
+  el.innerHTML = '<span>' + (p.deleted ? '−' : '✎') + '</span><span class="fn">' + esc(p.path) + '</span>'
+    + '<span class="st">' + (p.deleted ? 'removed' : size + ' B') + '</span><span class="st">diff ›</span>';
+  if (p.deleted) el.classList.add('gone');
   // 点文件 → 右侧并排看 diff（Codex 的做法），而不是把内容塞进对话里
   el.onclick = () => openDiffPane(p.path, seq);
   const g = openRun();
@@ -2141,6 +2191,32 @@ function closeDiffPane(){
 }
 
 $('#dpClose')?.addEventListener('click', closeDiffPane);
+
+/**
+ * 在编辑器里打开当前文件（Goland / VS Code / Cursor / 系统默认）。
+ *
+ * 编辑器由服务端挑：它知道自己装了什么，也知道项目根在哪。
+ * 失败时必须说话——点了毫无反应是最难排查的一种坏。
+ */
+$('#dpOpen')?.addEventListener('click', async () => {
+  const btn = $('#dpOpen');
+  if (!DP_PATH || btn.disabled) return;
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = '↗ opening…';
+  try {
+    const r = await fetch('/api/open', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: CURRENT_SID, path: DP_PATH, editor: (SETTINGS && SETTINGS.editor) || '' }),
+    }).then((x) => x.json());
+    if (r && r.ok) btn.textContent = '↗ ' + (r.editor || 'opened');
+    else btn.textContent = '↗ ' + String((r && (r.error || 'could not open')));
+  } catch (e) {
+    btn.textContent = '↗ ' + String(e.message || e);
+  }
+  setTimeout(() => { btn.textContent = was; btn.disabled = false; }, 2500);
+});
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('#diffPane')?.classList.contains('on')) closeDiffPane();
 });
@@ -2745,7 +2821,19 @@ function render(kind, p){
       row('dim','— done —');
       setRunning(false);
       break;
-    case 'error': row('bad','ERROR: ' + esc(p.message)); break;
+    case 'error': {
+      // 老日志里有一条把「删了文件」当错误的记录。删文件是正常操作，
+      // 红字会让一次成功的运行看起来像出了事故——已经修了源头，
+      // 但历史会话还会重放它，所以这里按普通提示显示。
+      const msg = String(p.message || '');
+      if (msg === 'files were removed during the run') {
+        const n = Array.isArray(p.files) ? p.files.length : 0;
+        row('dim', '− ' + n + ' file' + (n === 1 ? '' : 's') + ' removed before this turn ended');
+      } else {
+        row('bad', 'ERROR: ' + esc(msg));
+      }
+      break;
+    }
   }
 }
 

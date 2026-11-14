@@ -372,6 +372,14 @@ just what was allowed.
   and hit **List** to ask that provider what models it actually serves (`GET /models`
   with your key; nothing is hardcoded, because model names retire every few months).
   The key is written to `~/.uh/config.json` at 0600 and only ever shown masked.
+- **The interactive terminal** — `uh` with no arguments opens a prompt instead of
+  printing help. Inside it: the answer streams as it is written, tool calls show up
+  as one line each, `@path` inlines a file into the message (a big one becomes a
+  pointer rather than burning the context), `$skill` loads that skill's body, and
+  `/model`, `/config`, `/skills`, `/files`, `/new`, `/resume`, `/quit` cover the rest.
+  ↑/↓ walk your history (kept in `$UH_HOME/history`). Ctrl+C interrupts the running
+  turn and keeps the conversation; on an empty prompt it needs a second press to exit.
+  Piped input works too (`printf '/help\n' | uh chat`), so it is scriptable.
 - **How long a turn may run** — there is no step cap by default. An exploratory task
   (list the tree, read three files, grep once) was already spending twelve steps, and
   being cut off there left the turn with no answer at all. What bounds a turn now is the

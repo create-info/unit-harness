@@ -28,9 +28,11 @@ import { VERSION } from './version.ts'
 import { startServer, startServerOrRestart, openBrowser } from './serve.ts'
 import { startA2A } from './a2a.ts'
 import { startAcp } from './acp.ts'
+import { runTui } from './tui.ts'
 
 const argv = process.argv.slice(2)
 const cmd = argv[0] ?? 'help'
+// 零参数 + 真终端 = 交互模式。管道/脚本调用仍然是打帮助，不会卡在等输入上。
 
 function localTime(iso: string): string {
   const d = new Date(iso)
@@ -1188,7 +1190,9 @@ function cmdHelp(): void {
   console.log(`uh ${VERSION} — the agent that proves its work
 
 Usage:
-  uh run "<task>"           run a task with the model agent (sandboxed)
+  uh                        interactive terminal (type the task, watch it work)
+  uh chat                   same thing, explicit
+  uh run "<task>"           run a single task with the model agent (sandboxed)
   uh host [list|add|test]   manage remote hosts (ssh targets, key paths only)
   uh sessions [n]           list recent sessions (newest first)
   uh session prune --older-than 30d [--dry-run]
@@ -1335,7 +1339,13 @@ async function main(): Promise<void> {
       cmdUndo(argv[1]); return
     case 'run':
       await cmdRun(argv.slice(1).filter((a) => !a.startsWith('--') && !isFlagValue(a)).join(' ')); return
+    // 交互式终端：直接 `uh` 回车也该进这里，而不是打一页帮助就退出
+    case 'chat': case 'tui':
+      await runTui(); return
     case 'help': case '--help': case '-h':
+      // 在真终端里敲 `uh help` 是要看用法；但 `uh` 一个参数都不给时，
+      // 人想要的是「开始干活」——所以零参数 + TTY 进交互模式。
+      if (argv.length === 0 && process.stdin.isTTY) { await runTui(); return }
       cmdHelp(); return
     default:
       fail(`unknown command: ${cmd}\n\ntry: uh help`)

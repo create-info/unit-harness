@@ -16,7 +16,9 @@ import {
   EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey, readState,
   readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig } from '@unit-harness/core'
 import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget, WatchManager } from '@unit-harness/core'
-import { loadMcpServers, discoverSkills } from '@unit-harness/core'
+import {
+  loadMcpServers, discoverSkills, skillRoots, globalMcpConfigPath, projectMcpConfigPath,
+} from '@unit-harness/core'
 import type { ApprovalGate, ApprovalRequest, Message } from '@unit-harness/core'
 import UI from './ui.html'
 import { asrStatus, transcribe } from './asr.ts'
@@ -36,6 +38,8 @@ export interface ServeOptions {
   host?: string
   /** 需要 MCP / skills 时置 false */
   quietStartup?: boolean
+  /** 没有正在跑的会话时，/api/open 以谁为根目录（默认进程 cwd） */
+  workspace?: string
 }
 
 const subs = new Map<string, Set<Subscriber>>()
@@ -857,6 +861,13 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         })),
         hooks: Object.keys(hooks).map((k) => ({ id: 'hook:' + k, name: k, enabled: !disabled.has('hook:' + k) })),
         sources: mcp.sources,
+        // 面板里要写清「该放哪」。这些路径由服务端算，前端不去猜——
+        // 猜的结果就是告诉用户在 /…/sessions/skills 里建目录（根本不存在）
+        paths: {
+          skills: skillRoots(cwd).map((r) => ({ dir: r.dir, scope: r.label })),
+          mcp: [globalMcpConfigPath(), projectMcpConfigPath(cwd)],
+          hooks: pathMod.join(uhHome(), 'hooks'),
+        },
         counts: { mcp: Object.keys(mcp.servers).length, skills: skills.length, hooks: Object.keys(hooks).length },
       })
       return
@@ -1333,6 +1344,38 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       return
     }
 
+    /**
+     * 用本机 IDE 打开一个文件（Codex 也是这么做的：点一下就在编辑器里打开）。
+     * 只认明确被点名的编辑器，路径必须在本次会话的工作区里——
+     * 这是个「替用户启动进程」的接口，不能拿它去开任意路径。
+     */
+    if (req.method === 'POST' && url.pathname === '/api/open') {
+      let body: Record<string, unknown> = {}
+      try { body = JSON.parse(await readBody(req)) as Record<string, unknown> } catch { /* empty */ }
+      const sid = String(body.sessionId ?? '')
+      const rel = String(body.path ?? '')
+      const which = String(body.editor ?? '')
+      if (!rel) { json(res, 400, { error: 'path is required' }); return }
+      const h = (sid ? running.get(sid) : undefined) ?? [...running.values()][0]
+      const root = h?.workspace ?? (opts.workspace ?? process.cwd())
+      const abs = pathMod.resolve(root, rel)
+      // 逃出工作区的路径一律拒绝：这是边界，不是提示
+      if (!(abs === root || abs.startsWith(root + pathMod.sep))) {
+        json(res, 403, { error: 'that path is outside this project' }); return
+      }
+      if (!fsSync.existsSync(abs)) { json(res, 404, { error: 'no such file' }); return }
+      const editors = editorCandidates(which)
+      for (const e of editors) {
+        try {
+          spawn(e.cmd, e.args(abs), { detached: true, stdio: 'ignore' }).unref()
+          json(res, 200, { ok: true, editor: e.name, path: abs })
+          return
+        } catch { /* 换下一个 */ }
+      }
+      json(res, 501, { error: 'no editor found', tried: editors.map((e) => e.name) })
+      return
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/stop') {
       let body: { sessionId?: string } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
@@ -1607,6 +1650,35 @@ export async function startServerOrRestart(opts: { port: number; host?: string; 
     }
     return { srv: await attempt(), replaced: owner }
   }
+}
+
+/**
+ * 能打开文件的编辑器，按优先级排。
+ *
+ * 传了 editor 就只用它（用户明确选了），否则按常见顺序试：先 IDE，再通用打开。
+ * 每个候选都带 `name`，失败的会原样报给前端，而不是沉默地什么都不发生。
+ */
+function editorCandidates(which: string): { name: string; cmd: string; args: (p: string) => string[] }[] {
+  const all: { name: string; cmd: string; args: (p: string) => string[] }[] = []
+  if (process.env.UH_EDITOR) {
+    const parts = process.env.UH_EDITOR.split(/\s+/).filter(Boolean)
+    const head = parts[0]
+    if (head) all.push({ name: process.env.UH_EDITOR, cmd: head, args: (p) => [...parts.slice(1), p] })
+  }
+  all.push(
+    { name: 'goland', cmd: 'goland', args: (p) => [p] },
+    { name: 'idea', cmd: 'idea', args: (p) => [p] },
+    { name: 'webstorm', cmd: 'webstorm', args: (p) => [p] },
+    { name: 'pycharm', cmd: 'pycharm', args: (p) => [p] },
+    { name: 'vs code', cmd: 'code', args: (p) => ['-g', p] },
+    { name: 'cursor', cmd: 'cursor', args: (p) => ['-g', p] },
+    { name: 'zed', cmd: 'zed', args: (p) => [p] },
+    { name: 'default app', cmd: process.platform === 'darwin' ? 'open' : 'xdg-open', args: (p) => [p] },
+  )
+  if (!which) return all
+  const w = which.toLowerCase()
+  const hit = all.filter((e) => e.name === w)
+  return hit.length ? hit : all
 }
 
 /** 用系统默认浏览器打开；返回是否成功 */
