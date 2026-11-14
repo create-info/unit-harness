@@ -311,6 +311,12 @@
   .row{display:flex;gap:10px;padding:2px 0;white-space:pre-wrap;word-break:break-word}
   .row .t{color:var(--soft);flex:0 0 52px;text-align:right;font-size:11px}
   .row .c{flex:1;min-width:0}
+  /* 可点开的过程行：鼠标移上去给一点暗示，展开的那块是原文，不改写 */
+  .row.expandable{cursor:pointer;border-radius:6px}
+  .row.expandable:hover .c{color:var(--fg)}
+  .det{margin:2px 0 8px 62px;padding:8px 10px;border-left:2px solid var(--line);
+    background:var(--input);color:var(--fg);font:11.5px/1.5 var(--mono);
+    white-space:pre-wrap;word-break:break-all;border-radius:0 6px 6px 0}
   .step{color:var(--accent);margin-top:10px}
   .tool{color:var(--fg)}
   .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.dim{color:var(--dim)}
@@ -1911,6 +1917,31 @@ function updateRunHead(){
 }
 
 /** 工具调用、文件卡片这些过程行进组；问答和结论留在组外 */
+/**
+ * 让一行过程可以点开看细节。
+ *
+ * 屏幕上那行是给眼睛的（"Reading src/cli.ts"）；点开给的是给脑子的：
+ * 真实命令、参数、路径。Codex 也是这个分工——过程行可折叠，点开才是全文。
+ * 没有细节可显示的行就不加这个行为，别让用户点了没反应。
+ */
+function attachDetail(el, p){
+  const detail = String(p.detail || p.args_preview || '').trim();
+  if (!detail) return;
+  el.classList.add('expandable');
+  el.title = 'Click for the command';
+  el.addEventListener('click', (e) => {
+    if (e.target.closest('.det')) return;
+    const next = el.nextElementSibling;
+    if (next && next.classList.contains('det')){ next.remove(); return; }
+    const box = document.createElement('div');
+    box.className = 'det';
+    // 用 <pre> 里的等宽字体：命令里有引号、反斜杠，折行会读错
+    box.textContent = detail;
+    el.after(box);
+    followTail();
+  });
+}
+
 function procRow(cls, text){
   const g = openRun();
   const el = row(cls, text);
@@ -2504,7 +2535,10 @@ function render(kind, p){
       // label 是服务端翻译好的人话（"Reading src/cli.ts"），永远优先用它。
       // 只有翻译缺失时才退回原始信息，绝不会把 run_command 这种词直接扔到屏幕上。
       const text = p.label || (p.tool === 'run_command' && p.argv ? p.argv.join(' ') : String(p.tool || 'working'))
-      procRow('tool', '● ' + who(p) + esc(String(text)));
+      const el = procRow('tool', '● ' + who(p) + esc(String(text)));
+      // 两条信息都要留得住：想看懂它到底干了什么，就点开这一行。
+      // 服务端已经给了 detail（真实命令/路径），args_preview 是兜底。
+      attachDetail(el, p);
       break;
     }
     case 'tool/result':
