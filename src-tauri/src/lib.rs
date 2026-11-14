@@ -32,7 +32,9 @@ pub fn run() {
             let spawn = handle
                 .shell()
                 .sidecar("uh")
-                .map(|c| c.args(["serve", "--port", port.as_str()]))
+                // --force：上一次没被收拾干净的 sidecar 还占着 7878 时接管它。
+                // 不加这一句的表现是「重开桌面端还是旧界面」，而代码是最新的
+                .map(|c| c.args(["serve", "--port", port.as_str(), "--force"]))
                 .and_then(|c| c.spawn());
 
             match spawn {

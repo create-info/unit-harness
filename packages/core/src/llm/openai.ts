@@ -76,7 +76,20 @@ export async function chatComplete(
 ): Promise<CompletionResult> {
   const url = cfg.baseUrl.replace(/\/$/, '') + '/chat/completions'
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), cfg.timeoutMs ?? 120_000)
+  // 这个计时器是「多久一个字节都没收到」，不是「这个请求总共只能活多久」。
+  // 以前它是一刀切的 120 秒总时限：27B 模型在十万 token 的上下文里想两分钟
+  // 太正常了，于是请求被自己掐掉，还报成 "stopped by the user"——用户根本没按
+  // 任何键，屏幕上却写着是他停的。现在每收到一块数据就重新上弦。
+  // 本地大模型在大上下文上「第一句」经常要等一两分钟，给个能调的旋钮，
+  // 免得又变成改了源码才能调参
+  const idleMs = cfg.timeoutMs ?? (Number(process.env.UH_LLM_IDLE_TIMEOUT) || 300) * 1000
+  let timedOut = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const arm = (): void => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => { timedOut = true; controller.abort() }, idleMs)
+  }
+  arm()
   // 谁先到算谁：超时或用户点停
   const signal = external ? AbortSignal.any([controller.signal, external]) : controller.signal
   const streaming = Boolean(handlers?.onText || handlers?.onReasoning)
@@ -128,7 +141,7 @@ export async function chatComplete(
       // 有些服务（老版本 Ollama、某些代理）会忽略 stream 参数直接回整包 JSON。
       // 请求了流却拿到 JSON 不是错误，按非流式解析即可——否则表现为「对面不听话就报错」。
       if (ct.includes('text/event-stream')) {
-        return await readStream(res, cfg, handlers as StreamHandlers)
+        return await readStream(res, cfg, handlers as StreamHandlers, arm)
       }
     }
 
@@ -159,8 +172,17 @@ export async function chatComplete(
     // 裸的 fetch failed 什么也说明不了：连不上、DNS、header 非法、超时
     // 都是这一句。真实原因在 err.cause 里，必须带出来。
     // 用户主动停的，不要报成"连不上"——那不是故障，是他自己的操作
-    if ((err as { name?: string }).name === 'AbortError' || external?.aborted) {
+    if (external?.aborted) {
       throw new Error('E_LLM_ABORTED: stopped by the user')
+    }
+    // 自己掐的和用户掐的必须分开说：以前两者共用一句 "stopped by the user"，
+    // 结果模型慢一点就变成「用户按了停止」，谁也查不出真相
+    if (timedOut || (err as { name?: string }).name === 'AbortError') {
+      const secs = Math.round(idleMs / 1000)
+      throw new Error(
+        `E_LLM_TIMEOUT: ${secs}s with nothing from ${cfg.baseUrl} — ` +
+        'the model never started answering. For a slow local model raise UH_LLM_IDLE_TIMEOUT (seconds)',
+      )
     }
     throw new Error(explainFetchError(err, url, cfg), { cause: err })
   } finally {
@@ -183,6 +205,8 @@ async function readStream(
   res: Response,
   cfg: ProviderConfig,
   handlers: StreamHandlers,
+  /** 收到一块数据就重新上弦：只要还在吐字，就不算超时 */
+  onData?: () => void,
 ): Promise<CompletionResult> {
   if (!res.body) throw new Error('E_LLM_STREAM: response has no body')
 
@@ -257,6 +281,7 @@ async function readStream(
   while (!done) {
     const { done: eof, value } = await reader.read()
     if (eof) break
+    onData?.()
     buf += decoder.decode(value, { stream: true })
 
     let idx: number

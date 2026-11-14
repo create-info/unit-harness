@@ -7,6 +7,7 @@
  *  - 插件加载失败不影响宿主（docs D4/D5）。
  */
 import { Context } from '@deepseek-ai/cordis'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { spawn } from 'node:child_process'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -217,7 +218,22 @@ export class Harness {
   /** 中断：Ctrl+C 走这里，而不是直接杀进程 */
   private readonly abortCtl = new AbortController()
   /** 用户在工作期间插的话，等下一个 step 边界交给模型 */
-  private readonly steerQueue: string[] = []
+  /**
+   * 排队中的插话。带 id 是为了让前端能「撤回一条再改写」：
+   * 只按文本撤，同名两句就撤错；而且没有 id，前端点了编辑、原句已经按旧样子生效了。
+   */
+  private readonly steerQueue: { id: string; text: string }[] = []
+  private steerSeq = 0
+
+  /**
+   * 现在是谁在干活。
+   *
+   * 子 agent 跑在自己的异步上下文里，于是所有事件——包括 harness 自己在
+   * exec / callTool 里发的 `tool/call`——都自动带上它的名字。界面上
+   * 「● worker1 · Listing files」就是从这里来的。把 agent 参数一路穿过
+   * 二十个函数签名做不到这件事，因为工具事件是在 harness 里发的，不在循环里。
+   */
+  private readonly agentScope = new AsyncLocalStorage<string>()
 
   /** hooks 配置：每次 run 前重新读，改配置不用重启 */
   private hooks: HookConfig = {}
@@ -377,11 +393,27 @@ export class Harness {
     this.ev(kind, payload)
   }
 
-  steer(text: string): boolean {
+  /** 排一条插话，返回它的 id；空文本返回 null */
+  steer(text: string): string | null {
     const t = text.trim()
-    if (!t) return false
-    this.steerQueue.push(t)
-    this.ev('steering/message', { text: t.slice(0, 200), status: 'queued' })
+    if (!t) return null
+    const id = `s${++this.steerSeq}`
+    this.steerQueue.push({ id, text: t })
+    this.ev('steering/message', { id, text: t.slice(0, 200), status: 'queued' })
+    return id
+  }
+
+  /**
+   * 撤回一条还没被取走的插话。
+   *
+   * 前端点开编辑时必须先走这一步：否则用户还在输入框里改，原句已经在下一个
+   * step 边界按旧样子生效了——「我改了啊」和「它照旧做了」会同时发生。
+   */
+  withdrawSteer(id: string): boolean {
+    const i = this.steerQueue.findIndex((s) => s.id === id)
+    if (i < 0) return false
+    const [gone] = this.steerQueue.splice(i, 1)
+    this.ev('steering/withdrawn', { id, text: (gone?.text ?? '').slice(0, 200) })
     return true
   }
 
@@ -432,10 +464,13 @@ export class Harness {
     source: EventSource = 'agent',
     parentId: string | null = null,
   ): SessionEvent | null {
-    this.opts.onEvent?.(kind, payload)
+    // 打上执行者：子 agent 的事件必须能在界面上认出是谁干的
+    const actor = this.agentScope.getStore()
+    const tagged = actor && payload.agent === undefined ? { ...payload, agent: actor } : payload
+    this.opts.onEvent?.(kind, tagged)
     if (!this.session) return null
     try {
-      return this.store.append(this.session.id, kind, payload, { source, parentId })
+      return this.store.append(this.session.id, kind, tagged, { source, parentId })
     } catch (err) {
       this.log('warn', `event append failed (${kind}): ${err instanceof Error ? err.message : String(err)}`)
       return null
@@ -1131,16 +1166,31 @@ export class Harness {
             `(limit ${makeSpawnerSelf.maxSubAgentTotal}). Do the remaining work yourself.`,
           )
         }
-        const id = `sub${++makeSpawnerSelf.subAgentCount}`
+        // 名字要能被人念出来：worker1、worker2。以前叫 sub1，界面上出现时
+        // 像内部编号，用户不知道该看哪一条
+        const id = `worker${++makeSpawnerSelf.subAgentCount}`
         const startedAt = Date.now()
         const spawned = makeSpawnerSelf.ev('agent/spawned', { agent: id, task: subTask.slice(0, 200), level }, 'agent')
+        // 子 agent 共用工作区、网关、工具，但**不是**另一个跟用户对话的人：
+        //   - drainSteer：用户插话是给主 agent 的，子 agent 抢走会静默吃掉一句；
+        //   - onText / onReasoning：子 agent 的思考会被当成主界面的实时输出，
+        //     屏幕上就是一大片没有归属的 thinking（用户的原话：子代理没返回结果，
+        //     只看到一堆碎片）。它的结论只走返回值。
         const subDeps: AgentDeps = { ...depsRef, spawnSubAgent: makeSpawner(level + 1) }
+        delete subDeps.drainSteer
+        delete subDeps.onText
+        delete subDeps.onReasoning
         try {
-          const sub = await runAgent(subDeps, {
+          // 整个子 agent 跑在自己的异步上下文里：它发的事件（含 harness 里的
+          // 工具事件）都会自动带上 worker 名字
+          const sub = await makeSpawnerSelf.agentScope.run(id, () => runAgent(subDeps, {
             task: subTask,
-            maxSteps: subOpts.maxSteps ?? 6,
+            // 子 agent 也不设步数上限：它做的就是一轮探索，硬砍只会让它交回半截结论。
+            // 成本由「最多几个子 agent」「嵌套多深」「总预算」和用户的 Stop 管，
+            // 这些边界和任务长短无关，不会在正常工作时误伤。
+            ...(subOpts.maxSteps ? { maxSteps: subOpts.maxSteps } : {}),
             signal: makeSpawnerSelf.abortCtl.signal,
-          })
+          }))
           makeSpawnerSelf.ev('agent/finished', {
             agent: id,
             steps: sub.steps,
@@ -1148,7 +1198,7 @@ export class Harness {
             duration_ms: Date.now() - startedAt,
             stopped_by: sub.stoppedBy,
           }, 'agent', spawned?.id ?? null)
-          return `[sub-agent ${id} finished after ${sub.steps} steps]\n${sub.text || '(no text)'}`
+          return `[${id} finished after ${sub.steps} steps]\n${sub.text || '(no text)'}`
         } catch (err) {
           makeSpawnerSelf.ev('agent/finished', {
             agent: id,

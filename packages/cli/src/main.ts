@@ -25,7 +25,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import * as readline from 'node:readline'
 
 import { VERSION } from './version.ts'
-import { startServer, openBrowser } from './serve.ts'
+import { startServer, startServerOrRestart, openBrowser } from './serve.ts'
 import { startA2A } from './a2a.ts'
 import { startAcp } from './acp.ts'
 
@@ -928,6 +928,8 @@ async function cmdRun(task?: string): Promise<void> {
     console.log(`steps=${res.steps} tokens=${res.usage.total} stoppedBy=${res.stoppedBy}${res.compactions ? ` compactions=${res.compactions}` : ''}`)
     console.log(`session: ${h.sessionId ?? '(not recorded)'}`)
     if (res.stoppedBy === 'max-steps') process.exitCode = 2
+    // 卡死（同一个动作反复失败）和「撞上限」是两件事，脚本要能分开
+    if (res.stoppedBy === 'stuck') process.exitCode = 4
     // 预算停下不是成功：脚本拿它判断「跑完了」会得到错的结论，
     // 用 3 与步数超限区分开
     if (res.stoppedBy === 'budget') process.exitCode = 3
@@ -1198,11 +1200,14 @@ Usage:
   --yes / --no-ask          approve every dangerous action / refuse them all
                             (default: ask when a terminal is attached, refuse otherwise)
   uh do [name]              run a recipe: fixed task, then our own acceptance checks
-  uh serve [--port N]       local web UI (default 127.0.0.1:7878)
+  uh serve [--port N] [--force]
+                            local web UI (default 127.0.0.1:7878);
+                            --force takes the port back from a previous
+                            uh serve (use it after rebuilding the UI)
   uh acp                    speak ACP over stdio (for editors: Zed, JetBrains, …)
   uh a2a [--port N] [--host H] [--token T] [--public-url U]
                             expose this workspace as an A2A agent (default 127.0.0.1:9300)
-  uh desktop                same, and open it in your browser
+  uh desktop [--force]      same, and open it in your browser
   uh mcp list               show MCP servers and the tools they expose
   uh mcp add <name> <url>   add an HTTP MCP server (token asked, hidden)
   uh mcp test [name]        handshake check, with a readable failure
@@ -1257,7 +1262,10 @@ async function main(): Promise<void> {
       await cmdConfig(argv[1], argv[2], argv[3]); return
     case 'serve': {
       const port = Number(flag('port') ?? 7878)
-      const srv = await startServer({ port })
+      // --force：端口被上一版自己占着时接管它。改了代码还要记得先找进程杀，
+      // 是这种事里最容易忘的一步，而忘了的表现就是「桌面端还是旧的」
+      const { srv, replaced } = await startServerOrRestart({ port, force: argv.includes('--force') })
+      if (replaced) console.log(`stopped the previous UnitHarness on port ${port} (pid ${replaced.pid})`)
       console.log(`UnitHarness UI  ${srv.url}`)
       console.log('press Ctrl+C to stop')
       return
@@ -1304,7 +1312,8 @@ async function main(): Promise<void> {
     }
     case 'desktop': {
       const port = Number(flag('port') ?? 7878)
-      const srv = await startServer({ port })
+      const { srv, replaced } = await startServerOrRestart({ port, force: argv.includes('--force') })
+      if (replaced) console.log(`stopped the previous UnitHarness on port ${port} (pid ${replaced.pid})`)
       const opened = openBrowser(srv.url)
       console.log(`UnitHarness UI  ${srv.url}${opened ? '  (opened in your browser)' : ''}`)
       console.log('press Ctrl+C to stop')

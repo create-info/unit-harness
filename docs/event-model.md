@@ -90,7 +90,8 @@
 | `turn/end` | agent | `turn_index`, `stop_reason` | `stop_reason` ∈ `completed \| max_tokens \| stop_hook \| aborted \| error` |
 | `step/start` | agent | `step_index`, `turn_index` | 一次模型调用 + 工具执行循环为一步 |
 | `step/end` | agent | `step_index`, `status`, `duration_ms` | |
-| `steering/message` | user | `text`, `injected_at_seq` | 用户在运行中插话（不打断，注入下一 step） |
+| `steering/message` | user | `id`, `text`, `status` (`queued`/`applied`) | 用户在运行中插话（不打断，注入下一 step） |
+| `steering/withdrawn` | user | `id`, `text` | 用户在它落地之前把这条撤回了（网页里「点开排队中的消息去改」）。没有它，日志里只剩「排过队」，事后分不清那句到底生效没有 |
 | `assistant/chunk` | agent | `step_index`, `index`, `delta`, `channel` | 流式分片，见 §4.1 存储策略 |
 | `assistant/message` | agent | `step_index`, `text`, `tool_calls[]`, `usage` | 分片聚合后的完整消息 |
 | `llm/request` | agent | `model`, `messages_digest`, `tools_digest`, `params`, `est_tokens` | **只存摘要**，不存完整 prompt（体积与隐私） |

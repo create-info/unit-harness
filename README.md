@@ -372,6 +372,27 @@ just what was allowed.
   and hit **List** to ask that provider what models it actually serves (`GET /models`
   with your key; nothing is hardcoded, because model names retire every few months).
   The key is written to `~/.uh/config.json` at 0600 and only ever shown masked.
+- **How long a turn may run** — there is no step cap by default. An exploratory task
+  (list the tree, read three files, grep once) was already spending twelve steps, and
+  being cut off there left the turn with no answer at all. What bounds a turn now is the
+  token budget, your **Stop**, and `--max-steps N` when you want a hard ceiling. If a
+  turn does get cut off (explicit cap, or a timeout), it is asked once more for a plain
+  summary *without* tools, so you always get a sentence instead of an empty answer.
+- **Spinning is stopped by evidence, not by a guess** — if the same call (same tool, same
+  arguments) fails five times in a row, the turn stops with `stop_reason: 'stuck'` (exit
+  code 4) and the model is asked what it tried and what the error actually said. Both
+  shapes of failure count: a tool's own `ERROR`/`BLOCKED`, and `run_command` returning
+  `exit=7 …`. Without this, removing the step cap lets a model retry the same broken
+  command forever.
+- **Notes while it works** — anything you send mid-run is queued and injected at the
+  next step boundary; the chips above the composer are clickable, so you can take a
+  note back into the box, fix the wording, and send it again as a new note (`✕` drops
+  it). Withdrawing goes to the server first — otherwise the original would still land.
+- **Restarting after a rebuild** — `uh serve --force` (and the desktop shell, which
+  passes it to its sidecar) takes the port back from a previous `uh serve` instead of
+  exiting with `EADDRINUSE`. It kills **only** a process whose command line is
+  `uh serve` / `unitai serve`; anything else on that port is reported and left alone.
+  Without `--force` the error says who holds the port and which command frees it.
 - **Project** — the workspace is the sandbox root, and `+` next to *Projects* opens a
   folder picker: you click into a directory (breadcrumbs to go back), or create a new
   folder inside it, instead of typing an absolute path from memory. See

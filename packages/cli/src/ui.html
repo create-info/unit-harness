@@ -108,6 +108,10 @@
   .apm .tx b{display:block;font-size:12px;font-weight:500;color:var(--fg)}
   .apm .tx i{display:block;font-style:normal;font-size:11px;color:var(--dim);margin-top:2px;line-height:1.45}
   .mbdim{color:var(--dim);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 底部那条 cwd：看着是一条路，其实是个按钮（点开换项目） */
+  .mbcwd{color:var(--dim);font-family:var(--mono);font-size:11.5px;background:none;border:0;
+    padding:2px 6px;border-radius:6px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+  .mbcwd:hover{background:var(--hover);color:var(--fg)}
   #search{width:calc(100% - 20px);margin:4px 10px 8px;background:var(--input);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 9px;font:11.5px var(--mono);outline:none}
   #search:focus{border-color:var(--hoverline)}
   .newchat{display:flex;align-items:center;gap:7px;width:calc(100% - 20px);margin:10px 10px 2px;padding:7px 10px;background:var(--hover);border:1px solid var(--line);border-radius:7px;color:var(--fg);font-size:12px;cursor:pointer}
@@ -206,15 +210,23 @@
     border-radius:8px;font-size:16px;line-height:1;cursor:pointer;flex:0 0 30px;margin-right:6px}
   .plus:hover{color:var(--fg);border-color:var(--soft)}
   .drop{outline:2px dashed var(--accent);outline-offset:-6px}
+  /* 子 agent 的结论：挂在它自己的名下，视觉上明显比主回答轻 */
+  .wmsg{font-size:12px;color:var(--dim);border-left:2px solid var(--hoverline);
+    padding:4px 0 4px 10px;white-space:pre-wrap;word-break:break-word}
   .qzone{display:none}
   .qzone.on{display:block}
   .qstate{font-size:11px;color:var(--dim);padding:0 4px 5px}
   .qstate .blink{color:var(--accent)}
+  /* 排队中的那句是可以点回来改的：整行可点（拿回输入框），右侧 × 只丢弃 */
   .qitem{display:flex;align-items:center;gap:8px;background:var(--hover);border:1px solid var(--soft);
-    border-radius:8px;padding:6px 9px;margin-bottom:5px;font-size:11.5px;color:var(--fg)}
+    border-radius:8px;padding:6px 9px;margin-bottom:5px;font-size:11.5px;color:var(--fg);cursor:pointer}
+  .qitem:hover{border-color:var(--hoverline)}
+  .qitem:hover .tag{color:var(--fg)}
   .qitem .ico{color:var(--dim);font-size:11px}
   .qitem .txt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .qitem .tag{font-size:10px;color:var(--dim);border:1px solid #2f3846;border-radius:5px;padding:1px 5px}
+  .qitem .tag{font-size:10px;color:var(--dim);border:1px solid #2f3846;border-radius:5px;padding:1px 5px;white-space:nowrap}
+  .qitem .x{border:0;background:transparent;color:var(--dim);font-size:12px;line-height:1;cursor:pointer;padding:2px 3px;border-radius:4px}
+  .qitem .x:hover{color:var(--bad);background:var(--badbg)}
   .mic{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:8px;width:36px;height:36px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:14px;flex:0 0 36px}
   .mic:hover{border-color:var(--hoverline);color:var(--fg)}
   .mic.rec{border-color:var(--bad);color:var(--bad);animation:pulse 1.2s ease-in-out infinite}
@@ -300,7 +312,11 @@
   textarea:focus{border-color:var(--hoverline)}
   button.go{background:var(--accent);color:#0b0e13;border:0;border-radius:8px;padding:0 20px;font-weight:600;cursor:pointer}
   button.go:disabled{opacity:.45;cursor:default}
-  #deliverables{padding:0 20px 12px;font-family:var(--mono);font-size:12.5px}
+  /* 交付物是「收尾的东西」：给自己一个上限，两千个文件也不许把对话顶出屏幕 */
+  #deliverables{padding:0 20px 12px;font-family:var(--mono);font-size:12.5px;max-height:34vh;overflow:auto}
+  #deliverables:empty{display:none}
+  .art.more{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--hover);
+    color:var(--accent);cursor:pointer;padding:6px 0;font:12.5px var(--mono)}
   .art{display:flex;gap:10px;align-items:center;padding:4px 0;border-bottom:1px solid var(--hover)}
   .art .n{flex:1;color:var(--fg)}
   .art .s{color:var(--dim)}
@@ -388,7 +404,7 @@
     <div class="modelbar">
       <button class="modelbtn" id="modelPick" title="Switch model"><span id="mpName">no model</span><span class="caret">▾</span></button>
       <button class="appr" id="apprBtn" title="How runs are approved"><span id="apprIco">🛡</span><span id="apprName">Request approval</span></button>
-      <span class="mbdim" id="mpWork"></span>
+      <button class="mbcwd" id="mpWork" title="Switch project folder"></button>
     </div>
     <div class="attach" id="attach"></div>
     <div class="fpick" id="fpick"></div>
@@ -496,9 +512,34 @@
 <script>
 const $ = (s) => document.querySelector(s);
 const logEl = $('#log'), delivEl = $('#deliverables');
+/** 这次跑出来的交付物，过程流里只显示一个计数，靠它攒 */
+let ARTIFACTS = [];
 let es = null, started = Date.now(), firstTs = 0, lastTs = 0;
 let SETTINGS = null, PROVIDERS = [];
 let CURRENT_SID = '', RUNNING = false, ALL_PROJECTS = [];
+/**
+ * 「刚发的第一句还没拿到会话号」时，后面那句话不能当新任务。
+ *
+ * RUNNING 是先置上的（按钮要立刻变 Stop），而会话号要等 /api/run 返回才有——
+ * 中间那几秒里再发一句，旧代码走的是「新任务」分支，于是同一件事被开成了两条会话，
+ * 用户在左栏看到两条，还以为自己点错了。
+ */
+let SID_WAITERS = [];
+function noteSid(id){
+  for (const w of SID_WAITERS.splice(0)) w(id);
+}
+function waitSid(ms){
+  if (CURRENT_SID) return Promise.resolve(CURRENT_SID);
+  return new Promise((resolve) => {
+    let done;
+    const timer = setTimeout(() => {
+      SID_WAITERS = SID_WAITERS.filter((x) => x !== done);
+      resolve('');
+    }, ms);
+    done = (id) => { clearTimeout(timer); resolve(id); };
+    SID_WAITERS.push(done);
+  });
+}
 /** 这条 SSE 现在挂在哪条会话上。CURRENT_SID 是"下一句续到哪"，两者必须分开：
  *  打开一条历史会话时它们是同一个，但换项目/点新对话时流要先关掉。 */
 let STREAM_SID = '';
@@ -696,7 +737,11 @@ async function loadSettings(){
     ? (SETTINGS.provider + (SETTINGS.model ? ' · ' + SETTINGS.model : ''))
     : 'pick a model';
   $('#modelPick').className = 'modelbtn' + (configured && SETTINGS.model ? '' : ' bad');
-  $('#mpWork').textContent = SETTINGS.workspace;
+  // 路径显示成 ~/x 而不是 /home/你/x：和 Codex 的 cwd 一样短，眼睛才扫得过去
+  const ws = SETTINGS.workspace || '';
+  const home = (window.INFO && window.INFO.userHome) || '';
+  $('#mpWork').textContent = home && ws.startsWith(home) ? '~' + ws.slice(home.length) : ws;
+  $('#mpWork').title = ws;
   paintApproval(SETTINGS.approval || 'ask');
   $('#task').placeholder = 'Describe the task. It runs in a sandbox; the workspace is ' + SETTINGS.workspace;
 }
@@ -854,6 +899,8 @@ for (const it of document.querySelectorAll('.setitem')) {
 $('#setModal').addEventListener('click', (e) => { if (e.target.id === 'setModal') $('#setModal').classList.remove('on'); });
 $('#modelPick').addEventListener('click', (e) => { e.stopPropagation(); openModelMenu(); });
 $('#apprBtn').addEventListener('click', (e) => { e.stopPropagation(); openApprovalMenu(); });
+// cwd 本身就是入口：看着是一条路，点下去就该能换地方（Codex 的项目就在会话里）
+$('#mpWork') && $('#mpWork').addEventListener('click', (e) => { e.stopPropagation(); openProjectModal(); });
 document.addEventListener('click', (e) => {
   const m = document.getElementById('mpMenu');
   if (m && m.classList.contains('on') && !m.contains(e.target) && e.target.id !== 'modelPick') m.classList.remove('on');
@@ -1709,8 +1756,48 @@ let sayEl = null, thinkEl = null, sawText = false;
 /** 当前的过程分组：连续的思考和工具调用收在一张卡里，别让它们刷满整屏 */
 let runGrp = null;
 
+/**
+ * 回放历史会话时，行不再按「进来一条就塞进当前组」排。
+ *
+ * 真相是磁盘上每条事件都有 seq，而屏幕上只有顺序：`step/start` 之后紧跟着
+ * 属于那一步的思考和工具，`turn/end` 后面才是下一个 turn/start。如果按回放的
+ * 到达顺序一路 append，就必然出现「第 4 轮的思考跑进了第 5 轮的 2 steps 卡里」
+ * ——截图里那行 2 steps 后面跟着 4 个 Thinking 就是这么来的。
+ *
+ * 所以回放期间：先把所有行按「流」的原始位置挂到文档片段里，再按里程碑
+ * （turn/start、turn/end、assistant/message）切成卡片，最后把每条流整体嵌回
+ * 它开场那一行的后面。live 渲染不受影响。
+ */
+let REPLAY = false;
+let replayStream = null;
+let replayAnchor = null;
+const replayStreams = [];
+
 function openRun(){
   if (runGrp) return runGrp;
+  if (REPLAY && replayStream){
+    // 回放：这条「流」第一次用到时就建卡并**当场挂上去**。
+    // 挂上去的那一刻就是它该在的位置——之后的工具行都被搬进这张卡，
+    // 再往后的行自然排在它后面。不需要事后再找锚点搬一次
+    // （之前非要「先攒着、最后嵌回锚点」，结果锚点早被自己挤掉，卡片全跑到末尾）。
+    if (!replayStream.card){
+      const el = document.createElement('div');
+      el.className = 'run';
+      const head = document.createElement('div');
+      head.className = 'rhead';
+      head.innerHTML = '<span class="car">▾</span><span class="ttl">working…</span><span class="sum"></span>';
+      head.onclick = () => el.classList.toggle('fold');
+      const body = document.createElement('div');
+      body.className = 'rbody';
+      el.appendChild(head);
+      el.appendChild(body);
+      logEl.appendChild(el);
+      replayStream.card = el;
+      replayStream.body = body;
+    }
+    runGrp = { el: replayStream.card, body: replayStream.body, steps: replayStream.steps, files: replayStream.files };
+    return runGrp;
+  }
   const el = document.createElement('div');
   el.className = 'run';
   const head = document.createElement('div');
@@ -1745,15 +1832,58 @@ function procRow(cls, text){
   const el = row(cls, text);
   el.remove();
   g.body.appendChild(el);
-  logEl.scrollTop = logEl.scrollHeight;
+  if (REPLAY && replayStream){
+    // 卡片自己的步数记在流上：回放时 runGrp 是临时对象，改它不会留下痕迹
+    replayStream.steps = Math.max(replayStream.steps, replayStream.touched);
+    g.steps = replayStream.steps;
+  } else {
+    logEl.scrollTop = logEl.scrollHeight;
+  }
   return el;
+}
+
+/* ---- 回放时按 milestone 切流：每一轮里「过程」和「结论」是两段 ---- */
+function replaySplit(){
+  if (!REPLAY || !replayStream) return;
+  const prev = replayStream;
+  replayStream = null;
+  // 这一段已经收笔了：接下来的行属于同一个 turn 的新一段
+  if (prev.card){
+    prev.card.classList.add('fold');
+    replayStreams.push(prev);
+  }
+}
+
+function replayTouch(anchorEl, stepNo){
+  if (!REPLAY) return;
+  if (!replayStream){
+    replayStream = { anchor: anchorEl, card: null, body: null, steps: 0, touched: 0, files: new Map() };
+  }
+  replayStream.anchor = replayStream.anchor || anchorEl;
+  if (stepNo) replayStream.touched = Math.max(replayStream.touched, stepNo);
+}
+
+/** 回放收尾：卡片已经在正确位置上（见 openRun），这里只补标题和时间线 */
+function replayFinish(){
+  for (const st of replayStreams){
+    if (!st.card) continue;
+    const n = Math.max(st.steps, st.touched);
+    const ttl = st.card.querySelector('.ttl');
+    if (ttl) ttl.textContent = n ? n + (n === 1 ? ' step' : ' steps') : 'tools';
+  }
+  replayStreams.length = 0;
+  replayStream = null;
+  REPLAY = false;
+  logEl.scrollTop = 0;
 }
 
 function closeRun(){
   if (!runGrp) return;
   updateRunHead();
-  runGrp.el.classList.add('fold');
+  // 回放时不收起：卡片要留在原处等着整体嵌回去，收进折叠里反而看不出范围
+  if (!REPLAY) runGrp.el.classList.add('fold');
   runGrp = null;
+  if (REPLAY) replayStream = null;
 }
 
 function closeStreams(){
@@ -2114,22 +2244,59 @@ function setupAttach(){
 }
 
 /** 待发队列：说出来但还没轮到它的那些话 */
-function addQueued(text){
+function addQueued(text, id){
   $('#qzone').classList.add('on');
   const el = document.createElement('div');
   el.className = 'qitem';
   el.dataset.text = text;
+  if (id) el.dataset.id = id;
+  el.title = 'Click to take it back into the box and edit it before it lands';
+  // 标签写「editable」而不是「queued」：这句话现在还有救，点一下就回来
   el.innerHTML = '<span class="ico">⏎</span><span class="txt">' + esc(text) + '</span>'
-    + '<span class="tag">queued</span>';
+    + '<span class="tag">edit</span>'
+    + '<button class="x" type="button" title="Drop it" aria-label="Drop it">✕</button>';
   $('#qlist').appendChild(el);
   paintQueueState();
 }
 
-function dropQueued(text){
+/** 把一句从队列里摘掉：有 id 按 id（只摘这一句），没 id 按文本兜底 */
+function dropQueued(text, id){
   for (const el of [...document.querySelectorAll('#qlist .qitem')]){
-    if (el.dataset.text === text) el.remove();
+    const hit = id ? el.dataset.id === id : el.dataset.text === text;
+    if (hit) el.remove();
   }
   paintQueueState();
+}
+
+/**
+ * 点一条排队中的话 → 撤回 + 放回输入框。
+ *
+ * 撤回必须先走服务端：只从屏幕上删掉的话，原句会在下一个 step 边界照常生效，
+ * 用户改完再发就变成了「两句话都被执行」。
+ */
+async function editQueued(el){
+  const id = el.dataset.id || '';
+  const text = el.dataset.text || '';
+  let withdrawn = false;
+  if (id && CURRENT_SID){
+    try {
+      const r = await fetch('/api/steer/withdraw', {
+        method: 'POST', headers: {'content-type':'application/json'},
+        body: JSON.stringify({ sessionId: CURRENT_SID, id }),
+      });
+      const j = await r.json();
+      withdrawn = !!j.ok;
+    } catch { /* 断网了也要让人能改：本地摘下，再发一次即可 */ }
+  }
+  el.remove();
+  paintQueueState();
+  const box = $('#task');
+  box.value = text;
+  box.focus();
+  try { box.setSelectionRange(text.length, text.length) } catch {}
+  if (id && !withdrawn){
+    row('dim', 'that note had already landed — the edited version will be sent as a new note');
+  }
 }
 
 function clearQueue(){
@@ -2137,12 +2304,35 @@ function clearQueue(){
   paintQueueState();
 }
 
+// 队列交互：点整行 = 拿回输入框改；点 × = 直接丢弃。
+// 丢弃也要撤服务端那一份，否则「屏幕上没了」但它照样会在下一步生效。
+$('#qlist').addEventListener('click', async (e) => {
+  const el = e.target.closest('.qitem');
+  if (!el) return;
+  const id = el.dataset.id || '';
+  if (e.target.closest('.x')) {
+    e.stopPropagation();
+    el.remove();
+    paintQueueState();
+    if (id && CURRENT_SID) {
+      try {
+        await fetch('/api/steer/withdraw', {
+          method: 'POST', headers: {'content-type':'application/json'},
+          body: JSON.stringify({ sessionId: CURRENT_SID, id }),
+        });
+      } catch { /* 撤不掉就算了，顶多它还是按原样生效一次 */ }
+    }
+    return;
+  }
+  await editQueued(el);
+});
+
 function paintQueueState(){
   const left = document.querySelectorAll('#qlist .qitem').length;
   const st = $('#qstate');
   if (RUNNING){
     st.innerHTML = '<span class="blink">●</span> working'
-      + (left ? ' · ' + left + ' note' + (left === 1 ? '' : 's') + ' will land at the next step' : '');
+      + (left ? ' · ' + left + ' note' + (left === 1 ? '' : 's') + ' will land at the next step — click one to edit it' : '');
   } else {
     st.textContent = '';
   }
@@ -2167,10 +2357,20 @@ function setRunning(on){
   paintQueueState();
 }
 
+/** 这件事是谁做的：子 agent 的事件都带着自己的名字（worker1、worker2…） */
+function who(p){
+  return p && p.agent ? String(p.agent) + ' · ' : '';
+}
+
 function render(kind, p){
   if (p && typeof p._ts === 'number'){ lastTs = p._ts; if (!firstTs) firstTs = p._ts; }
   switch(kind){
     case 'turn/start': {
+      // 子 agent 开的是自己的内部一轮，不是用户又说了句话：
+      // 照常渲染的话，主对话里会冒出一个「look at the config」的用户气泡
+      if (p.agent) break;
+      // 新的一轮从用户那句话开始：上一轮的过程卡到此为止，后面的行归这一轮
+      replaySplit();
       sawText = false;
       closeRun();
       // 用户这句话本身就是对话的一部分。以前只显示模型的活，回放一整段多轮
@@ -2199,28 +2399,47 @@ function render(kind, p){
     }
     // 屏幕上不出现 provider / 模型名 / token 数——那是我们的账，不是用户的进度。
     // 模型在想什么由 reasoning/delta 实时流出来；这里只在没有思考内容的模型上占位。
-    case 'llm/request': procRow('dim','Thinking'); break;
+    case 'llm/request': procRow('dim', who(p) + 'Thinking'); break;
+    // 子 agent：起手说清它是谁、要干什么；收尾说清它花了多少步。
+    // 没有这两行，屏幕上只有一串无主的工具调用，用户不知道是谁在读文件。
+    case 'agent/spawned': {
+      const t = String(p.task || '').replace(/\s+/g, ' ').slice(0, 120);
+      row('dim', '↳ ' + esc(String(p.agent || 'worker')) + ' started — ' + esc(t));
+      break;
+    }
+    case 'agent/finished': {
+      const name = esc(String(p.agent || 'worker'));
+      if (p.error) { row('bad', '✕ ' + name + ' failed — ' + esc(String(p.error))); break; }
+      const secs = p.duration_ms ? (Number(p.duration_ms) / 1000).toFixed(1) + 's' : '';
+      row('ok', '✓ ' + name + ' finished · ' + p.steps + ' steps' + (secs ? ' · ' + secs : ''));
+      break;
+    }
     // llm/response 不显示：工具调用行紧接着就会出现，多一行统计只是噪音
     case 'tool/call': {
       // label 是服务端翻译好的人话（"Reading src/cli.ts"），永远优先用它。
       // 只有翻译缺失时才退回原始信息，绝不会把 run_command 这种词直接扔到屏幕上。
       const text = p.label || (p.tool === 'run_command' && p.argv ? p.argv.join(' ') : String(p.tool || 'working'))
-      procRow('tool', '● ' + esc(String(text)));
+      procRow('tool', '● ' + who(p) + esc(String(text)));
       break;
     }
     case 'tool/result':
       // 「✗」只留给真的失败；exit=0 显示成 Done，别让用户去读退出码
-      procRow(p.status === 'ok' ? 'ok' : 'bad', (p.status === 'ok' ? '✓ ' : '✗ ') + esc(String(p.label || (p.status === 'ok' ? 'Done' : 'That did not work'))));
+      procRow(p.status === 'ok' ? 'ok' : 'bad', (p.status === 'ok' ? '✓ ' : '✗ ') + who(p) + esc(String(p.label || (p.status === 'ok' ? 'Done' : 'That did not work'))));
       break;
     case 'steering/message':
       // 排队时只进输入框上方的暂存区，应用了才落到对话里——这样「还没轮到」
       // 和「已经照做了」在屏幕上是两个地方，不会混在一起
       if (p.status === 'applied'){
-        dropQueued(p.text || '');
+        dropQueued(p.text || '', p.id || '');
         row('ok', '↳ took it: ' + esc(p.text || ''));
       } else {
-        addQueued(p.text || '');
+        addQueued(p.text || '', p.id || '');
       }
+      break;
+    // 撤回（多半是用户点开了队列里的一条去改写）：屏幕上那条跟着消失，
+    // 但它已经回到输入框了，所以不进过程流——那不是 agent 做了什么
+    case 'steering/withdrawn':
+      dropQueued('', p.id || '');
       break;
     // 工作区变了（通常是用户在外面的编辑器里改的；agent 自己改的走 tool/result）
     // 不往过程流里塞——那不是 agent 做的一步，塞进去会打乱顺序感
@@ -2246,8 +2465,13 @@ function render(kind, p){
     case 'reasoning/delta': pushThink(p.text || ''); break;
     case 'step/start':
       closeStreams();
-      openRun().steps = (p.step_index || ((runGrp && runGrp.steps) || 0) + 1);
-      updateRunHead();
+      // 子 agent 的步骤不另开一组：它自己已经有「↳ worker1 started」这一行当着，
+      // 再开一组会让主对话的步数被覆盖，看起来像主 agent 一步走了四次
+      if (REPLAY) replayTouch(replayAnchor, Number(p.step_index) || 0);
+      if (!p.agent){
+        openRun().steps = (p.step_index || ((runGrp && runGrp.steps) || 0) + 1);
+        updateRunHead();
+      }
       break;
     case 'checkpoint/file': closeStreams(); fileCard(p, p.seq || 0); break;
     case 'approval/needs': void askApproval(p); break;
@@ -2265,14 +2489,24 @@ function render(kind, p){
       break
     }
     case 'session/compacted': row('warn','⟳ compacted: dropped ' + p.dropped_messages + ' msg(s), summary ~' + p.summary_chars + ' chars'); break;
-    case 'artifact/emitted': row('ok','◆ artifact ' + esc(p.path) + '  ' + p.bytes + ' B'); break;
+    case 'artifact/emitted':
+      // 一次跑出两千个文件时，逐个刷进过程流就是一堵哈希墙——对话被顶到屏幕外，
+      // 想往回翻还得滚很久。收进一个计数行，具体文件交给收尾的交付物面板。
+      ARTIFACTS.push(p);
+      if (ARTIFACTS.length === 1 || ARTIFACTS.length % 25 === 0) artRow();
+      break;
     case 'turn/end':
+      // 子 agent 的一轮是内部循环，不是这次对话的结束：它的 turn/end 既不该
+      // 报「Finished · N steps」，也不该把主线正在跑的那一组关掉
+      if (p.agent) break;
+      replaySplit();
       closeStreams();
       closeRun();
       // stop_reason 是内部枚举（model / error / interrupted），屏幕上不该出现
       {
         const why = p.stop_reason === 'interrupted' ? 'Stopped'
           : p.stop_reason === 'error' ? 'Stopped on an error'
+          : p.stop_reason === 'stuck' ? 'Stopped — the same action kept failing'
           : p.stop_reason === 'max-steps' ? 'Hit the step limit'
           : p.stop_reason === 'budget' ? 'Stopped: budget used up'
           : 'Finished';
@@ -2283,7 +2517,15 @@ function render(kind, p){
     // 否则同一段回答出现两次，看起来像模型说了两遍。
     // 打开历史会话时这条是唯一的答案来源（实时那次另有 answer 事件）。
     case 'assistant/message': {
+      // 说完了就是这一段结束：后面再出现的行属于下一段，不是这张卡的继续
+      replaySplit();
       const t = typeof p.text === 'string' ? p.text : '';
+      // 子 agent 的结论不是这次对话的答案：它要挂在 worker 名下，
+      // 而不是顶掉主 agent 稍后要说的那段话
+      if (p.agent && t){
+        row('dim', '<div class="wmsg">' + esc(String(p.agent)) + ' → ' + esc(t) + '</div>');
+        break;
+      }
       if (!sawText && t){
         row('answer', '<div class="answer">' + esc(t) + '</div>');
         sawText = true;
@@ -2308,10 +2550,42 @@ function render(kind, p){
   }
 }
 
-function renderDeliverables(items, verifications){
+/**
+ * 交付物面板。
+ *
+ * 一次跑出两千个文件时，这里原来会老老实实画两千行——屏幕上就是一堵墙，
+ * 滚不到头，而且每一行都要把 6000 条验证记录过滤一遍（2000×6003 次比较，
+ * 页面直接卡住）。Codex 那种做法是：给个摘要，想看全部再去翻。
+ */
+/** 过程流里那唯一一行「产出了 N 个文件」——不重复刷屏，原地更新 */
+let ART_ROW = null;
+function resetArtifacts(){
+  ARTIFACTS = [];
+  ART_ROW = null;
+}
+
+function artRow(){
+  const n = ARTIFACTS.length;
+  if (!ART_ROW){
+    ART_ROW = procRow('ok', '◆ produced ' + n + ' file' + (n === 1 ? '' : 's') + ' — listed at the bottom');
+    return;
+  }
+  const c = ART_ROW.querySelector('.c');
+  if (c) c.textContent = '◆ produced ' + n + ' file' + (n === 1 ? '' : 's') + ' — listed at the bottom';
+}
+
+function renderDeliverables(items, verifications, showAll){
   delivEl.innerHTML = '';
-  for (const a of items){
-    const vs = verifications.filter(v => v.path === a.path);
+  // 先按路径建索引：每行只查一次，不再对 6000 条从头扫
+  const byPath = new Map();
+  for (const v of verifications){
+    if (!byPath.has(v.path)) byPath.set(v.path, []);
+    byPath.get(v.path).push(v);
+  }
+  const SHOW = showAll ? items.length : 12;
+  const shown = items.slice(0, SHOW);
+  for (const a of shown){
+    const vs = byPath.get(a.path) || [];
     const passed = vs.filter(v => v.result === 'pass').length;
     const ok = vs.length > 0 && passed === vs.length;
     const d = document.createElement('div');
@@ -2327,6 +2601,15 @@ function renderDeliverables(items, verifications){
       f.innerHTML = '<span class="badge r">' + v.result + '</span><span class="n dim">' + esc(JSON.stringify(v.detail).slice(0,140)) + '</span>';
       delivEl.appendChild(f);
     }
+  }
+  // 剩下的不能悄悄吞掉：写清还有多少，并给一个能展开的口子。
+  // 用户看到 2000 个文件里的 12 个却没有任何提示，会以为「就这些」。
+  if (items.length > SHOW){
+    const more = document.createElement('button');
+    more.className = 'art more';
+    more.textContent = '+ ' + (items.length - SHOW) + ' more file' + (items.length - SHOW === 1 ? '' : 's');
+    more.onclick = () => renderDeliverables(items, verifications, true);
+    delivEl.appendChild(more);
   }
 }
 
@@ -2346,13 +2629,20 @@ function attach(id, opts){
     firstTs = 0;
     runGrp = null;
     sawText = false;
+    resetArtifacts();
   }
   $('#sid').textContent = id;
   CURRENT_SID = id;
   STREAM_SID = id;
-  es = new EventSource('/api/stream?session=' + encodeURIComponent(id) + (o.live ? '&live=1' : ''));
+  noteSid(id);
+  // after=<seq>：磁盘快照读到第几条。缺口由服务端补齐，否则「正在跑的时候
+  // 切走再切回来」会丢掉快照之后、实时流之前的那一段，看着像它停了
+  const qs = o.after !== undefined
+    ? '&after=' + encodeURIComponent(String(o.after))
+    : (o.live ? '&live=1' : '');
+  es = new EventSource('/api/stream?session=' + encodeURIComponent(id) + qs);
   for (const kind of ['turn/start','step/start','llm/request','llm/response','tool/call','tool/result','plan/updated',
-                      'steering/message','text/delta','reasoning/delta','checkpoint/file','approval/needs','approval/requested','approval/resolved','session/compacted','artifact/emitted',
+                      'steering/message','steering/withdrawn','agent/spawned','agent/finished','text/delta','reasoning/delta','checkpoint/file','approval/needs','approval/requested','approval/resolved','session/compacted','artifact/emitted',
                       'turn/end','assistant/message','answer','deliverables','done','error','budget/warning','budget/exceeded','fs/changed']){
     es.addEventListener(kind, (e) => render(kind, JSON.parse(e.data)));
   }
@@ -2382,10 +2672,18 @@ async function openSession(id){
   started = Number.isFinite(t0) ? t0 : Date.now();
   firstTs = Number.isFinite(t0) ? t0 : 0;
   lastTs = 0;
+  // 回放：行按流的原始位置排，最后整体嵌回去（见 replayFinish 上面的注释）
+  REPLAY = true;
+  replayStream = null;
+  replayStreams.length = 0;
   for (const ev of detail.events){
+    replayAnchor = null;
     const at = Date.parse(ev.timestamp);
     render(ev.kind, Number.isFinite(at) ? { ...ev.payload, _ts: at } : ev.payload);
+    // 每收到一条事件，屏幕上最后一个顶层节点就是这段回放目前的位置
+    replayAnchor = logEl.lastElementChild;
   }
+  replayFinish();
   // 老会话没有 assistant/message 事件，只有落盘的那一句；有事件就别再补，否则重复
   const answered = detail.events.some((e) => e.kind === 'assistant/message');
   if (detail.answer && !answered) render('answer', { text: detail.answer });
@@ -2394,8 +2692,15 @@ async function openSession(id){
   // 打开一条会话 = 接下来是在跟它说话，输入框的提示要跟着改，
   // 否则用户会以为再发一句是「新任务」
   $('#task').placeholder = 'Say what to change — this continues the conversation above';
-  // 屏幕上已经有全部历史，所以不 clear、也不要缓存补发（live=1）
-  attach(id, { clear: false, live: true });
+  // 屏幕上已经有全部历史，所以不 clear；用 lastSeq 当游标接实时流，
+  // 快照与连接之间的那几条会被服务端补上（正是「切回来发现少了一截」的缺口）
+  const lastSeq = typeof detail.lastSeq === 'number'
+    ? detail.lastSeq
+    : (detail.events.length ? detail.events[detail.events.length - 1].seq : 0);
+  attach(id, { clear: false, after: lastSeq });
+  // 这条会话可能还在跑：切回来时按钮得是 Stop，否则用户会以为它已经结束、
+  // 再发一句就变成「排队等它跑完」，而屏幕上一点提示都没有
+  setRunning(Boolean(detail.running));
 }
 
 $('#run').addEventListener('submit', async (e) => {
@@ -2407,13 +2712,20 @@ $('#run').addEventListener('submit', async (e) => {
     setMsg('pick a provider and paste a key first', true);
     return;
   }
-  // 正在跑：这句话是插进去，不是另起一次
-  if (RUNNING && CURRENT_SID){
+  // 正在跑：这句话是插进去，不是另起一次。
+  // 注意这里不判 CURRENT_SID —— 刚发出去的那一句还在等会话号，这时再发
+  // 必须等它回来（最多 5 秒）再插话，否则会悄悄开出第二条会话。
+  if (RUNNING){
     $('#go').disabled = true;
     try {
+      const sid = CURRENT_SID || await waitSid(5000);
+      if (!sid){
+        setMsg('still starting the first message — give it a second and send again', true);
+        return;
+      }
       const r = await fetch('/api/steer', {
         method: 'POST', headers: {'content-type':'application/json'},
-        body: JSON.stringify({ sessionId: CURRENT_SID, text: task }),
+        body: JSON.stringify({ sessionId: sid, text: task }),
       });
       const j = await r.json();
       if (j.error){ row('bad', 'ERROR: ' + j.error); return }
