@@ -2,8 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>UnitHarness</title>
+<!-- 装到手机主屏幕：manifest 给 Android/Chrome，apple-* 给 iOS Safari -->
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0b0b0d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="UnitHarness">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <style>
   /* 「一直都行」的勾选项：显式写出会记住什么前缀、在哪个目录 */
   /* 浮在输入框上方：写死 96px 会正好压在模型条上，把 cwd 挤成 ~/Applications/T… */
@@ -3247,6 +3254,12 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
 
 boot();
 restorePending();
+
+// 注册 service worker：手机浏览器只有见到它，「添加到主屏幕」才会升级成真正的安装。
+// 失败不算错误——非 localhost 的 http 页面本来就不允许注册。
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
 </script>
 </body>
 </html>

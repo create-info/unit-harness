@@ -11,6 +11,7 @@ import pathMod, { join as pjoin } from 'node:path'
 import fsSync, { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import fs6 from 'node:fs'
+import * as nodeCrypto from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
 import {
   EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey, readState,
@@ -20,6 +21,7 @@ import {
   loadMcpServers, discoverSkills, skillRoots, globalMcpConfigPath, projectMcpConfigPath,
   expandMentions,
 } from '@unit-harness/core'
+import { pluginDirs } from './plugin-dirs.ts'
 import type { ApprovalGate, ApprovalRequest, Message } from '@unit-harness/core'
 import UI from './ui.html'
 import { asrStatus, transcribe } from './asr.ts'
@@ -34,9 +36,118 @@ interface Subscriber {
   write: (chunk: string) => void
 }
 
+
+/**
+ * 装到手机主屏幕用的图标。
+ *
+ * 192 和 512 两个尺寸是 Chrome 判定「可安装」的硬条件（少一个就不给安装提示），
+ * 所以它们必须和网页一起打包，不能指望用户的手机去 fetch 一张外部图。
+ * 图案是暗底 + 两道紫斜杠 + 一个绿点：一眼能认出来，不靠文字。
+ */
+const ICON_192 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAYAAABS3GwHAAADfklEQVR42u3dMU4jWRSGUfxkkZQceAvsgBURIBGxB8QeiJAI' +
+  'WBE7YAsEiIQEIgIQBuyiqt57/znZjLqHBu5X95qhxWoYNm9HEKr4ECAAEAAIAAQAAgABgABAACAAEAAIAAQAAgABQJvWrb8D' +
+  'w2brs7iwl+enZv/sq9b+QoyBF0RcAIZeDJEBGHwhRAZg8IUQGYDBF0JkAAZfCEsphp/kz38x/CRHsMgJZPCp5SQqhp/kbVAM' +
+  'P8kRFMNPcgTF8JMcgW+HJlrpoWJsgSoDMPzUPkfF8JMcgdcAeA3g6U/qFrABsAE8/UndAjYANoCnP6lbwAbABvD0J3UL2ADY' +
+  'ACAA5w+BZ5ANgA0AAgABuP/Jeh1gA2ADgABAACAAEAAIAAQAAgABgABAACAAEAAIoBMXJw9dvi12Wxt6Q59s9M8JbvUvxPw0' +
+  'jLePp82+rURjfrZw1AbwtCduAxw6iIc8med8W/zPBvAimGjdBzDn09WTXABeL3i9IABbAAGAAJxBziABOIMQgC1gCwgABOAM' +
+  'QgDOIGeQAGwBBAACcAY5gwTgDEIAtoAtIAAQgDMIATiDEIAtgABAAM4gBOAMQgC2AAIAATiDEIAzCAHYAggABOAMQgDOIARg' +
+  'CyAAEIAzCAE4gxCALYAAQADOIAHgDBIAtoAAQAA4gwSAM0gA2AICAAHgDBKAM8gZ1KG1D8G0T+a5Bvq7t/V6f/7pn4/P7nxS' +
+  'BNC/r4P/9d8LwQnU7Rm0a/j3/TUCwIthAdDSFri5uvnXTSEAEABOEwHQ2IthBBC3BS6vL//8a30pVABwtBqGzduY/8Cw2Xqi' +
+  'T3zG7Pu2fvsKT29P/5fnp4N/r/8T3OHrhI8B960QNsCsW2DKwZ/zbdkANPO0xwbABjj49/oqENEEgABAACAAEAAIAAQAAgAB' +
+  'gABAACAAEAAIAKIDGPO92LD0/NkA2AAgABCA1wHk3P82ADaADwECcAYReP7YANgANVYJc82ZDYANYAuQ+PS3AbABWqgUppor' +
+  'GwAbwBYg8ek/+QYQAbXPUWn5D4/h9xoAag/AFqDWuSk9vTMY/qpPIBFQ25yUnt85DP9vRv+Y1DH8iFWWfjCWxHcaw19FACJg' +
+  '6c//oieQk8jgL62qAIRg8AUgBIMvACEYfAGIwdALQBAGXgAwEd8OjQBAACAAEAAIAAQAAgABgABAACAAEAAIAFr2DlvsbaG2' +
+  'IblQAAAAAElFTkSuQmCC',
+  'base64',
+)
+const ICON_512 = Buffer.from(
+  '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' +
+  'DEYAAAAASUVORK5CYII=',
+  'base64',
+)
+
+/**
+ * 可安装的网页应用描述。
+ *
+ * `display: standalone` 让它在手机上不是「浏览器里开个网页」，而是没有地址栏的
+ * 一切正常 app 的样子；`start_url: '/?src=homescreen'` 留个记号，事后能分清
+ * 哪些请求是从主屏幕点进来的。
+ */
+const MANIFEST = JSON.stringify({
+  name: 'UnitHarness',
+  short_name: 'UnitHarness',
+  description: 'A local coding agent that proves its work.',
+  start_url: '/?src=homescreen',
+  scope: '/',
+  display: 'standalone',
+  orientation: 'any',
+  background_color: '#0b0b0d',
+  theme_color: '#0b0b0d',
+  icons: [
+    { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+    { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+  ],
+}, null, 2)
+
+/**
+ * Service worker：只做一件事——把请求放过去。
+ *
+ * Chrome 的安装判定曾经要求「有 fetch 处理器」，现在放宽了，但留着它不亏：
+ * 离线时至少不会白屏报错，而缓存策略写多了反而会把新的 UI 锁在手机里。
+ */
+const SERVICE_WORKER = `self.addEventListener('install', (e) => self.skipWaiting())
+self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()))
+self.addEventListener('fetch', () => {})
+`
+
 export interface ServeOptions {
   port?: number
   host?: string
+  /** 非本机监听时要求的口令；不给就自己生成一个并写进 $UH_HOME/serve-token */
+  token?: string
   /** 需要 MCP / skills 时置 false */
   quietStartup?: boolean
   /** 没有正在跑的会话时，/api/open 以谁为根目录（默认进程 cwd） */
@@ -291,6 +402,25 @@ function captureScreen(out: string): Promise<void> {
   })
 }
 
+/** 口令文件：只有本机用户读得到（0600）。没有就生成一个。 */
+function serveToken(): string {
+  const file = pjoin(uhHome(), 'serve-token')
+  try {
+    const t = fs6.readFileSync(file, 'utf8').trim()
+    if (t) return t
+  } catch { /* 头一次启动，还没有 */ }
+  const t = nodeCrypto.randomBytes(18).toString('base64url')
+  fs6.mkdirSync(uhHome(), { recursive: true })
+  fs6.writeFileSync(file, t + '\n', { mode: 0o600 })
+  return t
+}
+
+/** 定长比较，别让口令能被逐字符猜出来 */
+function safeEqual(a: string, b: string): boolean {
+  if (!a || !b || a.length !== b.length) return false
+  return nodeCrypto.timingSafeEqual(Buffer.from(a), Buffer.from(b))
+}
+
 function makeWebGate(sidRef: { id: string }): ApprovalGate {
   return {
     async request(req: ApprovalRequest) {
@@ -461,9 +591,44 @@ function collectSessions(workspace?: string): Array<{ id: string; label: string;
 export async function startServer(opts: ServeOptions = {}): Promise<{ url: string; close: () => void }> {
   const port = opts.port ?? 7878
   const host = opts.host ?? '127.0.0.1'
+  // 只听 loopback 时不设防（本机就是你的）。一旦绑到别的地址，这个端口
+  // 就能让局域网里任何人驱动一个有 shell 的 agent——必须带口令。
+  const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+  const token = loopback ? '' : (opts.token || process.env.UH_SERVE_TOKEN || serveToken())
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${host}:${port}`)
+
+    if (token) {
+      const given = url.searchParams.get('t')
+        ?? String(req.headers['x-uh-token'] ?? '')
+        ?? ''
+      const cookie = /(?:^|; )uh_t=([^;]+)/.exec(String(req.headers.cookie ?? ''))?.[1] ?? ''
+      const ok = safeEqual(given, token) || safeEqual(cookie, token)
+      if (!ok) {
+        // 只放行「装成 app」需要的静态件，接口一个都不给
+        const open = ['/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/sw.js', '/favicon.ico', '/favicon.png'].includes(url.pathname)
+        if (!open) {
+          res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' })
+          res.end('<!doctype html><meta charset="utf-8"><body style="background:#0b0b0d;color:#e6e6e6;font:15px system-ui;padding:40px">'
+            + '<h2>需要一个口令</h2><p>这个 uh 监听在 ' + host + '，不是只有你能访问的地址。</p>'
+            + '<p>口令在启动它的那台机器上：<code>~/.uh/serve-token</code>。'
+            + '打开 <code>/?t=&lt;口令&gt;</code> 即可，之后浏览器会记住。</p></body>')
+          return
+        }
+      } else if (given && !cookie) {
+        // 第一次带 ?t= 进来：种 cookie 并把口令从地址栏去掉，
+        // 否则它会留在历史记录、截图和别人的录像里
+        const rest = new URL(url.toString())
+        rest.searchParams.delete('t')
+        res.writeHead(302, {
+          location: rest.pathname + (rest.search || ''),
+          'set-cookie': `uh_t=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`,
+        })
+        res.end()
+        return
+      }
+    }
 
     // 浏览器标签页的图标：不提供就会去要 /favicon.ico，然后拿到 404
     if (req.method === 'GET' && (url.pathname === '/favicon.ico' || url.pathname === '/favicon.png')) {
@@ -475,6 +640,23 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
       res.end(UI)
+      return
+    }
+
+    // 「装到手机主屏幕」需要三样东西：manifest、图标、一个 fetch 处理器
+    if (req.method === 'GET' && url.pathname === '/manifest.webmanifest') {
+      res.writeHead(200, { 'content-type': 'application/manifest+json; charset=utf-8', 'cache-control': 'no-cache' })
+      res.end(MANIFEST)
+      return
+    }
+    if (req.method === 'GET' && (url.pathname === '/icon-192.png' || url.pathname === '/icon-512.png')) {
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=86400' })
+      res.end(url.pathname === '/icon-192.png' ? ICON_192 : ICON_512)
+      return
+    }
+    if (req.method === 'GET' && url.pathname === '/sw.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' })
+      res.end(SERVICE_WORKER)
       return
     }
 
@@ -1231,6 +1413,8 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       const earlyEvents: Array<{ kind: string; payload: Record<string, unknown> }> = []
       const h = new Harness({
         record: true,
+        // 网页和终端用同一份插件清单：不带这个，浏览器/手机插件在网页里等于不存在
+        pluginDirs: pluginDirs(),
         // 标签只在开新会话时有用；续跑时改它会把这个对话在左栏改名成最后一句
         // 会话名用用户写的原话：用展开后的 task 会让左栏显示成
         // `<mcp_servers> - server "mock": ...`

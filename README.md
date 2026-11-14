@@ -574,6 +574,68 @@ The installers are **unsigned**: macOS needs right-click → Open the first time
 Windows shows a SmartScreen prompt. Signing requires certificates we don't have;
 that is a distribution problem, not a code one.
 
+## On your phone
+
+Two different things, and it is worth keeping them apart:
+
+| you want | what runs where |
+|---|---|
+| the *interface* in your pocket | `uh serve` on your computer, the phone just opens it |
+| the agent to *drive* a phone | the phone is the target; adb / hdc / WebDriverAgent connect to it |
+
+### The interface, in your pocket
+
+```console
+$ uh serve --lan
+UnitHarness UI  http://0.0.0.0:7878
+
+  手机 / 平板打开（同一 Wi-Fi，或先连上 Tailscale）：
+    http://192.168.1.104:7878/?t=geWSrH19eI7bj_SAverayqKA
+  口令也只写在这里：~/.uh/serve-token
+```
+
+Open that URL once on the phone. The `?t=` is exchanged for an HttpOnly cookie
+and stripped from the address bar on the next hop, because a token in a URL ends
+up in your history, in screenshots and in whatever screen-sharing you do next.
+After that, "Add to Home screen" gives you an icon that opens without the address
+bar: `/manifest.webmanifest`, a 192 and a 512 PNG and a (deliberately empty)
+service worker are served by the binary itself, so nothing is fetched from a CDN.
+
+**A token is not optional off loopback.** The port in front of a shell-running
+agent is a remote execution endpoint; `--lan` without a password would let anyone
+on the Wi-Fi `POST /api/run` into your workspace. `127.0.0.1` stays tokenless
+because localhost is you. Over plain http, Chrome offers "Add to Home screen"
+(shortcut) but not the full install prompt — for the app-like version put it
+behind HTTPS, e.g. `tailscale serve --bg 7878`, which also means the phone can
+reach it from anywhere without opening a port.
+
+### Driving a real phone
+
+```console
+$ uh phone status
+  · android   adb             没装 adb：sudo apt install android-tools-adb（…）
+  · harmony   hdc             没装 hdc：装 DevEco Studio 的 toolchains，把 hdc 加到 PATH
+  · ios       WebDriverAgent  连不上 http://127.0.0.1:8100。iOS 必须你自己用 Xcode …
+```
+
+The `plugins/phone` plugin drives Android (`adb`), HarmonyOS (`hdc`) and iOS
+(`WebDriverAgent`) through one shape: read the semantic tree, tap, type, swipe,
+screenshot. Android and HarmonyOS are full-featured; iOS is attach-only, because
+WDA has to be signed with your Apple developer account and trusted by hand — the
+plugin says so rather than pretending.
+
+For Android over Wi-Fi, pair once over USB and then unplug:
+
+```console
+$ adb tcpip 5555 && adb connect 192.168.1.42:5555
+$ uh phone status          # android now says 已连接
+$ uh run "打开设置，把蓝牙关掉"   # the agent reads the screen and taps
+```
+
+Nothing about the phone changes: no app to install on the target device, no
+accessibility service, no root. What it does need is that the device is reachable
+from the machine running `uh`.
+
 ## Desktop UI
 
 ```console

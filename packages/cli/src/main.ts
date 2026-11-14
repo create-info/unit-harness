@@ -6,7 +6,9 @@
  * 不含 LLM 与剧本执行——那是 P1。
  */
 import os from 'node:os'
-import { join, sep } from 'node:path'
+import { join, sep, dirname } from 'node:path'
+import { realpathSync } from 'node:fs'
+import { execFile } from 'node:child_process'
 
 import {
   Harness, EventStore, describeIsolation, describeAssertion, resolveProvider,
@@ -25,6 +27,7 @@ import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSy
 import * as readline from 'node:readline'
 
 import { VERSION } from './version.ts'
+import { pluginDirs } from './plugin-dirs.ts'
 import { startServer, startServerOrRestart, openBrowser } from './serve.ts'
 import { startA2A } from './a2a.ts'
 import { startAcp } from './acp.ts'
@@ -38,12 +41,6 @@ function localTime(iso: string): string {
   const d = new Date(iso)
   const p = (n: number): string => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
-
-function pluginDirs(): string[] {
-  const env = process.env.UH_PLUGIN_DIR
-  if (env) return env.split(':').filter(Boolean)
-  return [join(os.homedir(), '.uh', 'plugins'), join(process.cwd(), '.uh', 'plugins')]
 }
 
 function fail(msg: string, code = 1): never {
@@ -212,6 +209,103 @@ async function cmdDoctor(): Promise<void> {
       console.log('WARNING: exec is NOT isolated in this build. It is refused unless --allow-unconfined.')
     }
   }, { record: false })
+}
+
+
+/**
+ * `uh phone` —— 手机这一步到底缺什么。
+ *
+ * 手机这条链路最容易变成"报个不可用就完了"：三个平台的工具（adb / hdc / WDA）
+ * 装法完全不同，缺哪个、该怎么补、补完在哪验证，一句 "no device" 全都没说。
+ * 所以这里逐平台报告，并把下一步的命令原样给出来。
+ */
+async function cmdPhone(sub: string | undefined, rest: string[]): Promise<void> {
+  const probe = (cmd: string, args: string[]): Promise<string | null> =>
+    new Promise((resolve) => {
+      execFile(cmd, args, { timeout: 8000, encoding: 'utf8' }, (err, stdout) => {
+        resolve(err ? null : String(stdout))
+      })
+    })
+
+  const platforms: Array<{ name: string; tool: string; how: string }> = []
+  // Android：adb 在 PATH 上，并且真的连着一台设备
+  const adb = await probe('adb', ['devices'])
+  const adbDevices = adb
+    ? adb.split('\n').slice(1).map((l) => l.trim()).filter((l) => l && !l.startsWith('*')).map((l) => l.split(/\s+/)[0] ?? '')
+    : []
+  platforms.push({
+    name: 'android',
+    tool: 'adb',
+    how: adb === null
+      ? '没装 adb：sudo apt install android-tools-adb（或下载 platform-tools 放进 PATH）'
+      : adbDevices.length
+        ? '已连接：' + adbDevices.join(', ')
+        : 'adb 在，但没有设备：USB 连上并允许调试，或先用 USB 跑 `adb tcpip 5555` ' +
+          '再 `adb connect <手机IP>:5555`（之后不插线也能用）',
+  })
+
+  // HarmonyOS：hdc list targets
+  const hdc = await probe('hdc', ['list', 'targets'])
+  platforms.push({
+    name: 'harmony',
+    tool: 'hdc',
+    how: hdc === null
+      ? '没装 hdc：装 DevEco Studio 的 toolchains，把 hdc 加到 PATH'
+      : hdc.trim() && !/empty/i.test(hdc)
+        ? '已连接：' + hdc.trim().split('\n').join(', ')
+        : 'hdc 在，但没有目标：开发者模式 + USB 调试，或 `hdc tconn <手机IP>:<端口>`',
+  })
+
+  // iOS：iOS 只能 attach 到用户自己起的 WebDriverAgent
+  const wda = process.env.UH_WDA_URL ?? 'http://127.0.0.1:8100'
+  const alive = await probe('curl', ['-sS', '-m', '2', wda + '/status'])
+  platforms.push({
+    name: 'ios',
+    tool: 'WebDriverAgent',
+    how: alive === null
+      ? `连不上 ${wda}。iOS 必须你自己用 Xcode 给 WebDriverAgent 签一次名装到手机上，` +
+        '再在手机上跑起来（需要 Apple 开发者账号并手动信任）。这一步不代劳，也不假装能做到。'
+      : 'WDA 在线：' + wda,
+  })
+
+  if (sub === 'status' || sub === undefined) {
+    console.log('')
+    for (const p of platforms) {
+      const ok = /已连接|在线/.test(p.how)
+      console.log(`  ${ok ? '✓' : '·'} ${p.name.padEnd(9)} ${dim2(p.tool.padEnd(15))} ${p.how}`)
+    }
+    const any = platforms.some((p) => /已连接|在线/.test(p.how))
+    console.log('')
+    console.log(any
+      ? dim2('  能用：让 agent「看一下手机屏幕」「点登录按钮」它就会走这个插件')
+      : dim2('  现在没有可用设备。上面每条都写了缺什么、下一步敲什么。'))
+    console.log(dim2('  设备选择：uh config set UH_PHONE_DEVICE <序列号>（多台设备时用到）'))
+    console.log('')
+    return
+  }
+  if (sub === 'devices') {
+    for (const p of platforms) console.log(`${p.name}\t${p.how}`)
+    return
+  }
+  fail(`unknown phone subcommand: ${sub}\n\ntry: uh phone status | uh phone devices`)
+}
+
+/** 这台机器在局域网里的 IPv4：手机要敲的就是它 */
+function lanAddresses(): string[] {
+  const out: string[] = []
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const n of list ?? []) {
+      // docker/bridge 那几个地址手机连不上，列出来只会让人多试几次
+      if (n.family === 'IPv4' && !n.internal && !/^172\.(1[7-9]|2\d|3[01])\./.test(n.address)) {
+        out.push(n.address)
+      }
+    }
+  }
+  return out
+}
+
+function dim2(s: string): string {
+  return process.stdout.isTTY && !process.env.NO_COLOR ? `\x1b[2m${s}\x1b[0m` : s
 }
 
 async function cmdPlugin(sub?: string): Promise<void> {
@@ -1299,7 +1393,9 @@ Usage:
   --yes / --no-ask          approve every dangerous action / refuse them all
                             (default: ask when a terminal is attached, refuse otherwise)
   uh do [name]              run a recipe: fixed task, then our own acceptance checks
-  uh serve [--port N] [--force]
+  uh serve [--port N] [--force] [--lan]
+                            --lan binds every interface (phone/tablet): a token is
+                            generated into $UH_HOME/serve-token and printed as a URL
                             local web UI (default 127.0.0.1:7878);
                             --force takes the port back from a previous
                             uh serve (use it after rebuilding the UI)
@@ -1325,6 +1421,8 @@ Usage:
   uh config show            show config (keys masked)
   uh doctor                 show platform, sandbox isolation, plugins
   uh plugin list            list plugins found on disk
+  uh phone status           is a phone reachable? (adb / hdc / WebDriverAgent, and
+                            exactly what to install or pair if not)
   uh tool <name>            run a tool registered by a plugin
   uh sandbox check          prove the sandbox actually blocks what it claims
   uh session list           recent sessions (append-only event log)
@@ -1354,6 +1452,8 @@ async function main(): Promise<void> {
       await cmdDoctor(); return
     case 'skill':
       cmdSkill(argv[1], argv.slice(2)); return
+    case 'phone':
+      await cmdPhone(argv[1], argv.slice(2)); return
     case 'plugin':
       await cmdPlugin(argv[1]); return
     case 'tool':
@@ -1371,9 +1471,31 @@ async function main(): Promise<void> {
       const port = Number(flag('port') ?? 7878)
       // --force：端口被上一版自己占着时接管它。改了代码还要记得先找进程杀，
       // 是这种事里最容易忘的一步，而忘了的表现就是「桌面端还是旧的」
-      const { srv, replaced } = await startServerOrRestart({ port, force: argv.includes('--force') })
+      const hostIdx = argv.indexOf('--host')
+      const lan = argv.includes('--lan')
+      const host = hostIdx > 0 ? argv[hostIdx + 1] : (lan ? '0.0.0.0' : undefined)
+      const { srv, replaced } = await startServerOrRestart({
+        port, ...(host ? { host } : {}), force: argv.includes('--force'),
+      })
       if (replaced) console.log(`stopped the previous UnitHarness on port ${port} (pid ${replaced.pid})`)
       console.log(`UnitHarness UI  ${srv.url}`)
+      if (host && host !== '127.0.0.1' && host !== 'localhost') {
+        // 非本机监听 = 谁能连上这个端口谁就能指挥这个 agent，所以带了口令。
+        // 手机第一步是拿这个地址打开一次，之后浏览器会记住（cookie），
+        // 「添加到主屏幕」出来的图标再打开就不用再带 ?t=
+        const token = (() => {
+          try { return readFileSync(join(uhHome(), 'serve-token'), 'utf8').trim() } catch { return '' }
+        })()
+        const addrs = lanAddresses()
+        console.log('')
+        console.log('  手机 / 平板打开（同一 Wi-Fi，或先连上 Tailscale）：')
+        if (addrs.length === 0) console.log(`    http://<这台机器的IP>:${port}/?t=${token}`)
+        for (const a of addrs) console.log(`    http://${a}:${port}/?t=${token}`)
+        console.log('  口令也只写在这里：' + join(uhHome(), 'serve-token'))
+        console.log('  第一次打开会把口令记成 cookie；之后在浏览器菜单里选「添加到主屏幕」即可。')
+        console.log(dim2('  只给手机用、不想占端口？用 Tailscale：tailscale serve --bg ' + port))
+        console.log('')
+      }
       console.log('press Ctrl+C to stop')
       return
     }
