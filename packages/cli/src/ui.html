@@ -225,7 +225,9 @@
   .setnav{width:214px;flex:0 0 214px;border-right:1px solid var(--line);background:var(--panel);padding:12px 8px;overflow:auto}
   .setsearch input{width:100%;background:var(--input);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:6px 9px;font-size:11.5px;outline:none;margin-bottom:10px}
   .setsearch input:focus{border-color:var(--hoverline)}
-  .setgrp{font-size:10px;color:var(--soft);text-transform:uppercase;letter-spacing:.08em;padding:10px 10px 5px}
+  /* 分组标题以前用 --soft，那是"背景色"那一档（浅灰），放在 #f7f7f8 的面板底色上
+     几乎看不见。分组名是导航的一部分，得用正文色系里最暗的那一档。 */
+  .setgrp{font-size:10px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.08em;padding:10px 10px 5px}
   .setitem{padding:6px 10px;border-radius:6px;font-size:12.5px;color:var(--dim);cursor:pointer;display:flex;align-items:center;gap:8px}
   .setitem:hover{background:var(--hover);color:var(--fg)}
   .setitem.cur{background:var(--hover);color:var(--fg)}
@@ -305,14 +307,9 @@
   .badge{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line)}
   .badge.g{color:var(--ok);border-color:var(--okbg)}
   .badge.r{color:var(--bad);border-color:var(--badbg)}
-  /* ---- 设置抽屉 ---- */
-  #veil{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none}
-  #veil.on{display:block}
-  #drawer{position:fixed;top:0;right:0;bottom:0;width:420px;max-width:92vw;background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);transition:transform .18s ease;display:flex;flex-direction:column;z-index:5}
-  #drawer.on{transform:none}
+  /* ---- 设置（弹窗里的表单） ---- */
   .dhead{padding:14px 18px;border-bottom:1px solid var(--line);display:flex;align-items:center}
   .dhead b{flex:1;font-size:13px}
-  .dbody{flex:1;overflow:auto;padding:16px 18px}
   .field{margin-bottom:14px}
   .field label{display:block;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--dim);margin-bottom:5px}
   .field input,.field select{width:100%;background:var(--input);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:8px 10px;font:12.5px/1.4 var(--mono);outline:none}
@@ -325,19 +322,55 @@
   .btn:hover{border-color:var(--hoverline)}
   .btn.primary{background:var(--accent);color:#0b0e13;border:0;font-weight:600}
   .btn:disabled{opacity:.5;cursor:default}
-  .dfoot{border-top:1px solid var(--line);padding:12px 18px;display:flex;gap:8px;align-items:center}
-  .dfoot .msg{flex:1;font-size:11.5px;color:var(--dim);overflow:hidden;text-overflow:ellipsis}
-  .dfoot .msg.err{color:var(--bad)}
-  .dfoot .msg.good{color:var(--ok)}
   .provtag{font-size:10px;color:var(--dim);margin-left:6px}
   .provtag.set{color:var(--ok)}
+
+  /* 多轮对话：用户这句话必须看得见。只显示模型的活，一屏过程里就分不清
+     这些步骤是为哪句话做的。 */
+  .umsg{display:flex;justify-content:flex-end;margin:16px 0 2px}
+  .umsg .b{max-width:min(78%,780px);background:var(--hover);border:1px solid var(--line);
+    border-radius:12px 12px 4px 12px;padding:9px 13px;color:var(--fg);white-space:pre-wrap;
+    word-break:break-word;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;font-size:13px;line-height:1.6}
+  .tsep{display:flex;align-items:center;gap:10px;margin:22px 0 2px;color:var(--dim);font-size:10.5px}
+  .tsep::before,.tsep::after{content:'';height:1px;background:var(--line);flex:1}
+
+  /* 选文件夹的弹窗（参考 Codex：点进去 / 面包屑退回 / 当前目录直接打开） */
+  #projModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55);z-index:24}
+  #projModal.on{display:flex}
+  .pmcard{width:620px;max-width:94vw;max-height:82vh;display:flex;flex-direction:column;
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.55)}
+  .pmhead{padding:13px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;font-size:13px;flex:0 0 auto}
+  /* 头部显示当前文件夹名就够了：整条路径在下面的面包屑里，塞两遍只会被截断 */
+  .pmwhere{flex:1;min-width:0;color:var(--dim);font:11.5px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right}
+  .pmcrumb{padding:7px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;flex-wrap:wrap;gap:1px;
+    font:11.5px var(--mono);color:var(--dim);max-height:74px;overflow:auto;flex:0 0 auto}
+  .pmcrumb b{font-weight:400;padding:1px 4px;border-radius:4px;cursor:pointer;white-space:nowrap}
+  .pmcrumb b:hover{background:var(--hover);color:var(--fg)}
+  .pmcrumb b.on{color:var(--fg)}
+  .pmcrumb i{font-style:normal;opacity:.4;padding:0 1px}
+  /* 高度由卡片自己的 max-height 决定；这里再钉死高度，弹窗小屏时就只能靠挤压别行 */
+  .pmlist{flex:1 1 auto;min-height:140px;overflow:auto;padding:4px}
+  .pmrow{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:7px;cursor:pointer;font-size:12.5px;color:var(--fg)}
+  .pmrow:hover{background:var(--hover)}
+  .pmrow .ic{width:16px;flex:0 0 16px;text-align:center;color:var(--dim);font-size:11px}
+  .pmrow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pmrow .sub{flex:0 0 auto;max-width:52%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font:10.5px var(--mono);color:var(--soft)}
+  .pmrow.hid .nm{color:var(--dim)}
+  .pmrow.recent .ic{color:var(--accent)}
+  .pmnew{display:flex;gap:8px;padding:10px 12px 10px;flex:0 0 auto}
+  .pmnew input{flex:1;background:var(--input);border:1px solid var(--line);color:var(--fg);border-radius:7px;
+    padding:6px 9px;font-size:12px;outline:none}
+  .pmnew input:focus{border-color:var(--hoverline)}
+  .pmfoot{padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;gap:8px;flex:0 0 auto}
+  .pmfoot .msg{flex:1;font-size:11.5px;color:var(--dim)}
 </style>
 </head>
 <body>
 <aside>
   <button class="newchat" id="newChat"><span>＋</span> New task</button>
   <input id="search" placeholder="Search sessions…" spellcheck="false">
-  <h1>Projects <button class="icon" id="projBtn" title="Add or switch project">+</button></h1>
+  <h1>Projects <button class="icon" id="projBtn" title="Open a local folder as a project">+</button></h1>
   <div id="sessions"></div>
   <button class="side-foot" id="settingsBtn">⚙ Settings · model &amp; keys</button>
   <div class="account" id="accountRow"></div>
@@ -366,7 +399,7 @@
     <form id="run">
       <button class="plus" id="plusBtn" type="button" title="Attach an image">+</button>
       <input type="file" id="filePick" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
-      <button class="mic" id="micBtn" type="button" title="Speak instead of typing">🎤</button>
+      <button class="mic" id="micBtn" type="button" title="Speak — recorded and transcribed on this machine">🎤</button>
       <textarea id="task" placeholder="Describe the task. It runs in a sandbox; every write is logged and undoable."></textarea>
       <button class="go" id="go" type="submit">Run</button>
       <button class="stop" id="stopBtn" type="button" style="display:none">Stop</button>
@@ -439,63 +472,24 @@
     </div>
   </div>
 </div>
-<div id="veil"></div>
-<div id="drawer">
-  <div class="dhead">
-    <b id="drawerTitle">Settings</b>
-    <button class="icon" id="closeDrawer">✕</button>
-  </div>
-  <div class="dbody" id="settingsPane">
-    <div class="field">
-      <label>Provider</label>
-      <select id="fProvider"></select>
-      <div class="hint" id="fProvHint"></div>
+<div id="projModal">
+  <div class="pmcard">
+    <div class="pmhead">
+      <b>Open a folder</b>
+      <span class="pmwhere" id="pmWhere"></span>
+      <button class="icon" id="pmClose">✕</button>
     </div>
-    <div class="field">
-      <label>Base URL</label>
-      <input id="fBase" spellcheck="false" placeholder="https://api.example.com/v1">
+    <div class="pmcrumb" id="pmCrumb"></div>
+    <div class="pmlist" id="pmList"></div>
+    <div class="pmnew">
+      <input id="pmNewName" spellcheck="false" placeholder="New folder in this folder">
+      <button class="btn" id="pmNew">Create</button>
     </div>
-    <div class="field">
-      <label>API key</label>
-      <input id="fKey" type="password" spellcheck="false" autocomplete="off" placeholder="paste a key to set or replace it">
-      <div class="hint" id="fKeyHint">Stored in ~/.uh/config.json (0600). Never written to event logs.</div>
+    <div class="pmfoot">
+      <span class="msg" id="pmMsg"></span>
+      <button class="btn" id="pmCancel">Cancel</button>
+      <button class="btn primary" id="pmOpen">Open this folder</button>
     </div>
-    <div class="field">
-      <label>Model</label>
-      <div class="rowline">
-        <input id="fModel" spellcheck="false" list="modelList" placeholder="e.g. deepseek-v4-flash">
-        <button class="btn" id="fFetch" type="button">List</button>
-      </div>
-      <datalist id="modelList"></datalist>
-      <div class="hint" id="fModelHint"></div>
-    </div>
-    <div class="field">
-      <label>Workspace</label>
-      <input id="fWork" spellcheck="false" placeholder="/absolute/path/to/project">
-      <div class="hint">The sandbox limits writes to this directory.</div>
-    </div>
-
-  </div>
-  <div class="dbody" id="projPane" style="display:none">
-    <div class="field">
-      <label>Project name</label>
-      <input id="fProjName" spellcheck="false" placeholder="leave blank to use the folder name">
-      <div class="hint">Only a label in the sidebar — the folder below is what actually runs.</div>
-    </div>
-    <div class="field">
-      <label>Source folder</label>
-      <input id="fNewProj" spellcheck="false" placeholder="~/code/my-app">
-      <div class="hint">Created if it does not exist. The sandbox only lets writes land inside it.</div>
-    </div>
-    <div class="field">
-      <label>Or switch to an existing one</label>
-      <select id="fProject"></select>
-    </div>
-  </div>
-  <div class="dfoot">
-    <span class="msg" id="dMsg"></span>
-    <button class="btn" id="dCancel">Close</button>
-    <button class="btn primary" id="dSave">Save</button>
   </div>
 </div>
 
@@ -503,8 +497,11 @@
 const $ = (s) => document.querySelector(s);
 const logEl = $('#log'), delivEl = $('#deliverables');
 let es = null, started = Date.now(), firstTs = 0, lastTs = 0;
-let SETTINGS = null, PROVIDERS = [], drawerMode = 'settings';
+let SETTINGS = null, PROVIDERS = [];
 let CURRENT_SID = '', RUNNING = false, ALL_PROJECTS = [];
+/** 这条 SSE 现在挂在哪条会话上。CURRENT_SID 是"下一句续到哪"，两者必须分开：
+ *  打开一条历史会话时它们是同一个，但换项目/点新对话时流要先关掉。 */
+let STREAM_SID = '';
 
 /**
  * 「工作区有外部改动」的小条。
@@ -558,6 +555,11 @@ async function boot(){
   await loadProjects();
   await loadAccount();
   setupMic();
+  // 语音引擎没装时，悬停就把要跑的那条命令说出来，而不是让人点一下才发现
+  fetch('/api/asr').then(r => r.json()).then(a => {
+    if (!a.ready && a.hint) $('#micBtn').title = a.hint;
+    else if (a.ready && a.engine) $('#micBtn').title = 'Speak — transcribed locally with ' + a.engine.label;
+  }).catch(() => {});
 
   // 全新用户：没有模型就别让他先去踩一次 Run
   if (!SETTINGS.model){
@@ -650,6 +652,8 @@ async function switchProject(path){
   await fetch('/api/project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path }) });
   await loadSettings();
   await loadProjects();
+  // 换项目就是换对话：旧会话的事件属于旧工作区，接着说话会在另一个目录里动文件
+  startNewTask();
   row('dim','project → ' + path);
 }
 
@@ -697,40 +701,145 @@ async function loadSettings(){
   $('#task').placeholder = 'Describe the task. It runs in a sandbox; the workspace is ' + SETTINGS.workspace;
 }
 
-function openDrawer(){
-  drawerMode = 'project';
-  $('#drawerTitle').textContent = 'Create project';
-  $('#projPane').style.display = '';
-  $('#dMsg').textContent = '';
-  $('#dMsg').className = 'msg';
-  $('#drawer').classList.add('on');
-  $('#veil').classList.add('on');
-  fillProjectPicker();
-}
-function closeDrawer(){
-  $('#drawer').classList.remove('on');
-  $('#veil').classList.remove('on');
+/* ---- 打开项目：弹窗 + 本地目录浏览（参考 Codex 的新建/切换项目）----------
+ *
+ * 以前是右侧抽屉里一个「输入绝对路径」的框。要打开一个已有项目，用户得先在
+ * 文件管理器里找到它、复制路径、再粘回来——三步，而且经常粘错。
+ * 这里改成直接浏览：点进去、面包屑退回、当前目录一键打开。
+ */
+let PM = { path: '', parent: '', home: '', crumbs: [], dirs: [] };
+
+function pmMsg(text, bad){
+  const m = $('#pmMsg');
+  if (!m) return;
+  m.textContent = text || '';
+  m.className = 'msg' + (bad ? ' err' : '');
 }
 
-/** 抽屉里的项目下拉（左栏那个叫 loadProjects，别混） */
-async function fillProjectPicker(){
-  const r = await fetch('/api/projects').then(x => x.json());
-  const sel = $('#fProject');
-  sel.innerHTML = '';
-  for (const p of r.projects || []){
-    const o = document.createElement('option');
-    o.value = p.path;
-    o.textContent = p.path + (p.sessions ? '  · ' + p.sessions + ' session(s)' : '');
-    sel.appendChild(o);
+function openProjectModal(){
+  $('#projModal').classList.add('on');
+  pmMsg('');
+  $('#pmNewName').value = '';
+  // 从当前工作区开始浏览：多数时候人是在它旁边开下一个项目
+  void pmLoad((SETTINGS && SETTINGS.workspace) || '');
+}
+
+function closeProjectModal(){ $('#projModal').classList.remove('on'); }
+
+async function pmLoad(p){
+  pmMsg('');
+  let r;
+  try {
+    r = await fetch('/api/fs' + (p ? '?path=' + encodeURIComponent(p) : '')).then(x => x.json());
+  } catch (err){ pmMsg('cannot reach the engine', true); return; }
+  if (r.error){ pmMsg(r.error, true); return; }
+  PM.path = r.path; PM.parent = r.parent; PM.home = r.home;
+  PM.crumbs = r.crumbs || []; PM.dirs = r.dirs || [];
+  paintProjectModal();
+}
+
+function pmRow(icon, name, sub, onClick, cls){
+  const d = document.createElement('div');
+  d.className = 'pmrow' + (cls ? ' ' + cls : '');
+  d.innerHTML = '<span class="ic">' + esc(icon) + '</span><span class="nm">' + esc(name) + '</span>'
+    + (sub ? '<span class="sub">' + esc(sub) + '</span>' : '');
+  d.onclick = onClick;
+  return d;
+}
+
+function paintProjectModal(){
+  // 头部只放当前文件夹名：全路径在面包屑里，写两遍反而两边都被截断
+  const seg = PM.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || PM.path;
+  const where = $('#pmWhere');
+  where.textContent = seg;
+  where.title = PM.path;
+
+  // 面包屑：从根到当前目录，末端高亮。路径太长时最左边会被挤掉，
+  // 「现在在哪」永远看得见，这比完整显示整条路径有用。
+  const crumb = $('#pmCrumb');
+  crumb.innerHTML = '';
+  PM.crumbs.forEach((s, i) => {
+    const b = document.createElement('b');
+    b.textContent = s.name;
+    b.title = s.path;
+    if (i === PM.crumbs.length - 1) b.className = 'on';
+    b.onclick = () => pmLoad(s.path);
+    crumb.appendChild(b);
+    if (i < PM.crumbs.length - 1){
+      const sep = document.createElement('i');
+      sep.textContent = '/';
+      crumb.appendChild(sep);
+    }
+  });
+  crumb.scrollLeft = crumb.scrollWidth;
+
+  const list = $('#pmList');
+  list.innerHTML = '';
+  if (PM.parent) list.appendChild(pmRow('↑', '..', PM.parent, () => pmLoad(PM.parent), 'hid'));
+
+  // 最近打开过的项目排在最上面：人大多数时候是回到一个已知目录，
+  // 而不是从头点进去
+  const seen = new Set();
+  for (const proj of (ALL_PROJECTS || [])){
+    if (!proj.path || proj.path === PM.path || seen.has(proj.path)) continue;
+    seen.add(proj.path);
+    if (seen.size > 4) break;
+    const label = proj.name || proj.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || proj.path;
+    list.appendChild(pmRow('◷', label, proj.path, () => openProjectPath(proj.path), 'recent'));
   }
-  const mine = (r.projects || []).find(p => p.path === r.current);
-  if (mine) sel.value = mine.path;
-  $('#fNewProj').value = '';
-  $('#fProjName').value = '';
+
+  for (const d of PM.dirs){
+    list.appendChild(pmRow('▸', d.name, d.hidden ? 'hidden' : '', () => pmLoad(d.path), d.hidden ? 'hid' : ''));
+  }
+  if (!PM.dirs.length){
+    const e = document.createElement('div');
+    e.className = 'sess dim';
+    e.textContent = 'no sub-folder here — open this one, or create one below';
+    list.appendChild(e);
+  }
+}
+
+/** 选定了：切成当前工作区，并开始一段新对话 */
+async function openProjectPath(target){
+  const path = (target || PM.path || '').trim();
+  if (!path) return;
+  pmMsg('opening…');
+  const r = await fetch('/api/project', {
+    method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path }),
+  });
+  const j = await r.json();
+  if (j.error){ pmMsg(j.error, true); return; }
+  closeProjectModal();
+  await loadSettings();
+  await loadProjects();
+  // 换项目就是换对话：旧会话属于旧工作区，接着说话会在另一个目录里动文件
+  startNewTask();
+  row('dim', 'project → ' + j.current);
+}
+
+async function pmCreate(){
+  const name = $('#pmNewName').value.trim();
+  if (!name){ pmMsg('give the folder a name first', true); return; }
+  const r = await fetch('/api/fs/mkdir', {
+    method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path: PM.path, name }),
+  });
+  const j = await r.json();
+  if (j.error){ pmMsg(j.error, true); return; }
+  $('#pmNewName').value = '';
+  await pmLoad(j.path);
+  pmMsg('created ' + j.path);
 }
 
 $('#settingsBtn').addEventListener('click', () => openSettings('general'));
-$('#projBtn').addEventListener('click', () => openDrawer());
+$('#projBtn').addEventListener('click', () => openProjectModal());
+$('#pmClose').addEventListener('click', closeProjectModal);
+$('#pmCancel').addEventListener('click', closeProjectModal);
+$('#pmOpen').addEventListener('click', () => openProjectPath(PM.path));
+$('#pmNew').addEventListener('click', () => void pmCreate());
+$('#pmNewName').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter'){ e.preventDefault(); void pmCreate(); }
+});
+$('#projModal').addEventListener('click', (e) => { if (e.target.id === 'projModal') closeProjectModal(); });
 
 $('#model').addEventListener('click', () => openSettings('model'));
 $('#setClose').addEventListener('click', () => $('#setModal').classList.remove('on'));
@@ -761,51 +870,37 @@ $('#stopBtn').addEventListener('click', async () => {
   } finally { $('#stopBtn').disabled = false; }
 });
 
-$('#newChat').addEventListener('click', () => {
-  if (es) { es.close(); es = null; }
+/**
+ * 开一段新对话：把屏幕、会话 id、实时流一起清掉。
+ *
+ * 「新对话」和「接着这条会话说」是两件事，界面上必须区分得开：不清 id 的话，
+ * 下一句话会续进旧会话，用户以为从零开始，其实模型还记着上文。
+ */
+function startNewTask(){
+  if (es){ es.close(); es = null; }
   CURRENT_SID = '';
+  STREAM_SID = '';
   logEl.innerHTML = '';
   delivEl.innerHTML = '';
   $('#sid').textContent = 'no session';
   started = Date.now();
+  firstTs = 0;
   runGrp = null;
+  sawText = false;
   setRunning(false);
+  paintQueueState();
+}
+
+$('#newChat').addEventListener('click', () => {
+  startNewTask();
   $('#task').value = '';
+  clearAttach();
+  REFS = [];
+  renderRefs();
   $('#task').focus();
 });
 
 $('#search').addEventListener('input', applySearch);
-$('#closeDrawer').addEventListener('click', closeDrawer);
-$('#dCancel').addEventListener('click', closeDrawer);
-$('#veil').addEventListener('click', closeDrawer);
-
-$('#dSave').addEventListener('click', async () => {
-  const msg = $('#dMsg');
-  msg.className = 'msg';
-  msg.textContent = 'saving…';
-  $('#dSave').disabled = true;
-  try {
-    {
-      const typed = $('#fNewProj').value.trim();
-      const target = typed || $('#fProject').value;
-      const r = await fetch('/api/project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path: target, name: $('#fProjName').value.trim() }) });
-      const j = await r.json();
-      if (j.error) throw new Error(j.error);
-      await loadSettings();
-      await loadProjects();
-      msg.className = 'msg good';
-      msg.textContent = 'workspace → ' + j.current;
-      setTimeout(closeDrawer, 700);
-      return;
-    }
-
-  } catch (err) {
-    msg.className = 'msg err';
-    msg.textContent = String(err.message || err);
-  } finally {
-    $('#dSave').disabled = false;
-  }
-});
 
 /** 网页里的审批：后端挂了个 promise 等人点，这里是那个「点」 */
 function askApproval(req){
@@ -1753,64 +1848,136 @@ function mk(cls, text, n){
 }
 
 /* ---------- 语音输入 ----------
- * 用浏览器自带的识别：一个字都不用我们转写，也不上传录音。
- * 前提是浏览器提供 SpeechRecognition（Chrome/Edge 有，Safari 部分有，
- * Tauri 的 WebKit 没有）——没有就如实说没有，不做一个点了没反应的按钮。
+ * 录音 → 本机转写 → 回填。
+ *
+ * 以前用的是浏览器自带的 SpeechRecognition：它把音频送到云端（Chrome 送给
+ * Google）。在中国大陆基本连不上，于是界面上只有一句 `speech: network`——
+ * 既没说原因，也没给出路，用户只能以为是自己网络坏了。
+ * 现在音频只到本机引擎（~/.uh/asr 里的 whisper），断网也能用；
+ * 引擎没装就明说装哪一句，而不是吞掉。
  */
+
+/** 读成 base64（去掉 data: 前缀）；transcribe 接口要的是纯 base64 */
+function blobToBase64(blob){
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onerror = () => reject(new Error('could not read the recording'));
+    fr.onload = () => {
+      const s = String(fr.result || '');
+      resolve(s.slice(s.indexOf(',') + 1));
+    };
+    fr.readAsDataURL(blob);
+  });
+}
+
 function setupMic(){
   const btn = $('#micBtn');
   if (!btn) return;
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR){
-    btn.onclick = () => row('bad', 'this browser has no speech recognition — desktop Chrome or Edge do');
-    btn.style.opacity = '.5';
-    return;
-  }
   const ta = $('#task');
-  let rec = null, on = false, base = '', finalText = '';
+  let rec = null, chunks = [], stream = null, on = false;
 
-  const start = () => {
-    base = ta.value;
-    finalText = '';
-    rec = new SR();
-    rec.lang = navigator.language || 'zh-CN';
-    rec.continuous = true;
-    rec.interimResults = true;
+  // 录音时按钮变成停止键：正在录却和没录长得一样，是最容易误操作的地方
+  const paint = (recording) => {
+    btn.classList.toggle('rec', recording);
+    btn.textContent = recording ? '■' : '🎤';
+  };
 
-    rec.onresult = (ev) => {
-      let interim = '';
-      for (let i = ev.resultIndex; i < ev.results.length; i++){
-        const r = ev.results[i];
-        if (r.isFinal) finalText += r[0].transcript;
-        else interim += r[0].transcript;
-      }
-      ta.value = base + (base && !/\s$/.test(base) ? ' ' : '') + finalText + interim;
-      ta.style.height = 'auto';
-      ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
-    };
-    // 识别会因为静音自己停；还在录音状态就接上，别让用户说半句发现没在听
-    rec.onend = () => { if (on){ try { rec.start(); } catch { /* already */ } } };
-    rec.onerror = (e) => {
-      if (e.error === 'not-allowed'){ row('bad', 'microphone permission denied'); stop(); }
-      else if (e.error === 'no-speech'){ /* keep listening */ }
-      else row('warn', 'speech: ' + e.error);
-    };
-    try { rec.start(); } catch (e) { row('bad', 'could not start listening: ' + e.message); return }
-    on = true;
-    btn.classList.add('rec');
-    btn.textContent = '■';
+  /**
+   * 麦克风起不来时，要说人话。
+   *
+   * NotFoundError 最常见的原因不是"驱动坏了"，而是用户连了蓝牙音箱：
+   * 音箱的蓝牙只给了播放通道（A2DP），系统里根本没有输入设备。
+   */
+  const micHint = (err) => {
+    const name = (err && err.name) || 'Error';
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      return 'no microphone found — a Bluetooth speaker usually only gives playback (A2DP), so it has no mic to record from';
+    }
+    if (name === 'NotAllowedError') return 'microphone permission was denied';
+    if (name === 'NotReadableError') return 'the microphone is busy in another app';
+    return 'cannot record: ' + name;
   };
 
   const stop = () => {
     on = false;
-    if (rec){ try { rec.stop(); } catch { /* done */ } rec = null; }
-    btn.classList.remove('rec');
-    btn.textContent = '🎤';
-    ta.focus();
+    paint(false);
+    if (rec && rec.state !== 'inactive') rec.stop();
   };
 
-  btn.onclick = () => (on ? stop() : start());
+  const finish = async () => {
+    // 录完立刻放开麦克风：一直占着，别的程序（会议/录音）会打不开
+    if (stream){ for (const t of stream.getTracks()) t.stop(); stream = null; }
+    const type = (rec && rec.mimeType) || 'audio/webm';
+    const blob = new Blob(chunks, { type });
+    chunks = [];
+    rec = null;
+    if (!blob.size){ row('warn', 'nothing was recorded'); return }
+
+    const note = row('dim', 'transcribing locally…');
+    try {
+      const r = await fetch('/api/transcribe', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({
+          audio: await blobToBase64(blob),
+          mediaType: type,
+          lang: (navigator.language || 'zh').slice(0, 2),
+        }),
+      });
+      const j = await r.json();
+      note.remove();
+      if (j.error){ row('bad', j.error); return }
+      const text = String(j.text || '').trim();
+      if (!text){ row('warn', 'heard nothing — try again a bit closer to the mic'); return }
+      // 接在已有内容后面，不覆盖用户已经打了一半的字
+      const base = ta.value;
+      ta.value = base + (base && !/\s$/.test(base) ? ' ' : '') + text;
+      ta.dispatchEvent(new Event('input'));   // @ 引用那条逻辑靠这个事件感知内容变化
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
+      ta.focus();
+    } catch (err) {
+      note.remove();
+      row('bad', 'transcribe failed: ' + (err.message || err));
+    }
+  };
+
+  const start = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      row('bad', 'this window cannot record audio — open the app in Chrome or Edge');
+      return;
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch (err) {
+      row('bad', micHint(err));
+      return;
+    }
+    // 录的是哪一路要让人看见：接着蓝牙音箱的人最需要这一行
+    const track = stream.getAudioTracks()[0];
+    const label = track && track.label ? track.label : 'default input';
+    row('dim', 'listening on ' + label);
+
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg']
+      .find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
+    try {
+      rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    } catch (err) {
+      for (const t of stream.getTracks()) t.stop();
+      stream = null;
+      row('bad', 'this window cannot record: ' + (err.message || err));
+      return;
+    }
+    chunks = [];
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = () => { void finish(); };
+    rec.start();
+    on = true;
+    paint(true);
+  };
+
+  btn.onclick = () => (on ? stop() : void start());
 }
+
 
 /** @ 引用的文件，和图片一起提交；后端决定是内联内容还是只给路径 */
 let REFS = [];
@@ -1992,7 +2159,10 @@ function setRunning(on){
   $('#task').disabled = false;
   $('#task').placeholder = on
     ? 'Add a note mid-run — it lands at the next step'
-    : 'Describe the task. It runs in a sandbox; every write is logged and undoable.';
+    : (CURRENT_SID
+        // 多轮：同一句话在"新任务"和"接着说"里意思完全不同，占位提示要说清楚
+        ? 'Say what to change — this continues the conversation above'
+        : 'Describe the task. It runs in a sandbox; every write is logged and undoable.');
   if (!on) clearQueue();
   paintQueueState();
 }
@@ -2000,10 +2170,33 @@ function setRunning(on){
 function render(kind, p){
   if (p && typeof p._ts === 'number'){ lastTs = p._ts; if (!firstTs) firstTs = p._ts; }
   switch(kind){
-    case 'turn/start':
+    case 'turn/start': {
       sawText = false;
       closeRun();
+      // 用户这句话本身就是对话的一部分。以前只显示模型的活，回放一整段多轮
+      // 对话时看到的是一串没有前因的工具调用。
+      const said = typeof p.task === 'string'
+        // @ 进来的文件内容在任务里是一大块，屏幕上只要那句人话
+        ? p.task.replace(/<attached_files>[\s\S]*?<\/attached_files>\s*/, '').trim()
+        : '';
+      const idx = Number(p.turn_index || 1);
+      if (idx > 1){
+        const sep = document.createElement('div');
+        sep.className = 'tsep';
+        sep.textContent = 'turn ' + idx;
+        logEl.appendChild(sep);
+      }
+      if (said){
+        const u = document.createElement('div');
+        u.className = 'umsg';
+        u.innerHTML = '<div class="b">' + esc(said) + '</div>';
+        logEl.appendChild(u);
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+      // 时间戳按这一轮重新起算，否则第二轮每一行都显示成 +600s
+      if (lastTs){ started = lastTs; firstTs = lastTs; }
       break;
+    }
     // 屏幕上不出现 provider / 模型名 / token 数——那是我们的账，不是用户的进度。
     // 模型在想什么由 reasoning/delta 实时流出来；这里只在没有思考内容的模型上占位。
     case 'llm/request': procRow('dim','Thinking'); break;
@@ -2086,7 +2279,17 @@ function render(kind, p){
         row('step', why + ' · ' + p.steps + (p.steps === 1 ? ' step' : ' steps'));
       }
       break;
-    // 已经流式显示过就不再贴一遍：同一段回答出现两次，看起来像模型说了两遍
+    // 每一轮末尾模型说的那段话。流式已经把字打出来了就不再贴一遍，
+    // 否则同一段回答出现两次，看起来像模型说了两遍。
+    // 打开历史会话时这条是唯一的答案来源（实时那次另有 answer 事件）。
+    case 'assistant/message': {
+      const t = typeof p.text === 'string' ? p.text : '';
+      if (!sawText && t){
+        row('answer', '<div class="answer">' + esc(t) + '</div>');
+        sawText = true;
+      }
+      break;
+    }
     case 'answer':
       if (!sawText) {
         // 非字符串一律当成"没有文本"：把对象塞进 esc 会让页面上出现 [object Object]
@@ -2127,33 +2330,72 @@ function renderDeliverables(items, verifications){
   }
 }
 
-function attach(id){
+/**
+ * 接上一条会话的实时流。
+ *
+ * opts.clear=false 用于「从磁盘回放过这条会话，只要新的」——那时屏幕上已经有
+ * 完整历史，再清一次等于把用户正在看的东西擦掉。
+ */
+function attach(id, opts){
+  const o = opts || {};
   if (es) es.close();
-  logEl.innerHTML = '';
-  delivEl.innerHTML = '';
+  if (o.clear !== false){
+    logEl.innerHTML = '';
+    delivEl.innerHTML = '';
+    started = Date.now();
+    firstTs = 0;
+    runGrp = null;
+    sawText = false;
+  }
   $('#sid').textContent = id;
-  started = Date.now();
-  firstTs = 0;
   CURRENT_SID = id;
-  es = new EventSource('/api/stream?session=' + encodeURIComponent(id));
+  STREAM_SID = id;
+  es = new EventSource('/api/stream?session=' + encodeURIComponent(id) + (o.live ? '&live=1' : ''));
   for (const kind of ['turn/start','step/start','llm/request','llm/response','tool/call','tool/result','plan/updated',
                       'steering/message','text/delta','reasoning/delta','checkpoint/file','approval/needs','approval/requested','approval/resolved','session/compacted','artifact/emitted',
-                      'turn/end','answer','deliverables','done','error','budget/warning','budget/exceeded','fs/changed']){
+                      'turn/end','assistant/message','answer','deliverables','done','error','budget/warning','budget/exceeded','fs/changed']){
     es.addEventListener(kind, (e) => render(kind, JSON.parse(e.data)));
   }
   es.onerror = () => { /* the browser retries */ };
 }
 
+/**
+ * 打开一条历史会话。
+ *
+ * 两个要点：
+ *  1. 把每一轮的用户原话也画出来（turn/start 事件里带着），否则看到的是一串
+ *     没有前因的工具调用；
+ *  2. 打开它 = 接下来可以接着它说。所以 CURRENT_SID 要跟着改，并且接上实时流——
+ *     不然下一句话会被当成一条新对话，或者根本没有事件回来。
+ */
 async function openSession(id){
-  $('#sid').textContent = id;
+  const detail = await (await fetch('/api/session/' + id)).json();
+  if (detail.error){ row('bad', 'ERROR: ' + detail.error); return; }
   logEl.innerHTML = '';
   delivEl.innerHTML = '';
-  const detail = await (await fetch('/api/session/' + id)).json();
-  started = Date.now();
-  for (const ev of detail.events) render(ev.kind, ev.payload);
-  if (detail.answer) render('answer', { text: detail.answer });
+  runGrp = null;
+  sawText = false;
+  $('#sid').textContent = id;
+  // 用事件自己带的时间戳：否则回放历史会话时每一行都显示 +0.0s，
+  // 看不出哪一步是同一秒发生的、哪一步隔了很久
+  const t0 = detail.events.length ? Date.parse(detail.events[0].timestamp) : NaN;
+  started = Number.isFinite(t0) ? t0 : Date.now();
+  firstTs = Number.isFinite(t0) ? t0 : 0;
+  lastTs = 0;
+  for (const ev of detail.events){
+    const at = Date.parse(ev.timestamp);
+    render(ev.kind, Number.isFinite(at) ? { ...ev.payload, _ts: at } : ev.payload);
+  }
+  // 老会话没有 assistant/message 事件，只有落盘的那一句；有事件就别再补，否则重复
+  const answered = detail.events.some((e) => e.kind === 'assistant/message');
+  if (detail.answer && !answered) render('answer', { text: detail.answer });
   render('deliverables', detail);
   for (const el of document.querySelectorAll('.sess')) el.classList.remove('active');
+  // 打开一条会话 = 接下来是在跟它说话，输入框的提示要跟着改，
+  // 否则用户会以为再发一句是「新任务」
+  $('#task').placeholder = 'Say what to change — this continues the conversation above';
+  // 屏幕上已经有全部历史，所以不 clear、也不要缓存补发（live=1）
+  attach(id, { clear: false, live: true });
 }
 
 $('#run').addEventListener('submit', async (e) => {
@@ -2161,9 +2403,8 @@ $('#run').addEventListener('submit', async (e) => {
   const task = $('#task').value.trim();
   if (!task) return;
   if (!SETTINGS || (!SETTINGS.hasKey && SETTINGS.provider !== 'ollama' && SETTINGS.provider !== 'lmstudio' && SETTINGS.provider !== 'vllm')){
-    openDrawer('settings');
-    $('#dMsg').className = 'msg err';
-    $('#dMsg').textContent = 'pick a provider and paste a key first';
+    openSettings('general');
+    setMsg('pick a provider and paste a key first', true);
     return;
   }
   // 正在跑：这句话是插进去，不是另起一次
@@ -2181,17 +2422,27 @@ $('#run').addEventListener('submit', async (e) => {
     return;
   }
 
+  // 跑完了但当前会话还在：这句话是「接着说的下一轮」，不是新对话。
+  // 服务端按 sessionId 把上文喂回去，这里也不清屏——多轮对话本来就是这个样子。
+  const followId = CURRENT_SID;
   setRunning(true);
   try {
-    const r = await fetch('/api/run', {
+    const send = (withSession) => fetch('/api/run', {
       method: 'POST', headers: {'content-type':'application/json'},
       body: JSON.stringify({
         task,
+        ...(withSession ? { sessionId: withSession } : {}),
         ...(ATTACH.length ? { images: ATTACH } : {}),
         ...(REFS.length ? { refs: REFS } : {}),
       }),
     });
-    const j = await r.json();
+    let j = await (await send(followId)).json();
+    // 那条会话已经没了（被清理掉、或换了 UH_HOME）：退回新对话直接发，
+    // 而不是把人晾在一个 404 上自己想办法
+    if (j.error && followId && /no such conversation/.test(String(j.error))){
+      CURRENT_SID = '';
+      j = await (await send('')).json();
+    }
     if (j.error){
       row('bad', 'ERROR: ' + j.error);
       setRunning(false);
@@ -2202,7 +2453,8 @@ $('#run').addEventListener('submit', async (e) => {
     clearAttach();
     REFS = [];
     renderRefs();
-    attach(j.sessionId);
+    // 续跑时这条流本来就开着，再 attach 一次会把整屏历史清掉
+    if (!(STREAM_SID && j.sessionId === STREAM_SID)) attach(j.sessionId);
     loadProjects();
   } catch (err) {
     row('bad','ERROR: ' + (err.message || err));
@@ -2213,7 +2465,12 @@ $('#run').addEventListener('submit', async (e) => {
 $('#task').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) $('#run').requestSubmit();
 });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if ($('#projModal').classList.contains('on')) { closeProjectModal(); return; }
+  const s = $('#setModal');
+  if (s && s.classList.contains('on')) s.classList.remove('on');
+});
 
 setupAttach();
 setupRefs();

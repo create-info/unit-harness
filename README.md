@@ -359,8 +359,10 @@ Both outcomes are recorded: `approval/requested` carries the exact command,
 `approval/resolved` carries the decision. So the log shows what was attempted, not
 just what was allowed.
 
-> The web UI (`uh serve`) currently refuses dangerous actions rather than prompting —
-> there is no approval widget yet. That failure is loud, not silent.
+> In the web UI (`uh serve`) the same gate appears as a modal: the run blocks until you
+> answer, and the decision (`allow` / `allow-always` / `deny`) is written to the session
+> log. If nobody answers within five minutes the action is denied — "no answer" is never
+> treated as "yes".
 
 ## Settings in the UI
 
@@ -370,11 +372,24 @@ just what was allowed.
   and hit **List** to ask that provider what models it actually serves (`GET /models`
   with your key; nothing is hardcoded, because model names retire every few months).
   The key is written to `~/.uh/config.json` at 0600 and only ever shown masked.
-- **Project** — the workspace is the sandbox root. Switching it changes where runs
-  write; a path that does not exist is created.
+- **Project** — the workspace is the sandbox root, and `+` next to *Projects* opens a
+  folder picker: you click into a directory (breadcrumbs to go back), or create a new
+  folder inside it, instead of typing an absolute path from memory. See
+  `GET /api/fs`, `POST /api/fs/mkdir`.
+- **Voice input** — the mic records locally and posts the audio to this machine
+  (`POST /api/transcribe`), where a local engine transcribes it. It does not use the
+  browser's `SpeechRecognition`: that runs in the cloud (Chrome sends audio to Google),
+  and where that endpoint is unreachable the UI only ever said `speech: network`.
+  Run `bash scripts/asr-install.sh` once to install faster-whisper and a model;
+  `GET /api/asr` reports whether an engine was found and what to run if not.
+- **Follow-ups** — sending another message continues the same conversation: the stored
+  messages are replayed as context and the new turn is appended to the same session
+  (`turn_index` increments), so the sidebar shows one conversation, not a pile of
+  one-shot runs. *New task* starts a fresh one.
 
-Both are plain local endpoints (`/api/settings`, `/api/projects`, `/api/models`), so
-the same controls work from the desktop shell, a browser, or `curl`.
+All of these are plain local endpoints (`/api/settings`, `/api/projects`, `/api/models`,
+`/api/fs`, `/api/transcribe`), so the same controls work from the desktop shell, a
+browser, or `curl`.
 
 ### Recipes: `uh do`
 

@@ -300,6 +300,22 @@ export class EventStore {
     return { moved, kept }
   }
 
+  /**
+   * 重新打开一条已结束的会话（多轮对话的下一轮）。
+   *
+   * dispose() 每轮都会 end() 一次，所以一轮跑完会话就是 ended。下一句要往同一条
+   * 会话里追加事件，就必须先改回 active —— 否则 append 会以 E_SESSION_ENDED
+   * 失败，而这个失败只会出现在「第二轮」以后，第一轮永远测不出来。
+   */
+  reopen(sessionId: string): SessionMeta | null {
+    const meta = this.get(sessionId)
+    if (!meta) return null
+    if (meta.status === 'active') return meta
+    const next: SessionMeta = { ...meta, status: 'active', updated_at: now() }
+    this.writeMeta(next)
+    return next
+  }
+
   end(sessionId: string, reason: string): void {
     const meta = this.get(sessionId)
     if (!meta || meta.status === 'ended') return

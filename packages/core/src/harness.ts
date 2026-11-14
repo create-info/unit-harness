@@ -116,6 +116,13 @@ export interface HarnessOptions {
   record?: boolean
   /** 会话标签，便于 `uh session list` 辨认 */
   label?: string
+  /**
+   * 续跑进**同一条**会话（网页多轮对话）。
+   *
+   * 不给就是新会话。给了就复用这条会话的 id 和事件流：左栏里一个对话是一条，
+   * 回放能看到整段历史，state.json 继续往上累加——而不是每说一句就新开一条。
+   */
+  resumeSessionId?: string
   /** CLI 注入的版本号，写进 session/start */
   harnessVersion?: string
   /** 日志写 stderr 而不是 stdout。stdio 协议（ACP）必须打开这个 */
@@ -161,6 +168,8 @@ export interface RunTaskOptions {
   stream?: boolean
   /** 续跑：上一次会话的消息 */
   resumeFrom?: Message[]
+  /** 这条会话里的第几轮（默认 1）。多轮对话必须递增，见 runAgent 的同名字段 */
+  turnIndex?: number
   /** 附在第一轮用户消息上的图片 */
   images?: ImageInput[]
 }
@@ -524,19 +533,32 @@ export class Harness {
   /** 扫描插件目录并 apply；record=true 时开启会话日志 */
   async start(): Promise<LoadedPlugin[]> {
     if (this.opts.record !== false) {
-      this.session = this.store.create({
-        workspace: this.workspace,
-        harnessVersion: this.opts.harnessVersion ?? '0.0.0',
-        ...(this.opts.label ? { label: this.opts.label } : {}),
-      })
-      this.ev('session/start', {
-        workspace: this.workspace,
-        harness_version: this.opts.harnessVersion ?? '0.0.0',
-        isolation: this.isolation.enforced,
-        available: this.isolation.available,
-        platform: process.platform,
-        arch: process.arch,
-      }, 'environment')
+      // 续跑：复用同一条会话。这里必须 reopen——上一轮的 dispose() 已经把它
+      // 标成 ended，不改回 active，后面每一条事件都会被 store 拒绝。
+      const reused = this.opts.resumeSessionId ? this.store.reopen(this.opts.resumeSessionId) : null
+      if (reused) {
+        this.session = reused
+        this.ev('session/resumed', {
+          workspace: this.workspace,
+          harness_version: this.opts.harnessVersion ?? '0.0.0',
+          reason: 'continue',
+          isolation: this.isolation.enforced,
+        }, 'environment')
+      } else {
+        this.session = this.store.create({
+          workspace: this.workspace,
+          harnessVersion: this.opts.harnessVersion ?? '0.0.0',
+          ...(this.opts.label ? { label: this.opts.label } : {}),
+        })
+        this.ev('session/start', {
+          workspace: this.workspace,
+          harness_version: this.opts.harnessVersion ?? '0.0.0',
+          isolation: this.isolation.enforced,
+          available: this.isolation.available,
+          platform: process.platform,
+          arch: process.arch,
+        }, 'environment')
+      }
     }
 
     const dirs = this.opts.pluginDirs ?? []
@@ -1296,6 +1318,7 @@ export class Harness {
         ...(o.maxSeconds ? { maxSeconds: o.maxSeconds } : {}),
         signal: this.abortCtl.signal,
         ...(o.resumeFrom ? { initialMessages: o.resumeFrom } : {}),
+        ...(o.turnIndex ? { turnIndex: o.turnIndex } : {}),
         ...(o.images?.length ? { images: o.images } : {}),
         // 预算从配置读，今天已用的量现场算——不能信内存里的计数器，
         // 那是"这个进程见过多少"，不是"今天花了多少"

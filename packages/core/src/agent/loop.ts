@@ -313,19 +313,26 @@ export async function runAgent(
     signal?: AbortSignal
     /** 续跑：上次会话的消息（system 会被新提示替换） */
     initialMessages?: Message[]
+    /**
+     * 这是这条会话里的第几轮。单轮调用不传（=1）；网页多轮必须传实际轮次，
+     * 否则同一会话里会出现两个 `turn_index: 1`，回放和「撤销上一轮」都会认错边界。
+     */
+    turnIndex?: number
     /** 附在第一轮用户消息上的图片 */
     images?: ImageInput[]
     /** 成本预算（token）：到线就停，stoppedBy 记为 'budget' */
     budget?: { perRun?: number; perDay?: number; dayUsed?: number }
   },
 ): Promise<RunResult> {
+  // 这条会话里的第几轮：多轮对话必须递增，单轮默认仍是 1
+  const turnIndex = opts.turnIndex ?? 1
   const maxSteps = opts.maxSteps ?? 12
   const deadline = Date.now() + (opts.maxSeconds ?? 600) * 1000
   const planEnabled = deps.planEnabled !== false
 
   // task 必须落进日志：没有它，事后回放一个会话只知道"跑了三步"，不知道用户要的是什么。
   // A2A 的 history 也靠这条事件还原第一条用户消息。
-  deps.ev('turn/start', { turn_index: 1, trigger: 'user', task: opts.task })
+  deps.ev('turn/start', { turn_index: turnIndex, trigger: 'user', task: opts.task })
 
   const messages: Message[] = []
   if (deps.system) messages.push({ role: 'system', content: deps.system })
@@ -558,7 +565,7 @@ export async function runAgent(
     if (steers.length > 0) lastText = ''
 
     steps++
-    deps.ev('step/start', { step_index: steps, turn_index: 1, ...(steers.length ? { steered: steers.length } : {}) })
+    deps.ev('step/start', { step_index: steps, turn_index: turnIndex, ...(steers.length ? { steered: steers.length } : {}) })
 
     let res: CompletionResult
     try {
@@ -578,7 +585,7 @@ export async function runAgent(
       // 必须补 turn/end 再抛。turn/start 已经写进日志了，只 throw 的话这一轮
       // 在回放里永远是"开始了、没结束"——和 tool/call 没有 tool/result 一样，
       // 审计链断在半空，事后分不清是失败了还是进程被杀了。
-      deps.ev('turn/end', { turn_index: 1, steps, stop_reason: 'error', error: msg.slice(0, 500), usage })
+      deps.ev('turn/end', { turn_index: turnIndex, steps, stop_reason: 'error', error: msg.slice(0, 500), usage })
       throw err
     }
 
@@ -618,7 +625,7 @@ export async function runAgent(
           message: verdict.message,
         })
         // 收尾：这一轮不算完成，让上层知道是被预算停下的
-        deps.ev('turn/end', { turn_index: 1, steps, stop_reason: 'budget', usage })
+        deps.ev('turn/end', { turn_index: turnIndex, steps, stop_reason: 'budget', usage })
         return { text: lastText, steps, usage, stoppedBy: 'budget', plan, compactions, messages }
       }
     }
@@ -696,6 +703,6 @@ export async function runAgent(
   // 之前只有实时广播带着这段文本，日志里没有——重放会话时回答区是空的，
   // 追问"它当时怎么解释的"根本查不到。可审计的前提是话也得记下来。
   if (lastText) deps.ev('assistant/message', { role: 'assistant', text: lastText, chars: lastText.length })
-  deps.ev('turn/end', { turn_index: 1, stop_reason: stoppedBy, steps })
+  deps.ev('turn/end', { turn_index: turnIndex, stop_reason: stoppedBy, steps })
   return { text: lastText, steps, usage, stoppedBy, plan, compactions, messages }
 }
