@@ -17,11 +17,11 @@ import {
   loadHosts, upsertHost, removeHost, runRemote, classify, describeRisk,
   latestResumable, uhHome, sessionsDir,
   readSessionEvents, editsForLastTurn, applyUndo, isRestorable, isTurnUndone, markTurnUndone,
-  hydrateEdits,
+  hydrateEdits, discoverSkills,
 } from '@unit-harness/core'
 import { sanitizeSecret } from '@unit-harness/core'
 import type { Message, ImageInput, ApprovalRequest } from '@unit-harness/core'
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import * as readline from 'node:readline'
 
 import { VERSION } from './version.ts'
@@ -216,20 +216,52 @@ async function cmdDoctor(): Promise<void> {
 
 async function cmdPlugin(sub?: string): Promise<void> {
   await withHarness(async (h) => {
-    if (sub === 'list' || sub === undefined) {
-      if (h.plugins.length === 0) {
-        console.log('no plugins found in: ' + pluginDirs().join(', '))
-        return
-      }
+    if (sub !== 'list' && sub !== undefined) fail(`unknown plugin subcommand: ${sub}\n\ntry: uh plugin list`)
+
+    // 界面上「插件」是三样东西：JS 插件、技能、MCP server。
+    // 只列其中一个，用户会以为自己的技能没装上。
+    const skills = discoverSkills(process.cwd())
+    const mcp = loadMcpServers(process.cwd())
+
+    console.log('js plugins')
+    if (h.plugins.length === 0) {
+      console.log('  (none)  looking in: ' + pluginDirs().join(', '))
+    } else {
       for (const p of h.plugins) {
-        console.log(`${p.status === 'loaded' ? 'ok  ' : 'FAIL'}  ${p.name}`)
-        console.log(`      ${p.file}`)
-        if (p.error) console.log(`      error: ${p.error}`)
+        console.log(`  ${p.status === 'loaded' ? 'ok  ' : 'FAIL'}  ${p.name}`)
+        console.log(`        ${p.file}`)
+        if (p.error) console.log(`        error: ${p.error}`)
       }
-      return
     }
-    fail(`unknown plugin subcommand: ${sub}`)
+
+    console.log('')
+    console.log('skills')
+    if (skills.length === 0) {
+      console.log('  (none)  make one: uh skill new my-skill [--global]')
+    } else {
+      for (const s of skills) console.log(`  ${s.name.padEnd(22)} ${dimText(s.description || '(no description)')}`)
+    }
+
+    console.log('')
+    console.log('mcp servers')
+    const names = Object.keys(mcp.servers)
+    if (names.length === 0) {
+      console.log('  (none)  add one: uh mcp add <name> <cmd> [args...]   (or <url> for http)')
+    } else {
+      for (const n of names) {
+        const cfg = mcp.servers[n]
+        if (!cfg) continue
+        const how = cfg.url ? cfg.url : [cfg.command, ...(cfg.args ?? [])].join(' ')
+        console.log(`  ${n.padEnd(22)} ${dimText(how ?? '')}`)
+      }
+      console.log('  from: ' + mcp.sources.join(', '))
+    }
   })
+}
+
+/** 只是让长命令别抢眼，不是主题系统的一部分 */
+function dimText(s: string): string {
+  return process.stdout.isTTY ? '\x1b[2m' + s + '\x1b[0m' : s
 }
 
 async function cmdSandbox(sub?: string): Promise<void> {
@@ -603,6 +635,69 @@ async function cmdDo(name?: string, rest: string[] = []): Promise<void> {
   }
 }
 
+/**
+ * 建一个技能骨架。
+ *
+ * 技能就是「一个目录 + 一份 SKILL.md」，但手写 frontmatter 很容易漏掉
+ * description——漏了就变成列表里的一行无名条目。给个模板比写十条文档有用。
+ */
+function cmdSkill(sub: string | undefined, rest: string[]): void {
+  if (sub === 'new' || sub === 'init') {
+    const name = rest[0]
+    if (!name) fail('usage: uh skill new <name> [--global]')
+    const dir = rest.includes('--global')
+      ? join(uhHome(), 'skills', name)
+      : join(process.cwd(), '.uh', 'skills', name)
+    const file = join(dir, 'SKILL.md')
+    if (existsSync(file)) fail(`already exists: ${file}`)
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(file, [
+      '---',
+      `name: ${name}`,
+      'description: 一句话说清什么时候该用这个技能',
+      '# allowed-tools: read_file, list_dir   # 留空表示不限制',
+      '---',
+      '',
+      `# ${name}`,
+      '',
+      '什么时候用：写下触发条件，模型靠这段判断要不要读它。',
+      '',
+      '怎么做：把步骤写成可执行的动作，别写「理解需求」这种空话。',
+      '',
+    ].join('\n'), 'utf8')
+    console.log(`created ${file}`)
+    console.log('')
+    console.log('edit it, then check it shows up:  uh plugin list')
+    return
+  }
+  if (sub === 'list' || sub === undefined) {
+    const skills = discoverSkills(process.cwd())
+    if (!skills.length) {
+      console.log('no skills found. make one:  uh skill new my-skill [--global]')
+      return
+    }
+    for (const s of skills) {
+      console.log(`${s.name.padEnd(24)} ${s.description || '(no description)'}`)
+      console.log(`${''.padEnd(24)} ${s.path}`)
+    }
+    return
+  }
+  fail(`unknown skill subcommand: ${sub}\n\ntry: uh skill new <name> [--global]`)
+}
+
+/**
+ * 一个 MCP server 暴露了什么。
+ *
+ * 只说 "2 tool(s)" 会让人疑惑：下面明明列了五条。因为提示模板和资源也各自
+ * 变成一个可调用的工具，这三样得分开报，否则数字对不上、看着像 bug。
+ */
+function mcpCount(st: { tools?: number; prompts?: number; resources?: number }): string {
+  const bits = [`${st.tools ?? 0} tool${(st.tools ?? 0) === 1 ? '' : 's'}`]
+  if (st.prompts) bits.push(`${st.prompts} prompt${st.prompts === 1 ? '' : 's'}`)
+  if (st.resources) bits.push(`${st.resources} resource${st.resources === 1 ? '' : 's'}`)
+  return bits.join(' + ')
+}
+
 async function cmdMcp(sub?: string, rest: string[] = []): Promise<void> {
   if (sub === 'add') {
     const name = rest[0]
@@ -666,7 +761,7 @@ async function cmdMcp(sub?: string, rest: string[] = []): Promise<void> {
             console.log(`          uh mcp add ${n} <url> --header authorization`)
           }
         } else {
-          console.log(`✓ ${n}  (${st.transport})  ${st.tools} tool(s)`)
+          console.log(`✓ ${n}  (${st.transport})  ${mcpCount(st)}`)
           for (const t of reg.tools) {
             console.log(`    ${t.name}`)
             if (t.description) console.log(`        ${t.description.slice(0, 100)}`)
@@ -703,7 +798,7 @@ async function cmdMcp(sub?: string, rest: string[] = []): Promise<void> {
       await h.mcp.start(servers)
       for (const st of h.mcp.status) {
         const mark = st.error ? '✗' : '✓'
-        console.log(`${mark} ${st.name}  (${st.transport})  ${st.error ?? `${st.tools} tool(s)`}`)
+        console.log(`${mark} ${st.name}  (${st.transport})  ${st.error ?? mcpCount(st)}`)
       }
       if (!h.mcp.isEmpty) {
         console.log('')
@@ -1214,6 +1309,12 @@ Usage:
   uh desktop [--force]      same, and open it in your browser
   uh mcp list               show MCP servers and the tools they expose
   uh mcp add <name> <url>   add an HTTP MCP server (token asked, hidden)
+  uh mcp add <name> <cmd> [args...]
+                            add a stdio MCP server, e.g.
+                            uh mcp add fs npx -y @modelcontextprotocol/server-filesystem ~
+  uh skill new <name> [--global]
+                            scaffold a SKILL.md (project .uh/skills or $UH_HOME/skills)
+  uh skill list             what the agent can already load
   uh mcp test [name]        handshake check, with a readable failure
   uh mcp remove <name>      drop a server from ~/.uh/mcp.json
   uh exec -- <cmd>          run one command inside the sandbox (debugging)
@@ -1251,6 +1352,8 @@ async function main(): Promise<void> {
       console.log(VERSION); return
     case 'doctor':
       await cmdDoctor(); return
+    case 'skill':
+      cmdSkill(argv[1], argv.slice(2)); return
     case 'plugin':
       await cmdPlugin(argv[1]); return
     case 'tool':
