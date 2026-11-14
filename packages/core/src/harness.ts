@@ -1423,8 +1423,13 @@ export class Harness {
       const changes = diffSnapshots(before, after)
       artifacts.push(...collectArtifacts(this.workspace, changes, after))
 
-      if (changes.removed.length > 0) {
-        this.ev('error', { message: 'files were removed during the run', files: changes.removed })
+      // 删掉文件不是错误：它和「改了文件」是同一类事实，只是方向相反。
+      // 以前这里发一条 `error`，于是一次完整成功的运行下面会挂着红字
+      // 「ERROR: files were removed during the run」——模型按要求清掉了临时文件，
+      // 屏幕上却像出了事故。删掉的每个文件都单独记一条 checkpoint/file，
+      // diff 那边就能看出它没了（而不是只有一句含糊的报错）。
+      for (const gone of changes.removed) {
+        this.ev('checkpoint/file', { path: gone, deleted: true, added: 0, removed: 0 })
       }
 
       for (const art of artifacts) {
