@@ -6,7 +6,8 @@
 <title>UnitHarness</title>
 <style>
   /* 「一直都行」的勾选项：显式写出会记住什么前缀、在哪个目录 */
-  .fshint{position:fixed;left:50%;transform:translateX(-50%);bottom:96px;z-index:60;
+  /* 浮在输入框上方：写死 96px 会正好压在模型条上，把 cwd 挤成 ~/Applications/T… */
+  .fshint{position:fixed;left:50%;transform:translateX(-50%);bottom:var(--jumpb,150px);z-index:60;
     max-width:min(560px,calc(100vw - 48px));padding:7px 14px;border-radius:999px;
     background:var(--card,#fff);color:var(--dim);font-size:12.5px;cursor:pointer;
     border:1px solid var(--line);box-shadow:0 4px 16px rgba(0,0,0,.10);
@@ -298,7 +299,28 @@
   #sid{max-width:200px;overflow:hidden;text-overflow:ellipsis}
   header .pill.ok{color:var(--ok);border-color:var(--okbg)}
   header .pill.bad{color:var(--bad);border-color:var(--badbg)}
-  #log{flex:1;overflow:auto;padding:16px 20px;font-family:var(--mono);font-size:12.5px}
+  /* 分栏容器：对话总是 flex:1，diff 面板宽度从 0 长出来 */
+  #stage{flex:1;display:flex;min-height:0;min-width:0}
+  #log{flex:1;overflow:auto;padding:16px 20px;font-family:var(--mono);font-size:12.5px;min-width:300px}
+  /* ---- 右侧 diff 面板 ---- */
+  #diffPane{flex:0 0 0;width:0;overflow:hidden;border-left:1px solid var(--line);
+    background:var(--panel);display:flex;flex-direction:column;transition:flex-basis .16s ease,width .16s ease}
+  #diffPane.on{flex:0 1 46%;width:46%;min-width:260px;max-width:720px}
+  .dphead{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);flex:0 0 auto}
+  .dpfile{font:11.5px var(--mono);color:var(--fg);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+  .dpstat{font:10.5px var(--mono);color:var(--dim);white-space:nowrap}
+  .dpclose{background:none;border:0;color:var(--dim);cursor:pointer;font-size:13px;padding:2px 4px;border-radius:5px}
+  .dpclose:hover{color:var(--fg);background:var(--hover)}
+  .dpbody{flex:1;overflow:auto;font:11.5px/1.55 var(--mono);padding:6px 0}
+  .dpbody .ln{display:flex;white-space:pre;min-width:max-content}
+  .dpbody .ln .n{width:38px;flex:0 0 38px;text-align:right;padding:0 8px;color:#3d4654;user-select:none}
+  .dpbody .ln .c{flex:1;padding-right:14px}
+  .dpbody .ln.add{background:var(--okbg)}
+  .dpbody .ln.add .c{color:#8fd6a8}
+  .dpbody .ln.del{background:var(--badbg)}
+  .dpbody .ln.del .c{color:#e2999c}
+  .dpbody .ln.hunk .c{color:var(--dim)}
+  .dpempty{padding:18px 16px;color:var(--dim);font:12.5px var(--sans,inherit)}
   /* 跟在最新内容后面时藏起来；一旦用户往上翻才出现 */
   /* 位置由 JS 按 footer 的实际高度设置：输入框会随内容变高，写死 bottom 就会压在按钮下面 */
   #jump{position:absolute;right:22px;bottom:var(--jumpb,112px);display:none;z-index:40;
@@ -413,7 +435,19 @@
     <span id="model" class="pill" title="Click to configure">model …</span>
     <span id="sid" class="pill dim" style="margin-left:auto">no session</span>
   </header>
-  <div id="log"></div>
+  <!-- 左边对话，右边 diff：点开一个文件不是把内容塞进对话里，而是像 Codex 那样
+       在旁边并排看。关掉就整块收回，不占位置。 -->
+  <div id="stage">
+    <div id="log"></div>
+    <aside id="diffPane" aria-hidden="true">
+      <div class="dphead">
+        <span class="dpfile" id="dpFile"></span>
+        <span class="dpstat" id="dpStat"></span>
+        <button class="dpclose" id="dpClose" title="Close (Esc)">✕</button>
+      </div>
+      <div class="dpbody" id="dpBody"></div>
+    </aside>
+  </div>
   <!-- 用户滚上去看历史时，新内容不该把他拽回来；但也别让他以为「卡住了」——
        这里给一个明确的口子：有多少没看的，点一下就回到最新 -->
   <button id="jump" title="Jump to the latest">↓ latest</button>
@@ -586,6 +620,7 @@ new MutationObserver(() => followTail()).observe(logEl, { childList: true, subtr
 /** 这次跑出来的交付物，过程流里只显示一个计数，靠它攒 */
 let ARTIFACTS = [];
 let es = null, started = Date.now(), firstTs = 0, lastTs = 0;
+/** 已印出去的最大秒数：时间戳只许变大 */ let lastSec = 0;
 let SETTINGS = null, PROVIDERS = [];
 let CURRENT_SID = '', RUNNING = false, ALL_PROJECTS = [];
 /**
@@ -636,13 +671,17 @@ function showFsHint(count, paths){
     // 挂 body 而不是过程流容器：它不是对话的一部分，不该参与那块区域的布局
     document.body.appendChild(bar);
   }
-  window.__fsCount = (window.__fsCount || 0) + count;
+  // 按路径去重：同一个文件被改两次不是「两个文件」，更不该越攒越多
+  // （截图里那句 "2462 files changed" 就是这么涨上去的）
+  window.__fsPaths = window.__fsPaths || new Set();
+  for (const p of paths || []) window.__fsPaths.add(p);
+  window.__fsCount = window.__fsPaths.size || count;
   bar.textContent = '↻ ' + window.__fsCount + ' file' + (window.__fsCount === 1 ? '' : 's')
     + ' changed outside this session — click to refresh';
   bar.title = paths.slice(0, 12).join('\n');
   clearTimeout(fsHintTimer);
   // 十分钟没人理就自己收掉，免得一直挂着
-  fsHintTimer = setTimeout(() => { bar.remove(); window.__fsCount = 0; }, 600000);
+  fsHintTimer = setTimeout(() => { bar.remove(); window.__fsCount = 0; window.__fsPaths = new Set(); }, 600000);
 }
 
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -652,7 +691,12 @@ function row(cls, text){
   // 基准是「这一批事件里最早的那条」，不是「现在」——补发的历史事件
   // 也能显示出真实的先后，而不会全挤成 +0.0s
   const at = lastTs || Date.now();
-  const t = ('+' + (((at - (firstTs || started))/1000).toFixed(1)) + 's');
+  // 时间只能往前走。回放/续跑会重置基准，混在一起时就会看到 Done 比
+  // 上面那行还早（截图里 +414.1s 压在 +494.1s 底下），看着像时间坏了。
+  let sec = (at - (firstTs || started)) / 1000;
+  if (!Number.isFinite(sec) || sec < lastSec) sec = lastSec;
+  lastSec = sec;
+  const t = ('+' + sec.toFixed(1) + 's');
   d.innerHTML = '<span class="t">' + t + '</span><span class="c ' + cls + '">' + text + '</span>';
   logEl.appendChild(d);
   followTail();   // 交给 follow-tail：用户往上翻时不要把他拽回来
@@ -1990,6 +2034,8 @@ function replayFinish(){
   replayStream = null;
   REPLAY = false;
   FOLLOW = true;          // 新的一次回放/新任务：重新跟到最新
+  lastSec = 0;            // 换了会话，时间的基准也换了
+  closeDiffPane();        // 上一个会话的 diff 不该留在这一屏
   logEl.scrollTop = 0;
 }
 
@@ -2042,29 +2088,62 @@ function fileCard(p, seq){
   el.className = 'fcard';
   const size = p.after_size || 0;
   el.innerHTML = '<span>✎</span><span class="fn">' + esc(p.path) + '</span>'
-    + '<span class="st">' + size + ' B</span><span class="st">diff ▾</span>';
-  el.onclick = () => toggleDiff(el, p.path, seq);
+    + '<span class="st">' + size + ' B</span><span class="st">diff ›</span>';
+  // 点文件 → 右侧并排看 diff（Codex 的做法），而不是把内容塞进对话里
+  el.onclick = () => openDiffPane(p.path, seq);
   const g = openRun();
   g.files.set(p.path, { added: p.added || 0, removed: p.removed || 0 });
   g.body.appendChild(el);
   updateRunHead();
 }
 
-async function toggleDiff(card, path, seq){
-  const next = card.nextElementSibling;
-  if (next && next.classList.contains('diffbox')){ next.remove(); return; }
-  const box = document.createElement('div');
-  box.className = 'diffbox';
-  box.textContent = 'loading…';
-  card.after(box);
+/* ---- 右侧 diff 面板 ----------------------------------------------------
+ * 点一个文件，diff 在右边并排打开：对话留在原地，不用为了看一眼改动
+ * 把正在读的回答顶走。再点另一个文件就换内容；✕ 或 Esc 收起来。
+ * --------------------------------------------------------------------- */
+let DP_PATH = '';
+
+async function openDiffPane(path, seq){
+  const pane = $('#diffPane'), body = $('#dpBody');
+  DP_PATH = path;
+  $('#dpFile').textContent = path;
+  $('#dpFile').title = path;
+  $('#dpStat').textContent = '';
+  pane.classList.add('on');
+  pane.setAttribute('aria-hidden', 'false');
+  body.innerHTML = '<div class="dpempty">loading…</div>';
   try {
-    const q = '/api/diff?session=' + encodeURIComponent(CURRENT_SID) + '&path=' + encodeURIComponent(path) + (seq ? '&seq=' + seq : '');
-    const r = await fetch(q).then(x => x.json());
-    if (r.error){ box.textContent = r.error; return; }
-    box.innerHTML = '';
-    for (const ln of diffLines(r.before || '', r.after || '')) box.appendChild(ln);
-  } catch (e) { box.textContent = String(e.message || e); }
+    const q = '/api/diff?session=' + encodeURIComponent(CURRENT_SID)
+      + '&path=' + encodeURIComponent(path) + (seq ? '&seq=' + seq : '');
+    const r = await fetch(q).then((x) => x.json());
+    // 等着的时候用户可能点了别的文件：迟到的响应不许覆盖新的
+    if (DP_PATH !== path) return;
+    body.innerHTML = '';
+    if (r.error){ body.innerHTML = '<div class="dpempty">' + esc(r.error) + '</div>'; return; }
+    let add = 0, del = 0;
+    for (const ln of diffLines(r.before || '', r.after || '')){
+      body.appendChild(ln);
+      if (ln.classList.contains('add')) add++;
+      else if (ln.classList.contains('del')) del++;
+    }
+    $('#dpStat').textContent = add || del ? '+' + add + ' −' + del : '';
+    if (!body.children.length) body.innerHTML = '<div class="dpempty">No textual change in this file.</div>';
+  } catch (e) {
+    if (DP_PATH === path) body.innerHTML = '<div class="dpempty">' + esc(String(e.message || e)) + '</div>';
+  }
 }
+
+function closeDiffPane(){
+  const pane = $('#diffPane');
+  pane.classList.remove('on');
+  pane.setAttribute('aria-hidden', 'true');
+  DP_PATH = '';
+}
+
+$('#dpClose')?.addEventListener('click', closeDiffPane);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('#diffPane')?.classList.contains('on')) closeDiffPane();
+});
 
 /** 一行行比：小的改动看得很清楚，比整块重画省得多 */
 function diffLines(before, after){
