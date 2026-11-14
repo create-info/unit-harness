@@ -198,8 +198,10 @@
   .fcard.gone .fn{color:var(--bad);text-decoration:line-through;text-decoration-thickness:1px}
   .fcard .fn{font-family:var(--mono);color:#9fd0ff;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .fcard .st{color:var(--dim);font-size:10.5px}
-  .fcard .add{color:var(--good)}
-  .fcard .del{color:var(--bad)}
+  .fcard .add{color:var(--good);font-family:var(--mono)}
+  .fcard .del{color:var(--bad);font-family:var(--mono)}
+  /* 增删数字对齐：+1 −12 和 +12 −1 要能一眼分清 */
+  .fcard .add{margin-right:2px}
   .diffbox{margin:4px 0 10px;border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:340px;background:var(--input);font:11.5px/1.55 var(--mono)}
   .diffbox .ln{display:flex;white-space:pre;min-width:max-content}
   .diffbox .ln .n{width:34px;flex:0 0 34px;text-align:right;padding:0 7px;color:#3d4654;user-select:none}
@@ -369,7 +371,9 @@
   #jump.on{display:block}
   #jump:hover{background:#4a80ff}
   .row{display:flex;gap:10px;padding:2px 0;white-space:pre-wrap;word-break:break-word}
-  .row .t{color:var(--soft);flex:0 0 52px;text-align:right;font-size:11px}
+  /* 时间戳不许折行：跑到十几分钟时 `+1072.7s` 比 `+3.2s` 宽一倍，
+     52px 写死就会断成两行（" +1072.7 / s "），整列看着像错位 */
+  .row .t{color:var(--soft);flex:0 0 58px;text-align:right;font-size:10.5px;white-space:nowrap}
   .row .c{flex:1;min-width:0}
   /* 可点开的过程行：鼠标移上去给一点暗示，展开的那块是原文，不改写 */
   .row.expandable{cursor:pointer;border-radius:6px}
@@ -783,6 +787,24 @@ async function boot(){
   }
 }
 
+/**
+ * 「多久以前」。左栏第二行用它，比绝对时间省一次心算。
+ *
+ * 跨天的只给日期（`11-12`），因为「7 天前」不如看清楚是哪天有用；
+ * 一周以内的给「3 小时前」这种。
+ */
+function relTime(stamp){
+  const t = new Date(String(stamp).replace(' ', 'T'));
+  if (Number.isNaN(t.getTime())) return String(stamp || '');
+  const diff = (Date.now() - t.getTime()) / 1000;
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  if (diff < 86400 * 7) return Math.floor(diff / 86400) + 'd ago';
+  const p = (n) => String(n).padStart(2, '0');
+  return p(t.getMonth() + 1) + '-' + p(t.getDate());
+}
+
 /** 左栏：项目 → 会话。跟 Codex 一样，会话属于某个工作区，不是一锅平铺 */
 async function loadProjects(){
   const r = await fetch('/api/projects').then(x => x.json());
@@ -823,9 +845,13 @@ async function loadProjects(){
       d.className = 'sess' + (s.running ? ' active' : '');
       // 正在跑的那条要有标记：跑着的会话和跑完的在列表里长得一模一样
       const live = s.running ? '<span class="rdot"></span>' : '';
+      // 左栏第二行是「多久以前」而不是绝对时间。
+      // Codex 的列表也是这个道理：扫一眼是为了找「刚才那条」，
+      // `2026-11-14 16:01:23` 得自己算，`3 小时前` 不用。
       d.innerHTML = '<b>' + live + esc(s.label || s.id) + '</b>'
         + (s.running ? '<span class="live"><span class="rdot"></span>running</span> · ' : '')
-        + esc(s.created) + ' · ' + s.events + ' events';
+        + esc(relTime(s.created)) + ' · ' + s.events + ' events'
+      d.title = s.label + '\n' + s.created + ' · ' + s.events + ' events'
       d.onclick = () => openSession(s.id);
       wrap.appendChild(d);
     }
@@ -1208,15 +1234,21 @@ document.addEventListener('click', (e) => {
   const a = document.getElementById('apMenu');
   if (a && a.classList.contains('on') && !a.contains(e.target) && e.target.id !== 'apprBtn') a.classList.remove('on');
 });
-$('#stopBtn').addEventListener('click', async () => {
-  if (!CURRENT_SID) return;
+/**
+ * 停下正在跑的这一轮。按钮和 Esc 走同一条路——两个入口两套逻辑，
+ * 迟早会出现「按钮能停、Esc 停不了」这种让人怀疑人生的差别。
+ */
+async function stopRun(){
+  if (!RUNNING) return;
+  if (!CURRENT_SID) { row('dim', 'still starting — one more second'); return }
   $('#stopBtn').disabled = true;
   try {
     const r = await fetch('/api/stop', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ sessionId: CURRENT_SID }) });
     const j = await r.json();
     row(j.error ? 'bad' : 'warn', j.error ? 'ERROR: ' + j.error : 'stopping…');
-  } finally { $('#stopBtn').disabled = false; }
-});
+  } finally { $('#stopBtn').disabled = false }
+}
+$('#stopBtn').addEventListener('click', () => { void stopRun() });
 
 /**
  * 开一段新对话：把屏幕、会话 id、实时流一起清掉。
@@ -2290,10 +2322,24 @@ function pushThink(delta){
 function fileCard(p, seq){
   const el = document.createElement('div');
   el.className = 'fcard';
-  const size = p.after_size || 0;
-  // 删掉的文件单独标出来：它不是「0 字节的新文件」
+  const size = p.after_size || 0
+  const added = p.added || 0, removed = p.removed || 0
+  /**
+   * 一行里就要看出「改了哪个文件、加了几行、删了几行」。
+   *
+   * 以前这里写的是字节数（`1234 B`）——那不是改动量，是个和你想知道的事
+   * 无关的数字：同一个文件改三个字符和重写一百行，都可能显示成 1234 B。
+   * Codex 的写法是 `Edited src/a.ts +12 -3`，这里照抄：增删行数放前面，
+   * 字节数退到 title 里，光标停上去才看。
+   */
+  const stat = p.deleted
+    ? '<span class="del">removed</span>'
+    : (added || removed
+        ? '<span class="add">+' + added + '</span><span class="del">−' + removed + '</span>'
+        : '<span class="st">' + size + ' B</span>')
   el.innerHTML = '<span>' + (p.deleted ? '−' : '✎') + '</span><span class="fn">' + esc(p.path) + '</span>'
-    + '<span class="st">' + (p.deleted ? 'removed' : size + ' B') + '</span><span class="st">diff ›</span>';
+    + '<span class="st">' + stat + '</span><span class="st">diff ›</span>'
+  el.title = p.path + (p.deleted ? ' — removed' : ' — ' + size + ' B')
   if (p.deleted) el.classList.add('gone');
   // 点文件 → 右侧并排看 diff（Codex 的做法），而不是把内容塞进对话里
   el.onclick = () => openDiffPane(p.path, seq);
@@ -2373,9 +2419,8 @@ $('#dpOpen')?.addEventListener('click', async () => {
   }
   setTimeout(() => { btn.textContent = was; btn.disabled = false; }, 2500);
 });
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && $('#diffPane')?.classList.contains('on')) closeDiffPane();
-});
+// Esc 的处理集中在文件末尾那个分层 handler 里（关面板 → 收弹窗 → 打断运行）。
+// 这里再挂一个就会「关掉 diff 的同时把正在跑的活也停了」。
 
 /** 一行行比：小的改动看得很清楚，比整块重画省得多 */
 function diffLines(before, after){
@@ -2759,12 +2804,18 @@ function paintQueueState(){
   const st = $('#qstate');
   if (RUNNING){
     st.innerHTML = '<span class="blink">●</span> working'
+      + ' · ' + dim2hint('esc to interrupt')
       + (left ? ' · ' + left + ' note' + (left === 1 ? '' : 's') + ' will land at the next step — click one to edit it' : '');
   } else {
     st.textContent = '';
   }
   const box = $('#qzone');
   box.classList.toggle('on', RUNNING || left > 0);
+}
+
+/** 状态行里的小提示：低调但可见 */
+function dim2hint(s){
+  return '<span style="color:var(--dim);font-size:11px">' + s + '</span>';
 }
 
 function setRunning(on){
@@ -3229,9 +3280,15 @@ $('#task').addEventListener('keydown', (e) => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
-  if ($('#projModal').classList.contains('on')) { closeProjectModal(); return; }
+  // 分层的：先收最上面那一层，别一按就把它正在跑的活干掉
+  if ($('#diffPane').classList.contains('on')) { closeDiffPane(); return }
+  if ($('#slashPop').classList.contains('on')) { hideSlash(); return }
+  if ($('#projModal').classList.contains('on')) { closeProjectModal(); return }
   const s = $('#setModal');
-  if (s && s.classList.contains('on')) s.classList.remove('on');
+  if (s && s.classList.contains('on')) { s.classList.remove('on'); return }
+  // Codex 的 Esc 是「打断这次运行」。空口说「esc to interrupt」却没反应，
+  // 比不提示更糟，所以这两处必须同时存在。
+  if (RUNNING) void stopRun();
 });
 
 setupAttach();
