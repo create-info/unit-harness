@@ -52,6 +52,14 @@ interface TuiState {
   model: string
   provider: string
   running: boolean
+  /**
+   * stdin 已经关了（管道喂完 / 用户按了 Ctrl+D）。
+   *
+   * 关了以后 `rl.question` 不会再有人回答，回调也永远不会来——这时候不能等，
+   * 审批要直接按「拒绝」收尾，否则整轮挂在那里，事件日志也停在
+   * 「请求了但没结论」。
+   */
+  closed: boolean
   /** 上一次 Ctrl+C 的时间：连按两次直接退出 */
   lastInterrupt: number
   abort: Harness | null
@@ -351,13 +359,51 @@ async function runTurn(s: TuiState, task: string): Promise<void> {
   const expanded = mention.text
   const cur = readCurrent()
   const gate = {
-    request: async (req: ApprovalRequest): Promise<'allow' | 'deny'> => {
+    /**
+     * 三选一，抄 Codex 的 AskForApproval。
+     *
+     * 只有 y/N 的时候，用户没法把「这条命令以后别再问我」说出来，于是每装一个包
+     * 就按一次 y——按久了就变成闭眼按 y，审批沦为仪式。所以第二项必须是
+     * 「本会话都允许」，而且要把会被记住的那一段原样念出来（`npm install *`
+     * 记住的是前缀，`rm -rf node_modules` 只记住它自己）。
+     */
+    request: async (req: ApprovalRequest): Promise<'allow' | 'allow-always' | 'deny'> => {
       finishInline(s)
+      // 没人能回答了：明确说清楚这是拒绝，不是卡住
+      if (s.closed) {
+        console.log('')
+        console.log('  ' + yellow('⚠ 需要批准：' + req.reason))
+        console.log('  ' + dim('没有可应答的输入（stdin 已关闭）→ 按拒绝处理'))
+        return 'deny'
+      }
+      const remember = Array.isArray(req.persistPrefix) && req.persistPrefix.length > 0
+      const remembered = remember
+        ? (req.persistExact ? '只这一条：' : '前缀：') + req.persistPrefix!.join(' ')
+          + (req.persistExact ? '' : ' *')
+        : ''
       console.log('')
       console.log('  ' + yellow('⚠ 需要批准：' + req.reason))
       console.log('  ' + dim(String(req.detail).split('\n').join('\n  ')))
-      const a = await new Promise<string>((resolve) => s.rl.question('  ' + yellow('放行？[y/N] '), resolve))
-      return /^y(es)?$/i.test(a.trim()) ? 'allow' : 'deny'
+      console.log('')
+      console.log('  ' + cyan('1) 允许这一次') + dim('            (y)'))
+      if (remember) console.log('  ' + cyan('2) 本会话都允许') + dim('  ' + remembered + '  (a)'))
+      console.log('  ' + cyan(remember ? '3' : '2') + ') 拒绝，并告诉我该怎么做' + dim('  (n)'))
+      // stdin 被关掉时 question 的回调永远不会来，这里要有人把它收尾
+      const a = await new Promise<string | null>((resolve) => {
+        let done = false
+        const onClose = (): void => { if (!done) { done = true; resolve(null) } }
+        s.rl.once('close', onClose)
+        s.rl.question('  ' + yellow('> '), (ans) => {
+          if (done) return
+          done = true
+          s.rl.removeListener('close', onClose)
+          resolve(ans)
+        })
+      })
+      const k = (a ?? '').trim().toLowerCase()
+      if (k === 'y' || k === '1' || k === 'yes') return 'allow'
+      if (remember && (k === 'a' || k === '2' || k === 'always')) return 'allow-always'
+      return 'deny'
     },
   }
 
@@ -369,7 +415,9 @@ async function runTurn(s: TuiState, task: string): Promise<void> {
     logLevel: 'warn',
     ...(s.sessionId ? { resumeSessionId: s.sessionId } : { label: task.slice(0, 60) }),
     workspace: s.cwd,
-    ...(process.stdin.isTTY ? { gate } : {}),
+    // 不按 isTTY 关闭审批门：管道喂进来的 TUI 照样该问，
+    // 只是没人回答时（stdin 已关）按拒绝处理，不能替用户放行
+    gate,
     onText: (d) => {
       // 回答直接流到屏幕上：中途按 Ctrl+C 也能立刻停
       s.inline = true
@@ -475,6 +523,7 @@ export async function runTui(): Promise<void> {
     model: cur.model,
     provider: cur.provider,
     running: false,
+    closed: false,
     lastInterrupt: 0,
     abort: null,
     inline: false,
@@ -493,6 +542,8 @@ export async function runTui(): Promise<void> {
     completer: (line: string) => [completionsFor(line, s.cwd), line],
   })
   s.rl = rl0
+  // stdin 关掉之后 question 的回调不会再有人触发，审批要立刻知道这件事
+  rl0.on('close', () => { s.closed = true })
 
   banner(s)
 
