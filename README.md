@@ -594,6 +594,13 @@ UnitHarness UI  http://0.0.0.0:7878
   口令也只写在这里：~/.uh/serve-token
 ```
 
+Under 820px the sidebar becomes a drawer (hamburger, scrim, closes on pick or
+Escape), the composer keeps 16px text so iOS does not zoom the page on focus, and
+everything pads for `safe-area-inset-*`. Answers are rendered as markdown — fenced
+blocks get a language bar and scroll sideways instead of wrapping into one long
+column, which is unreadable at 390pt. The renderer escapes first and only allows
+`http(s)` links: this page sits in front of an agent with a shell.
+
 Open that URL once on the phone. The `?t=` is exchanged for an HttpOnly cookie
 and stripped from the address bar on the next hop, because a token in a URL ends
 up in your history, in screenshots and in whatever screen-sharing you do next.
