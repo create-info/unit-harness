@@ -145,6 +145,11 @@ export interface HarnessOptions {
 export interface RunTaskOptions {
   task: string
   /**
+   * 界面上该显示的原话（不含 @文件内容、技能正文、MCP 交代）。
+   * 不给就用 task —— 日志里记的仍是完整任务，模型看到的不变。
+   */
+  displayTask?: string
+  /**
    * 成本预算（token）。到线就停，stoppedBy 会是 'budget'。
    * 与上下文预算（maxContextTokens）不是一回事：那个负责压缩历史，这个负责叫停。
    */
@@ -1364,6 +1369,7 @@ export class Harness {
       agentDeps,
       {
         task: o.task,
+        ...(o.displayTask ? { displayTask: o.displayTask } : {}),
         ...(o.maxSteps ? { maxSteps: o.maxSteps } : {}),
         ...(o.maxSeconds ? { maxSeconds: o.maxSeconds } : {}),
         signal: this.abortCtl.signal,

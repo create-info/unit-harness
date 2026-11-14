@@ -395,6 +395,16 @@ just what was allowed.
   `$UH_HOME/mcp.json` and `<project>/.uh/mcp.json`, both 0600, merged with the
   project winning. Adding one needs no restart of anything: the next turn picks it
   up. MCP servers run outside the local sandbox, and their calls are logged that way.
+- **Mentions in the box** — `/`, `$` and `@` work in both the terminal and the web
+  composer. Typing `/` opens a list of commands *and* the MCP servers you installed
+  (`/mcp <name>`), typing `$` lists skills, `@` lists workspace files; Tab completes
+  in the terminal, ↑/↓ + Enter pick in the browser, and Enter in the web panel
+  selects instead of sending half a sentence. What gets inserted is the mention
+  itself (`/mcp fs read the readme`), and the expansion into `<mcp_servers>` /
+  `<file>` / `<skill>` happens server-side in `packages/core/src/mentions/expand.ts`
+  — one implementation, so the two front ends cannot drift. The log records the raw
+  line as `display_task`, which is what the transcript shows; the model sees the
+  expanded task.
 - **How long a turn may run** — there is no step cap by default. An exploratory task
   (list the tree, read three files, grep once) was already spending twelve steps, and
   being cut off there left the turn with no answer at all. What bounds a turn now is the

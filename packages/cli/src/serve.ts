@@ -18,6 +18,7 @@ import {
 import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget, WatchManager } from '@unit-harness/core'
 import {
   loadMcpServers, discoverSkills, skillRoots, globalMcpConfigPath, projectMcpConfigPath,
+  expandMentions,
 } from '@unit-harness/core'
 import type { ApprovalGate, ApprovalRequest, Message } from '@unit-harness/core'
 import UI from './ui.html'
@@ -1124,8 +1125,12 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         sessionId?: string
       } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* ignore */ }
-      const task = (body.task ?? '').trim()
-      if (!task) { json(res, 400, { error: 'task is empty' }); return }
+      const task0 = (body.task ?? '').trim()
+      if (!task0) { json(res, 400, { error: 'task is empty' }); return }
+      // 网页输入框里同样能用 @文件 / $技能 / /mcp 名字。
+      // 和终端共用 expandMentions，两边行为不会分叉。
+      const mention = expandMentions(task0, currentWorkspace)
+      const task = mention.text
 
       // 没有可用的模型就别返回 200：那样前端会以为接下了任务，用户盯着空白的
       // 日志等一个根本不会开始的 run。
@@ -1227,7 +1232,9 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       const h = new Harness({
         record: true,
         // 标签只在开新会话时有用；续跑时改它会把这个对话在左栏改名成最后一句
-        ...(contId ? { resumeSessionId: contId } : { label: task.slice(0, 60) }),
+        // 会话名用用户写的原话：用展开后的 task 会让左栏显示成
+        // `<mcp_servers> - server "mock": ...`
+        ...(contId ? { resumeSessionId: contId } : { label: task0.slice(0, 60) }),
         workspace: currentWorkspace,
         // 网页里也要能审批：不接这个门，破坏性命令在 UI 里只能一律失败
         gate: makeWebGate(sidRef),
@@ -1267,6 +1274,9 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         try {
           const out = await h.runTask({
             task: attachedBlock + task,
+            // 界面上显示用户写的那句：不给的话气泡和会话名会变成一整块
+            // <mcp_servers>/<attached> 原文
+            displayTask: task0,
             ...(body.maxSteps ? { maxSteps: body.maxSteps } : {}),
             ...(images.length ? { images } : {}),
             ...(resumeFrom ? { resumeFrom } : {}),

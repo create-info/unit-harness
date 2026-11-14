@@ -315,6 +315,13 @@ export async function runAgent(
   deps: AgentDeps,
   opts: {
     task: string
+    /**
+     * 屏幕上该显示的那句话。
+     *
+     * 任务文本里可能塞了 @文件内容、技能正文、MCP 交代——那是给模型的，
+     * 不是给人看的。日志里记原文，界面才会显示用户真正写的那一句。
+     */
+    displayTask?: string
     maxSteps?: number
     maxSeconds?: number
     signal?: AbortSignal
@@ -345,7 +352,12 @@ export async function runAgent(
 
   // task 必须落进日志：没有它，事后回放一个会话只知道"跑了三步"，不知道用户要的是什么。
   // A2A 的 history 也靠这条事件还原第一条用户消息。
-  deps.ev('turn/start', { turn_index: turnIndex, trigger: 'user', task: opts.task })
+  deps.ev('turn/start', {
+    turn_index: turnIndex,
+    trigger: 'user',
+    task: opts.task,
+    ...(opts.displayTask ? { display_task: opts.displayTask } : {}),
+  })
 
   const messages: Message[] = []
   if (deps.system) messages.push({ role: 'system', content: deps.system })

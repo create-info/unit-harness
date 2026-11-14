@@ -135,3 +135,62 @@ test('terminal chat: help, a real run, and one conversation across turns', async
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+
+/**
+ * `/` 是入口，不是摆设。
+ *
+ * 用户要的是「敲一个 / 就能看到手上有哪些命令、哪些 MCP server、哪些技能」，
+ * 然后 `/mcp 名字 后面的话` 直接把这句话送进模型（而不是被当成命令吃掉——
+ * 这正是第一版的问题：整行被吞，模型一个字的上下文都没收到）。
+ */
+test('the slash menu lists what is installed, and /mcp <name> reaches the model', async () => {
+  const server = startMock()
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const port = server.address().port
+  const root = mkdtempSync(join(tmpdir(), 'uh-slash-'))
+  const uhHome = join(root, '.uh')
+  mkdirSync(uhHome, { recursive: true })
+  const work = join(root, 'work')
+  mkdirSync(work, { recursive: true })
+  // 一个技能 + 一个 stdio MCP server，都用仓库里已有的假实现
+  mkdirSync(join(uhHome, 'skills', 'review'), { recursive: true })
+  writeFileSync(join(uhHome, 'skills', 'review', 'SKILL.md'),
+    '---\nname: review\ndescription: 审一遍改动\n---\n\n# review\n\n读 diff 再下结论。\n')
+  writeFileSync(join(uhHome, 'mcp.json'), JSON.stringify({
+    mcpServers: { mock: { command: process.execPath, args: [join(process.cwd(), 'tests/fixtures/mock-mcp-server.mjs')] } },
+  }, null, 2))
+  writeFileSync(join(uhHome, 'config.json'), JSON.stringify({
+    defaultProvider: 'lmstudio',
+    approval: 'allow',
+    providers: { lmstudio: { baseUrl: `http://127.0.0.1:${port}/v1`, model: 'mock' } },
+  }))
+  const env = { UH_HOME: uhHome }
+
+  try {
+    // 1. 裸 `/`：命令、MCP、技能都在菜单里
+    const menu = await runTui('/\n/quit\n', env, work)
+    for (const want of ['/model', '/mcp', '$review', '/mcp mock']) {
+      assert.ok(menu.out.includes(want), 'menu must list ' + want + '\n' + menu.out.slice(0, 800))
+    }
+
+    // 2. `/mcp 名字 一句人话` 是真提问：跑起来了，上下文里有交代，而且没有了 /mcp 记号
+    const run = await runTui('/mcp mock sum up the repo\n/quit\n', env, work)
+    assert.ok(run.out.includes('✓ done'), 'a /mcp line must run a turn\n' + run.out)
+    const sess = sessionsUnder(uhHome)
+    assert.equal(sess.length, 1)
+    const events = readFileSync(join(sess[0], 'events.jsonl'), 'utf8')
+    assert.ok(events.includes('mcp_servers'), 'the model must be told which server to use')
+    const start = events.trim().split('\n').map((l) => JSON.parse(l))
+      .find((e) => e.kind === 'turn/start' && !e.payload.agent)
+    assert.ok(start, 'there must be a turn/start event')
+    // 模型看到的任务里没有 /mcp 记号（它无法执行「命令」），只有那句人话
+    assert.ok(!String(start.payload.task).includes('/mcp mock'), 'the /mcp token must not reach the model: ' + String(start.payload.task).slice(0, 120))
+    assert.ok(String(start.payload.task).includes('sum up the repo'))
+    // 界面上显示的是用户原话，原话里当然有 /mcp
+    assert.equal(start.payload.display_task, '/mcp mock sum up the repo')
+  } finally {
+    server.close()
+    rmSync(root, { recursive: true, force: true })
+  }
+})
