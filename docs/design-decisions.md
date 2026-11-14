@@ -420,3 +420,51 @@ package and do not fork it. Thanks to the DeepSeek team for releasing it openly.
 2. **不得 vendor Cordis**：仓库无 `vendor/cordis`，依赖走 npm；
 3. **核心 schema 不得出现同步字段**：`remote_id` / `synced_at` / `server_*` 出现在核心表即失败；
 4. **不得声称能力声明是安全边界**：`docs/**` 与 `SECURITY.md` 出现 "capability manifest prevents/enforces" 类表述即失败（lint 关键词检查）。
+
+
+---
+
+## 网页端：一条会话多轮、选目录、本机语音（2026-11）
+
+三件事都是「界面承诺了但没做到」，改的是行为，不是文案。
+
+### D10 一条会话承载多轮
+
+**决定**：续说一句 → 复用同一个 `session_id`（`EventStore.reopen` 把 `ended` 改回
+`active`，`HarnessOptions.resumeSessionId`），`state.json` 里累积的 `messages` 作为
+`resumeFrom` 传回 `runAgent`，`turn_index` 递增。
+
+**理由**：左栏一个对话一条。每句话新开一条会话，回放里全是碎片，模型也拿不到上文；
+而 side-effect 上「一条会话 = 一个工作区的一段连续意图」，拆碎之后 checkpoint、
+撤销上一轮、成本统计全部失去边界。
+
+**否决**：每条消息一条会话 + `parent_id` 链。回溯容易，但界面、成本、撤销都要在
+客户端重新拼装，换来的只是「会话不可变」这一条理论好处。
+
+**坑**：`dispose()` 每轮都 `end()`，所以复用的第一件事必须是 reopen；另外
+`state.json` 只存图片的 `path` 不存 base64，续跑前要按路径读回来，否则 provider
+收到一个空 base64 直接 400。
+
+### D11 选项目 = 浏览本地目录
+
+**决定**：`GET /api/fs` 只列目录（含面包屑、父目录），`POST /api/fs/mkdir` 只能建
+**当前目录下**的子目录（名字里不许有 `/`、`..`）；界面是弹窗，不是右侧抽屉。
+
+**理由**：让人从文件管理器复制绝对路径再粘回去，是三步操作且必然粘错。抽屉还占着
+主界面右边的位置，而它一年用两次。
+
+**否决**：系统原生目录选择器（Tauri 的 `dialog.open`）。浏览器里没有，桌面端有 →
+两套代码路径；而这个弹窗两端都能用。
+
+### D12 语音：本机转写，不用浏览器 SpeechRecognition
+
+**决定**：`MediaRecorder` 录音 → `POST /api/transcribe` → 本机 faster-whisper
+（`scripts/asr-install.sh`）。引擎找不到就返回 501 + 安装命令；设备打不开就说清是
+「没有麦克风 / 权限 / 被占用」。
+
+**理由**：浏览器自带的识别是**云端**的（Chrome 发给 Google）。在大陆连不上时它只回
+`network`，界面上就是一句 `speech: network` —— 既不说原因也没给出路。桌面端的
+WebKitGTK 更是根本没有这个 API。本机转写还顺带满足「音频不出机器」。
+
+**坑**：`av>=16` 删掉了 `metadata_errors`，而 faster-whisper 1.2 还在传它 →
+装完一切正常、一说话就 500。安装脚本必须钉 `av<16`。

@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { uhHome } from '../paths.ts'
 import { EventStore } from './store.ts'
-import type { Message } from '../llm/types.ts'
+import type { Message, ImageInput } from '../llm/types.ts'
 
 export interface ResumeState {
   sessionId: string
@@ -24,6 +24,28 @@ export interface ResumeState {
 
 export function sessionsDir(): string {
   return path.join(uhHome(), 'sessions')
+}
+
+/**
+ * 续跑时把图片按路径重新读回来。
+ *
+ * state.json 里刻意不存 base64（一份带截图的会话能把文件撑到几十 MB），只留 path。
+ * 但 provider 转请求时拼的是 `data:<type>;base64,<data>`——空 data 发出去就是
+ * 一个畸形请求，整轮 400。所以续跑前必须补，补不到的那张直接丢掉：
+ * 少一张图和整轮失败，前者能用。
+ */
+function hydrateImages(msgs: Message[]): Message[] {
+  return msgs.map((m) => {
+    if (!m.images?.length) return m
+    const kept: ImageInput[] = []
+    for (const im of m.images) {
+      if (im.data) { kept.push(im); continue }
+      try {
+        kept.push({ ...im, data: fs.readFileSync(im.path).toString('base64') })
+      } catch { /* 图没了（用户清了 .uh/uploads）：丢掉这张，别拖着整轮一起失败 */ }
+    }
+    return { ...m, images: kept }
+  })
 }
 
 /** 按目录读（调用方已经知道会话在哪） */
@@ -43,7 +65,7 @@ export function readStateAt(dir: string, fallbackId: string): ResumeState | null
       updatedAt: raw.updated_at ?? '',
       stoppedBy: raw.stopped_by ?? 'unknown',
       plan: raw.plan ?? [],
-      messages: raw.messages,
+      messages: hydrateImages(raw.messages),
     }
   } catch {
     return null

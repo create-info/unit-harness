@@ -13,12 +13,13 @@ import { createHash } from 'node:crypto'
 import fs6 from 'node:fs'
 import { spawn, execFileSync } from 'node:child_process'
 import {
-  EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey,
+  EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey, readState,
   readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig } from '@unit-harness/core'
 import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget, WatchManager } from '@unit-harness/core'
 import { loadMcpServers, discoverSkills } from '@unit-harness/core'
-import type { ApprovalGate, ApprovalRequest } from '@unit-harness/core'
+import type { ApprovalGate, ApprovalRequest, Message } from '@unit-harness/core'
 import UI from './ui.html'
+import { asrStatus, transcribe } from './asr.ts'
 
 /** 和桌面端、站上同一个图标：32px PNG 直接内联，省一个静态文件路由 */
 const FAVICON_PNG = Buffer.from(
@@ -951,6 +952,98 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       return
     }
 
+    // ---- 语音：本机转写 ---------------------------------------------------
+    // 网页录音 → 这里 → 本机 whisper。音频不出机器，也不依赖任何在线服务。
+    if (req.method === 'GET' && url.pathname === '/api/asr') {
+      json(res, 200, asrStatus())
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/transcribe') {
+      let body: { audio?: string; mediaType?: string; lang?: string } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const data = (body.audio ?? '').trim()
+      if (!data) { json(res, 400, { error: 'no audio in the request' }); return }
+      const buf = Buffer.from(data, 'base64')
+      if (buf.length === 0) { json(res, 400, { error: 'the recording came through empty' }); return }
+      // 一段口述不该有 25 MB；超了基本是前端把别的东西传上来了
+      if (buf.length > 25 * 1024 * 1024) { json(res, 413, { error: 'recording too large' }); return }
+      const ext = ((body.mediaType ?? '').split(';')[0]?.split('/')[1] ?? 'webm').replace(/[^a-z0-9]/g, '') || 'webm'
+      const dir = pjoin(uhHome(), 'tmp', 'asr')
+      try {
+        const out = await transcribe({
+          audio: buf,
+          ext,
+          ...(body.lang ? { lang: body.lang } : {}),
+          workDir: dir,
+        })
+        json(res, 200, { text: out.text, engine: out.engine, language: out.language ?? '' })
+      } catch (err) {
+        const noEngine = (err as { code?: string }).code === 'NO_ASR'
+        json(res, noEngine ? 501 : 500, { error: err instanceof Error ? err.message : String(err) })
+      } finally {
+        // 录音是临时文件：转完就删，别把说过的每句话都留在磁盘上
+        try { for (const f of fsSync.readdirSync(dir)) fsSync.rmSync(pjoin(dir, f), { force: true }) } catch { /* ignore */ }
+      }
+      return
+    }
+
+    // ---- 本地目录浏览（新建项目时选文件夹）---------------------------------
+    // 服务只听 127.0.0.1，是给本机用户自己挑目录用的；只回目录，不回文件内容。
+    if (req.method === 'GET' && url.pathname === '/api/fs') {
+      const raw = (url.searchParams.get('path') ?? '').trim()
+      const home = os.homedir()
+      const abs = pathMod.resolve(raw ? (raw.startsWith('~') ? pjoin(home, raw.slice(1)) : raw) : home)
+      let entries: import('node:fs').Dirent[]
+      try {
+        entries = fsSync.readdirSync(abs, { withFileTypes: true })
+      } catch (err) {
+        json(res, 400, { error: (err as NodeJS.ErrnoException).code === 'EACCES'
+          ? 'no permission to read that folder'
+          : 'cannot read that folder' })
+        return
+      }
+      const dirs = entries
+        .filter((e) => e.isDirectory() || e.isSymbolicLink())
+        .map((e) => ({ name: e.name, path: pjoin(abs, e.name), hidden: e.name.startsWith('.') }))
+        // 符号链接可能是文件或断链：只留真目录，点进去不会得到一堆空列表
+        .filter((d) => { try { return fsSync.statSync(d.path).isDirectory() } catch { return false } })
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+      // 面包屑：从根到当前目录，每一段都能点，省得靠退格去猜
+      const crumbs: Array<{ name: string; path: string }> = []
+      for (let cur = abs; ; cur = pathMod.dirname(cur)) {
+        const par = pathMod.dirname(cur)
+        crumbs.unshift({ name: cur === par ? cur : pathMod.basename(cur) || cur, path: cur })
+        if (par === cur) break
+      }
+      const parent = pathMod.dirname(abs)
+      json(res, 200, { path: abs, parent: parent === abs ? '' : parent, home, crumbs, dirs: dirs.slice(0, 400) })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/fs/mkdir') {
+      let body: { path?: string; name?: string } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const base = (body.path ?? '').trim()
+      const name = (body.name ?? '').trim()
+      // 名字里不能有分隔符或 ..：这条选择器的用途是"在当前目录里建一个子目录"，
+      // 允许路径就变成了任意位置写文件，那不是这个按钮该有的权力
+      if (!base || !name) { json(res, 400, { error: 'need a folder and a name' }); return }
+      if (/[\\/]/.test(name) || name === '.' || name === '..') {
+        json(res, 400, { error: 'the name cannot contain a path separator' }); return
+      }
+      const target = pjoin(pathMod.resolve(base), name)
+      try {
+        mkdirSync(target, { recursive: false })
+      } catch (err) {
+        const code = (err as { code?: string }).code
+        json(res, 400, { error: code === 'EEXIST' ? 'a folder with that name already exists' : 'could not create that folder' })
+        return
+      }
+      json(res, 200, { path: target })
+      return
+    }
+
     // ---- 项目（工作区）-----------------------------------------------------
     if (req.method === 'GET' && url.pathname === '/api/projects') {
       const store = new EventStore()
@@ -1013,6 +1106,8 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         maxSteps?: number
         images?: { name?: string; mediaType?: string; data?: string }[]
         refs?: string[]
+        /** 续上一句：给了就接着这条会话往下说，而不是新开一条 */
+        sessionId?: string
       } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* ignore */ }
       const task = (body.task ?? '').trim()
@@ -1038,6 +1133,33 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
           needsSetup: true,
         })
         return
+      }
+
+      // ---- 多轮：接着上一句往下说 ------------------------------------------
+      // 每句话都新开一条会话，左栏就是一地碎片，模型也拿不到上文；
+      // 这里把「续哪一条 / 第几轮 / 在哪个工作区」一次定下来。
+      const contId = (body.sessionId ?? '').trim()
+      let resumeFrom: Message[] | undefined
+      let turnIndex = 1
+      if (contId) {
+        if (running.has(contId)) {
+          json(res, 409, { error: 'that conversation is still running — wait or stop it first' })
+          return
+        }
+        const store0 = new EventStore()
+        const meta = store0.get(contId)
+        if (!meta) { json(res, 404, { error: 'no such conversation: ' + contId }); return }
+        // 会话属于某个工作区。用户是从这条会话点进来的，就跟着它走——
+        // 否则会在 A 项目的对话里改 B 项目的文件。
+        if (meta.workspace && meta.workspace !== currentWorkspace) currentWorkspace = meta.workspace
+        const st = readState(contId)
+        // 没有 state.json（老会话、或上一轮崩在落盘之前）也能续：
+        // 只是这句话不带上文，比直接拒绝让人能继续干活。
+        if (st && st.messages.length) resumeFrom = st.messages
+        // 轮次接着数。同一个会话里出现两个 turn_index:1，回放和撤销都分不清边界。
+        turnIndex = store0.read(contId, { kinds: ['turn/start'] }).length + 1
+        // 清掉上一轮的广播缓存：否则这一轮连上 SSE 会把上一轮重放一遍，屏幕上两份
+        evBuf.delete(contId)
       }
 
       // 网页传来的图是 base64。存成文件而不是把 base64 塞进事件/state：
@@ -1081,14 +1203,17 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         ? `<attached_files>\n${blocks.join('\n')}\n</attached_files>\n\n`
         : ''
 
-      let sid = ''
-      const sidRef = { id: '' }
+      // 续跑时 id 现在就知道：从第一毫秒起事件就能直接推给已经连着的页面，
+      // 不用再攒 earlyEvents。新会话还得等 start() 分配。
+      let sid = contId
+      const sidRef = { id: contId }
       // session/start、turn/start、第一轮思考都发生在 start() 之前，那时还没有 id。
       // 先攒着，拿到 id 再倒进缓冲——否则前几百毫秒发生的事对网页来说不存在
       const earlyEvents: Array<{ kind: string; payload: Record<string, unknown> }> = []
       const h = new Harness({
         record: true,
-        label: task.slice(0, 60),
+        // 标签只在开新会话时有用；续跑时改它会把这个对话在左栏改名成最后一句
+        ...(contId ? { resumeSessionId: contId } : { label: task.slice(0, 60) }),
         workspace: currentWorkspace,
         // 网页里也要能审批：不接这个门，破坏性命令在 UI 里只能一律失败
         gate: makeWebGate(sidRef),
@@ -1111,14 +1236,14 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         },
       })
       await h.start()          // ← 少这一句就拿不到 sessionId
-      sid = h.sessionId ?? ''
+      sid = h.sessionId ?? sid
       sidRef.id = sid
       // 把拿 id 之前攒下的事件按原顺序补进缓冲，前端一接上就能看到完整过程
       for (const ev of earlyEvents) bufferEvent(sid, ev.kind, ev.payload)
       running.set(sid, h)
 
       // 立刻把 sessionId 交给前端，任务在后台跑
-      json(res, 200, { sessionId: sid })
+      json(res, 200, { sessionId: sid, ...(contId ? { continued: true, turn: turnIndex } : {}) })
 
       void (async () => {
         try {
@@ -1126,6 +1251,8 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
             task: attachedBlock + task,
             ...(body.maxSteps ? { maxSteps: body.maxSteps } : {}),
             ...(images.length ? { images } : {}),
+            ...(resumeFrom ? { resumeFrom } : {}),
+            ...(turnIndex > 1 ? { turnIndex } : {}),
           })
           broadcast(sid, 'answer', { text: out.text })
           broadcast(sid, 'deliverables', {
@@ -1205,9 +1332,13 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       res.write(': connected\n\n')
 
       // 先补发这个会话已经发生的事，再往下走实时：否则 run 到 attach 之间的
-      // 第一轮思考和工具调用会永远丢掉
-      for (const ev of evBuf.get(sessionId) ?? []) {
-        res.write(`event: ${ev.kind}\ndata: ${JSON.stringify(ev.payload)}\n\n`)
+      // 第一轮思考和工具调用会永远丢掉。
+      // `live=1` 是「我正在从磁盘回放这条会话，只要新的」——没有它，打开一条
+      // 刚跑完的会话会把最后一轮再放一遍，屏幕上出现两份。
+      if (url.searchParams.get('live') !== '1') {
+        for (const ev of evBuf.get(sessionId) ?? []) {
+          res.write(`event: ${ev.kind}\ndata: ${JSON.stringify(ev.payload)}\n\n`)
+        }
       }
 
       // 重放这个会话还没被回答的审批：页面刚连上时，请求可能早就发过了
