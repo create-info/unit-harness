@@ -18,7 +18,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import {
   Harness, describeTool, describeToolResult, discoverSkills, readConfig, writeConfig,
-  findProvider, listModels, uhHome, latestResumable,
+  findProvider, listModels, uhHome, latestResumable, loadMcpServers, expandMentions,
 } from '@unit-harness/core'
 import type { ApprovalRequest, Message, ProviderDef } from '@unit-harness/core'
 
@@ -109,54 +109,6 @@ function toolLine(name: string, args: Record<string, unknown>): string {
   }
 }
 
-/**
- * 把 `@路径` 和 `$技能` 变成真正的上下文。
- *
- * 这两个记号是「我知道有这个东西，帮我带进来」的表达：@ 带进文件内容（大的只给
- * 指针），$ 带进技能正文。没有它们，用户要么记不住路径，要么得让模型自己去翻。
- */
-function expandRefs(task: string, cwd: string): string {
-  const blocks: string[] = []
-
-  const files = new Set<string>()
-  for (const m of task.matchAll(/(?:^|\s)@([\w./\-]+)/g)) {
-    if (m[1]) files.add(m[1])
-  }
-  for (const rel of [...files].slice(0, 12)) {
-    const abs = path.resolve(cwd, rel)
-    if (!abs.startsWith(cwd + path.sep) && abs !== cwd) continue
-    let st: fs.Stats
-    try {
-      st = fs.statSync(abs)
-    } catch {
-      blocks.push(`<file path="${rel}">(not found)</file>`)
-      continue
-    }
-    if (!st.isFile()) continue
-    if (st.size > 16 * 1024) {
-      blocks.push(`<file path="${rel}" bytes="${st.size}">(too large to inline — open it with read_file)</file>`)
-      continue
-    }
-    try {
-      blocks.push(`<file path="${rel}">\n${fs.readFileSync(abs, 'utf8')}\n</file>`)
-    } catch { /* 读不了就当没提过 */ }
-  }
-
-  const wanted = new Set<string>()
-  for (const m of task.matchAll(/(?:^|\s)\$([\w\-]+)/g)) {
-    if (m[1]) wanted.add(m[1])
-  }
-  if (wanted.size) {
-    for (const s of discoverSkills(cwd)) {
-      if (!wanted.has(s.name)) continue
-      blocks.push(`<skill name="${s.name}">\n${s.body}\n</skill>`)
-    }
-  }
-
-  if (!blocks.length) return task
-  return `<attached>\n${blocks.join('\n')}\n</attached>\n\n${task}`
-}
-
 function banner(s: TuiState): void {
   // 不在这里构造 Harness 只为读一行说明：构造会碰工作区和沙箱探测，
   // 而「开始输入」这件事应该立刻可用。沙箱细节留给 `uh doctor`。
@@ -164,7 +116,7 @@ function banner(s: TuiState): void {
   console.log('  ' + bold('UnitHarness') + dim('  ·  the agent that proves its work'))
   console.log('  ' + dim('model     ') + cyan(s.model || '(未设置——用 /model 选一个)') + dim(`  [${s.provider}]`))
   console.log('  ' + dim('workspace ') + s.cwd)
-  console.log('  ' + dim('tips      ') + dim('/help  ·  @文件  ·  $技能  ·  Ctrl+C 打断'))
+  console.log('  ' + dim('tips      ') + dim('/ 命令与 MCP  ·  @文件  ·  $技能  ·  Tab 补全  ·  Ctrl+C 打断'))
   console.log('')
 }
 
@@ -265,6 +217,90 @@ function cmdConfig(s: TuiState, arg: string): void {
   console.log(dim('  能改的：approval、model。其余用 uh config set/use，或打开设置页。'))
 }
 
+/** 输入 `/` 时能看到的东西：命令带一句说明，MCP 和技能按名字列 */
+function printMenu(cwd: string): void {
+  const cmds: Array<[string, string]> = [
+    ['/model', '选模型'],
+    ['/config', '看/改配置（provider、approval）'],
+    ['/skills', '技能列表，发消息时用 $名字 引用'],
+    ['/mcp', 'MCP server 列表，发消息时用 /mcp 名字 引用'],
+    ['/files', '工作区文件，发消息时用 @路径 引用'],
+    ['/new', '开新会话'],
+    ['/resume', '接着最近一次会话'],
+    ['/clear', '清屏'],
+    ['/quit', '退出'],
+  ]
+  console.log('')
+  console.log('  ' + dim('命令'))
+  for (const [k, v] of cmds) console.log('  ' + cyan(k.padEnd(12)) + dim(v))
+
+  const mcp = loadMcpServers(cwd)
+  const names = Object.keys(mcp.servers)
+  console.log('')
+  console.log('  ' + dim('MCP server') + dim(names.length ? '' : '（还没装：uh mcp add <名字> <命令…>）'))
+  for (const n of names) {
+    const cfg = mcp.servers[n]
+    const how = cfg?.url ? cfg.url : [cfg?.command, ...(cfg?.args ?? [])].join(' ')
+    console.log('  ' + cyan(('/mcp ' + n).padEnd(12)) + dim(String(how ?? '')))
+  }
+
+  const skills = discoverSkills(cwd)
+  console.log('')
+  console.log('  ' + dim('技能') + dim(skills.length ? '' : '（还没有：uh skill new 名字 --global）'))
+  for (const s of skills) console.log('  ' + cyan(('$' + s.name).padEnd(12)) + dim(s.description || ''))
+
+  console.log('')
+  console.log('  ' + dim('输入 / 或 $ 后按 Tab 补全；@ 后接路径把文件带进这次提问'))
+  console.log('')
+}
+
+function cmdMcpList(cwd: string): void {
+  const mcp = loadMcpServers(cwd)
+  const names = Object.keys(mcp.servers)
+  if (!names.length) {
+    console.log(dim('  还没装 MCP server：uh mcp add <名字> <命令…>（或 <url>）'))
+    return
+  }
+  console.log('')
+  for (const n of names) {
+    const cfg = mcp.servers[n]
+    if (!cfg) continue
+    const how = cfg.url ? cfg.url : [cfg.command, ...(cfg.args ?? [])].join(' ')
+    console.log('  ' + cyan('/mcp ' + n) + '  ' + dim(how))
+  }
+  console.log('')
+  console.log(dim('  发消息时写 /mcp 名字 就会点名让它用这个 server 的工具（mcp__名字__*）。'))
+  console.log('')
+}
+
+/** Tab 补全的候选：命令、$技能、/mcp 名字、@路径 */
+function completionsFor(line: string, cwd: string): string[] {
+  const mcp = Object.keys(loadMcpServers(cwd).servers)
+  const skills = discoverSkills(cwd).map((s) => '$' + s.name)
+  const cmds = ['/help', '/model', '/config', '/skills', '/mcp', '/files', '/new', '/resume', '/clear', '/quit']
+
+  const mcpRef = /(?:^|\s)\/mcp\s+(\S*)$/.exec(line)
+  if (mcpRef) return mcp.filter((n) => n.startsWith(mcpRef[1] ?? ''))
+
+  const atRef = /(?:^|\s)@(\S*)$/.exec(line)
+  if (atRef) {
+    try {
+      return fs.readdirSync(cwd, { withFileTypes: true })
+        .filter((e) => !String(e.name).startsWith('.'))
+        .map((e) => String(e.name) + (e.isDirectory() ? '/' : ''))
+        .filter((n) => n.startsWith(atRef[1] ?? ''))
+    } catch { return [] }
+  }
+
+  const dollarRef = /(?:^|\s)\$(\S*)$/.exec(line)
+  if (dollarRef) return skills.filter((s) => s.slice(1).startsWith(dollarRef[1] ?? ''))
+
+  const slashRef = /^\/(\S*)$/.exec(line)
+  if (slashRef) return cmds.filter((c) => c.slice(1).startsWith(slashRef[1] ?? ''))
+
+  return []
+}
+
 function cmdSkills(cwd: string): void {
   const skills = discoverSkills(cwd)
   if (!skills.length) {
@@ -309,7 +345,10 @@ function cmdResume(s: TuiState, arg: string): void {
 
 /** 一次提问：让模型干活，把过程流出来 */
 async function runTurn(s: TuiState, task: string): Promise<void> {
-  const expanded = expandRefs(task, s.cwd)
+  // @文件 / $技能 / /mcp 名字 统一在这里展开（和网页端同一份实现）
+  const mention = expandMentions(task, s.cwd)
+  for (const w of mention.warnings) console.log('  ' + yellow('! ' + w))
+  const expanded = mention.text
   const cur = readCurrent()
   const gate = {
     request: async (req: ApprovalRequest): Promise<'allow' | 'deny'> => {
@@ -386,6 +425,8 @@ async function runTurn(s: TuiState, task: string): Promise<void> {
     await h.start()
     const res = await h.runTask({
       task: expanded,
+      // 屏幕上/会话列表里用用户的原话
+      displayTask: task,
       ...(s.messages.length ? { resumeFrom: s.messages } : {}),
       ...(s.model ? { model: s.model } : {}),
       ...(cur.provider ? { provider: cur.provider } : {}),
@@ -440,14 +481,18 @@ export async function runTui(): Promise<void> {
     cwd: process.cwd(),
   }
 
-  s.rl = readline.createInterface({
+  // 补全：/ 给命令、/mcp 给 server 名、$ 给技能、@ 给工作区里的文件
+  const rl0 = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     history: loadHistory().reverse(),
     historySize: 500,
     removeHistoryDuplicates: true,
     terminal: Boolean(process.stdin.isTTY),
+    // Tab 补全：/ 命令、/mcp server 名、$ 技能、@ 工作区文件
+    completer: (line: string) => [completionsFor(line, s.cwd), line],
   })
+  s.rl = rl0
 
   banner(s)
 
@@ -490,6 +535,23 @@ export async function runTui(): Promise<void> {
     if (!text) return
     saveHistory(text)
 
+    // 单独一个记号 = 「给我看看有什么」。这是 Codex 里最常见的一步：
+    // 先 `/` 看到手上有哪些命令和 server，再选一个。
+    if (text === '/') { printMenu(s.cwd); return }
+    if (text === '$') { cmdSkills(s.cwd); return }
+    if (text === '@') { cmdFiles(s.cwd); return }
+
+    // `/mcp 名字 后面还有话` 是一次提问，不是命令。
+    // 只有 `/mcp`（看列表）和 `/mcp 名字`（看这一个）才当命令处理——
+    // 以前整行都被当成命令吃掉，用户写的话根本没送到模型那里。
+    const mcpMsg = /^\/mcp\s+([\w.\-]+)\s+\S/.exec(text)
+    if (mcpMsg && mcpMsg[1] && loadMcpServers(s.cwd).servers[mcpMsg[1]]) {
+      s.running = true
+      await runTurn(s, text)
+      prompt()
+      return
+    }
+
     if (text.startsWith('/')) {
       const [cmdName, ...rest] = text.slice(1).split(/\s+/)
       const arg = rest.join(' ')
@@ -499,6 +561,18 @@ export async function runTui(): Promise<void> {
         case 'model': await cmdModel(s, arg); break
         case 'config': cmdConfig(s, arg); break
         case 'skills': cmdSkills(s.cwd); break
+        case 'mcp':
+          // `/mcp` 看列表；`/mcp 名字` 是引用，交给消息里处理，不当命令执行
+          if (arg && !arg.includes(' ')) {
+            const known = Object.keys(loadMcpServers(s.cwd).servers)
+            if (known.includes(arg.trim())) {
+              console.log(dim('  /mcp ' + arg.trim() + ' 是引用写法：把它写进一句话里，例如'))
+              console.log('  ' + cyan('/mcp ' + arg.trim() + ' 读一下这个仓库的 README'))
+              break
+            }
+          }
+          cmdMcpList(s.cwd)
+          break
         case 'files': case 'ls': cmdFiles(s.cwd); break
         case 'new':
           s.messages = []

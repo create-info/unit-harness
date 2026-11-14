@@ -316,6 +316,20 @@
   #stage{flex:1;display:flex;min-height:0;min-width:0}
   #log{flex:1;overflow:auto;padding:16px 20px;font-family:var(--mono);font-size:12.5px;min-width:300px}
   /* ---- 右侧 diff 面板 ---- */
+  /* 补全面板：从输入框上方长出来，不遮挡正文 */
+  #slashPop{position:absolute;left:20px;right:20px;bottom:var(--jumpb,112px);max-height:min(320px,50vh);
+    overflow:auto;display:none;background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    box-shadow:0 12px 40px rgba(0,0,0,.45);z-index:45;padding:6px}
+  #slashPop.on{display:block}
+  .spitem{display:flex;align-items:center;gap:10px;padding:6px 9px;border-radius:7px;cursor:pointer;
+    font:12px var(--mono);color:var(--fg)}
+  .spitem .spk{flex:0 0 128px;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .spitem .spd{flex:1;color:var(--dim);font:11.5px var(--sans,inherit);overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .spitem .spt{flex:0 0 auto;font:10px var(--mono);color:var(--soft);border:1px solid var(--line);
+    border-radius:5px;padding:1px 5px}
+  .spitem.sel{background:var(--hover)}
+  .sphead{font:10px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.07em;padding:6px 9px 3px}
   #diffPane{flex:0 0 0;width:0;overflow:hidden;border-left:1px solid var(--line);
     background:var(--panel);display:flex;flex-direction:column;transition:flex-basis .16s ease,width .16s ease}
   #diffPane.on{flex:0 1 46%;width:46%;min-width:260px;max-width:720px}
@@ -482,6 +496,8 @@
       <div class="qstate" id="qstate"></div>
       <div class="qlist" id="qlist"></div>
     </div>
+    <!-- 敲 / 或 $ 时弹出的补全：MCP server、技能、命令，像 Codex 那样选一个 -->
+    <div id="slashPop" role="listbox" aria-label="commands and plugins"></div>
     <form id="run">
       <button class="plus" id="plusBtn" type="button" title="Attach an image">+</button>
       <input type="file" id="filePick" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
@@ -1023,6 +1039,135 @@ async function pmCreate(){
   await pmLoad(j.path);
   pmMsg('created ' + j.path);
 }
+
+
+/* ---- 输入框的 / 补全 ---------------------------------------------------
+ * 敲一个 `/` 就看到手上有哪些命令、哪些 MCP server、哪些技能，回车选一个。
+ * 选完插进输入框的是 `/mcp 名字 ` 或 `$技能 `，真正展开在服务端完成
+ * （packages/core/src/mentions/expand.ts），所以终端和网页行为一致。
+ * ---------------------------------------------------------------------- */
+const SLASH = { items: [], sel: 0, token: null, start: 0 };
+
+function slashCandidates(query, kind) {
+  const out = [];
+  const q = query.toLowerCase();
+  const hit = (s) => !q || String(s).toLowerCase().includes(q);
+
+  if (kind === '/') {
+    // 命令：能立刻执行的那种
+    for (const [k, d, run] of [
+      ['/new', '开一个新会话', () => startNewTask()],
+      ['/model', '选模型', () => openSettings('model')],
+      ['/mcp', '看 MCP server 列表', () => openSettings('plugins')],
+      ['/skills', '看技能列表', () => openSettings('plugins')],
+      ['/files', '看工作区文件（用 @ 引用）', () => { $('#task').value += ''; }],
+    ]) {
+      if (!hit(k)) continue;
+      out.push({ key: k, desc: d, tag: '命令', insert: null, run });
+    }
+    for (const m of (PLUGINS && PLUGINS.mcp) || []) {
+      if (!hit('/mcp ' + m.name)) continue;
+      out.push({ key: '/mcp ' + m.name, desc: m.url || m.command || m.transport || '', tag: 'MCP', insert: '/mcp ' + m.name + ' ' });
+    }
+  }
+  for (const s of (PLUGINS && PLUGINS.skills) || []) {
+    if (!hit('$' + s.name)) continue;
+    out.push({ key: '$' + s.name, desc: s.description || '(没有描述)', tag: '技能', insert: '$' + s.name + ' ' });
+  }
+  return out.slice(0, 40);
+}
+
+function hideSlash() {
+  SLASH.items = [];
+  SLASH.token = null;
+  $('#slashPop').classList.remove('on');
+  $('#slashPop').innerHTML = '';
+}
+
+function drawSlash() {
+  const pop = $('#slashPop');
+  pop.innerHTML = '';
+  if (!SLASH.items.length) { hideSlash(); return }
+  for (const it of SLASH.items) {
+    const row = el('<div class="spitem" role="option">'
+      + '<span class="spk">' + esc(it.key) + '</span>'
+      + '<span class="spd">' + esc(it.desc) + '</span>'
+      + '<span class="spt">' + esc(it.tag) + '</span></div>');
+    row.dataset.k = it.key;
+    pop.appendChild(row);
+  }
+  pop.classList.add('on');
+  paintSlashSel();
+}
+
+function paintSlashSel() {
+  const rows = Array.from($('#slashPop').children);
+  rows.forEach((r, i) => r.classList.toggle('sel', i === SLASH.sel));
+  rows[SLASH.sel]?.scrollIntoView({ block: 'nearest' });
+}
+
+function applySlash(idx) {
+  const it = SLASH.items[idx];
+  if (!it) return;
+  const ta = $('#task');
+  const upto = ta.value.slice(0, ta.selectionStart);
+  const token = SLASH.token || '';
+  const head = upto.slice(0, upto.length - token.length);
+  const tail = ta.value.slice(ta.selectionStart);
+  hideSlash();
+  if (it.run) { it.run(); return }
+  ta.value = head + it.insert + tail;
+  const at = (head + it.insert).length;
+  ta.setSelectionRange(at, at);
+  ta.focus();
+}
+
+function refreshSlash() {
+  const ta = $('#task');
+  const upto = ta.value.slice(0, ta.selectionStart);
+  const m = /(^|\s)([/$])([\w./\-]*)$/.exec(upto);
+  // 插件清单还没到就先把这次请求发出去，回来再刷一次面板。
+  // #task 一开始就是选中状态（页面自动聚焦），focus 事件不会触发——
+  // 只靠 focus 预取，第一次敲 / 时面板里会只有命令、没有 MCP 和技能。
+  if (m && !PLUGINS) {
+    // loadPlugins 失败时也会给一个空快照，所以这次刷新最多重来一遍，不会打转
+    void loadPlugins().then(() => { if (/[/$]\S*$/.test(ta.value)) refreshSlash(); });
+  }
+  if (!m) { hideSlash(); return }
+  SLASH.token = m[2] + m[3];
+  SLASH.start = upto.length - SLASH.token.length;
+  SLASH.items = slashCandidates(m[3], m[2]);
+  SLASH.sel = 0;
+  drawSlash();
+}
+
+$('#task').addEventListener('input', refreshSlash);
+$('#task').addEventListener('click', () => hideSlash());
+$('#task').addEventListener('blur', () => setTimeout(hideSlash, 120));
+$('#task').addEventListener('keydown', (e) => {
+  if (!SLASH.items.length) return;
+  if (e.key === 'ArrowDown') { e.preventDefault(); SLASH.sel = (SLASH.sel + 1) % SLASH.items.length; paintSlashSel(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); SLASH.sel = (SLASH.sel - 1 + SLASH.items.length) % SLASH.items.length; paintSlashSel(); }
+  else if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+    // 面板开着的时候回车是「选中」，不是「发送」——否则选到一半就把半句话发出去了
+    e.preventDefault();
+    applySlash(SLASH.sel);
+  } else if (e.key === 'Escape') { e.preventDefault(); hideSlash(); }
+});
+$('#slashPop').addEventListener('mousedown', (e) => {
+  const row = e.target.closest('.spitem');
+  if (!row) return;
+  e.preventDefault();
+  applySlash(SLASH.items.findIndex((x) => x.key === row.dataset.k));
+});
+// 打开输入框时先拿一次插件清单：/ 一敲就得有内容，不能等
+// （加载完再刷新一次——首次打开时 fetch 还没回来，面板里会少了 MCP 和技能）
+$('#task').addEventListener('focus', () => {
+  if (PLUGINS) return;
+  loadPlugins().then(() => {
+    if (document.activeElement === $('#task')) refreshSlash();
+  });
+});
 
 $('#settingsBtn').addEventListener('click', () => openSettings('general'));
 $('#projBtn').addEventListener('click', () => openProjectModal());
@@ -2650,10 +2795,17 @@ function render(kind, p){
       closeRun();
       // 用户这句话本身就是对话的一部分。以前只显示模型的活，回放一整段多轮
       // 对话时看到的是一串没有前因的工具调用。
-      const said = typeof p.task === 'string'
-        // @ 进来的文件内容在任务里是一大块，屏幕上只要那句人话
-        ? p.task.replace(/<attached_files>[\s\S]*?<\/attached_files>\s*/, '').trim()
-        : '';
+      // 优先用服务端记下的原话（display_task）。它才是用户敲的那一行；
+      // p.task 里可能带着 @文件内容、技能正文、MCP 交代——那是给模型的。
+      const said = typeof p.display_task === 'string'
+        ? p.display_task.trim()
+        : typeof p.task === 'string'
+          ? p.task
+              .replace(/<attached_files>[\s\S]*?<\/attached_files>\s*/, '')
+              .replace(/<mcp_servers>[\s\S]*?<\/mcp_servers>\s*/, '')
+              .replace(/<attached>[\s\S]*?<\/attached>\s*/, '')
+              .trim()
+          : '';
       const idx = Number(p.turn_index || 1);
       if (idx > 1){
         const sep = document.createElement('div');
