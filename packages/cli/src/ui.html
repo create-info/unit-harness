@@ -290,7 +290,7 @@
   .lgfoot{border-top:1px solid var(--line);padding:11px 18px;display:flex;gap:8px;align-items:center}
   .lgfoot .msg{flex:1;font-size:11.5px;color:var(--dim)}
   .lgfoot .msg.err{color:var(--bad)}
-  main{flex:1;display:flex;flex-direction:column;min-width:0}
+  main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
   header{padding:12px 20px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;font-size:12px;color:var(--dim)}
   header .brand{color:var(--fg);font-weight:600;letter-spacing:.02em}
   header .pill{background:var(--hover);border:1px solid var(--line);border-radius:999px;padding:2px 10px;font-family:var(--mono);font-size:11px;white-space:nowrap;cursor:pointer}
@@ -299,6 +299,15 @@
   header .pill.ok{color:var(--ok);border-color:var(--okbg)}
   header .pill.bad{color:var(--bad);border-color:var(--badbg)}
   #log{flex:1;overflow:auto;padding:16px 20px;font-family:var(--mono);font-size:12.5px}
+  /* 跟在最新内容后面时藏起来；一旦用户往上翻才出现 */
+  /* 位置由 JS 按 footer 的实际高度设置：输入框会随内容变高，写死 bottom 就会压在按钮下面 */
+  #jump{position:absolute;right:22px;bottom:var(--jumpb,112px);display:none;z-index:40;
+    /* 用实色，不靠主题变量：浅色背景下 --panel 可能是白的，按钮就消失了 */
+    background:#2f6bff;border:0;color:#fff;font-weight:600;
+    font:12px/1 var(--mono);padding:7px 12px;border-radius:999px;cursor:pointer;
+    box-shadow:0 6px 18px #0005}
+  #jump.on{display:block}
+  #jump:hover{background:#4a80ff}
   .row{display:flex;gap:10px;padding:2px 0;white-space:pre-wrap;word-break:break-word}
   .row .t{color:var(--soft);flex:0 0 52px;text-align:right;font-size:11px}
   .row .c{flex:1;min-width:0}
@@ -399,6 +408,9 @@
     <span id="sid" class="pill dim" style="margin-left:auto">no session</span>
   </header>
   <div id="log"></div>
+  <!-- 用户滚上去看历史时，新内容不该把他拽回来；但也别让他以为「卡住了」——
+       这里给一个明确的口子：有多少没看的，点一下就回到最新 -->
+  <button id="jump" title="Jump to the latest">↓ latest</button>
   <div id="deliverables"></div>
   <footer>
     <div class="modelbar">
@@ -512,6 +524,59 @@
 <script>
 const $ = (s) => document.querySelector(s);
 const logEl = $('#log'), delivEl = $('#deliverables');
+/* ------------------------------------------------------------------------
+ * 跟随最新内容（follow-tail）
+ *
+ * 原来只有几处 append 之后顺手把 scrollTop 推到底，漏掉的那些路径就停在原处：
+ * 表现为「一直在更新，但要自己往下拉才看得到最新结果」。逐处补不可靠，所以改成
+ * 观察 #log：任何一次 DOM 变化都重新贴底。
+ *
+ * 但也不能一路硬拽：用户往上翻看历史时，让他停在原地（否则刚滚上去就被拉回来），
+ * 只在角落亮一个「↓ latest」，点一下回到最新。滚回底部就自动恢复跟随。
+ * ---------------------------------------------------------------------- */
+let FOLLOW = true, followQueued = false;
+const NEAR_BOTTOM = 48;
+
+function atBottom(){
+  return logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - NEAR_BOTTOM;
+}
+
+function followTail(force){
+  if (!force && !FOLLOW) return;
+  if (followQueued) return;
+  followQueued = true;
+  // 等这一帧的布局算完再量高度，否则 scrollHeight 还是旧的
+  requestAnimationFrame(() => {
+    followQueued = false;
+    logEl.scrollTop = logEl.scrollHeight;
+    $('#jump')?.classList.remove('on');
+  });
+}
+
+logEl.addEventListener('scroll', () => {
+  FOLLOW = atBottom();
+  $('#jump')?.classList.toggle('on', !FOLLOW);
+}, { passive: true });
+
+$('#jump')?.addEventListener('click', () => { FOLLOW = true; followTail(true); });
+
+/** 「↓ latest」要浮在输入框上方；输入框的高度会变（换行、附件），所以按实际高度算 */
+function placeJump(){
+  const f = document.querySelector('footer');
+  if (!f) return;
+  document.documentElement.style.setProperty('--jumpb', (f.offsetHeight + 14) + 'px');
+}
+window.addEventListener('resize', placeJump);
+document.fonts?.ready.then(placeJump);
+// 输入框长高（换行、贴了附件、出现插话队列）时 footer 高度会变，跟着挪
+setTimeout(() => {
+  placeJump();
+  const f = document.querySelector('footer');
+  if (f && window.ResizeObserver) new ResizeObserver(() => placeJump()).observe(f);
+}, 0);
+
+// 文本是逐字进来的，Observer 会连着触发很多次；rAF 里已做去重
+new MutationObserver(() => followTail()).observe(logEl, { childList: true, subtree: true, characterData: true });
 /** 这次跑出来的交付物，过程流里只显示一个计数，靠它攒 */
 let ARTIFACTS = [];
 let es = null, started = Date.now(), firstTs = 0, lastTs = 0;
@@ -584,7 +649,7 @@ function row(cls, text){
   const t = ('+' + (((at - (firstTs || started))/1000).toFixed(1)) + 's');
   d.innerHTML = '<span class="t">' + t + '</span><span class="c ' + cls + '">' + text + '</span>';
   logEl.appendChild(d);
-  logEl.scrollTop = logEl.scrollHeight;
+  followTail();   // 交给 follow-tail：用户往上翻时不要把他拽回来
   return d;
 }
 async function boot(){
@@ -1757,6 +1822,25 @@ let sayEl = null, thinkEl = null, sawText = false;
 let runGrp = null;
 
 /**
+ * 收尾时扫掉空壳分组。
+ *
+ * 一个组在 step/start 时就建好了，但如果那一步什么都没往组里放（或者整组被
+ * 后来的回答接管），屏幕上就会留一行孤零零的 `working…`——「Finished · 9 steps」
+ * 上面那一行就是这么来的。空壳没有任何信息，收尾时直接扔掉。
+ */
+function sweepEmptyGroups(){
+  for (const g of Array.from(logEl.querySelectorAll('.run'))){
+    const body = g.querySelector('.rbody');
+    const ttl = g.querySelector('.ttl');
+    const hasRows = body && body.children.length > 0;
+    if (!hasRows && ttl && ttl.textContent.startsWith('working')){
+      g.remove();
+    }
+  }
+  runGrp = null;
+}
+
+/**
  * 回放历史会话时，行不再按「进来一条就塞进当前组」排。
  *
  * 真相是磁盘上每条事件都有 seq，而屏幕上只有顺序：`step/start` 之后紧跟着
@@ -1837,7 +1921,7 @@ function procRow(cls, text){
     replayStream.steps = Math.max(replayStream.steps, replayStream.touched);
     g.steps = replayStream.steps;
   } else {
-    logEl.scrollTop = logEl.scrollHeight;
+    followTail();
   }
   return el;
 }
@@ -1874,6 +1958,7 @@ function replayFinish(){
   replayStreams.length = 0;
   replayStream = null;
   REPLAY = false;
+  FOLLOW = true;          // 新的一次回放/新任务：重新跟到最新
   logEl.scrollTop = 0;
 }
 
@@ -1899,7 +1984,7 @@ function pushSay(delta){
     logEl.appendChild(sayEl);
   }
   sayEl.textContent += delta;
-  logEl.scrollTop = logEl.scrollHeight;
+  followTail();
 }
 
 function pushThink(delta){
@@ -1917,7 +2002,7 @@ function pushThink(delta){
     logEl.appendChild(thinkEl);
   }
   thinkEl.querySelector('.bd').textContent += delta;
-  logEl.scrollTop = logEl.scrollHeight;
+  followTail();
 }
 
 /** 文件卡片：点开才去算 diff —— 大部分时候人只想知道「改了哪个文件」 */
@@ -2391,7 +2476,7 @@ function render(kind, p){
         u.className = 'umsg';
         u.innerHTML = '<div class="b">' + esc(said) + '</div>';
         logEl.appendChild(u);
-        logEl.scrollTop = logEl.scrollHeight;
+        followTail();
       }
       // 时间戳按这一轮重新起算，否则第二轮每一行都显示成 +600s
       if (lastTs){ started = lastTs; firstTs = lastTs; }
@@ -2496,6 +2581,7 @@ function render(kind, p){
       if (ARTIFACTS.length === 1 || ARTIFACTS.length % 25 === 0) artRow();
       break;
     case 'turn/end':
+      sweepEmptyGroups();
       // 子 agent 的一轮是内部循环，不是这次对话的结束：它的 turn/end 既不该
       // 报「Finished · N steps」，也不该把主线正在跑的那一组关掉
       if (p.agent) break;
