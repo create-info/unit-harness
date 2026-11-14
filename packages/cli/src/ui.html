@@ -361,7 +361,9 @@
     button.go,button.stop{height:74px;padding:0 16px;flex:0 0 auto}
     /* 两个小按钮做成 44×44 的方块贴底：拉成和输入框一样高只会变成
        两根空柱子，手指还要往上够 */
-    .plus,.mic{width:44px;height:44px;align-self:flex-end;border-radius:10px}
+    /* 用 id 而不是类：`.plus` 的基础样式写在文件更后面，同权重会反过来赢，
+       留给手机的就是 30px 宽的小方块 */
+    #plusBtn,#micBtn{width:44px;height:44px;align-self:flex-end;border-radius:10px;flex:0 0 44px}
     /* 右侧 diff 面板在手机上占满整屏，不再和对话挤在一起 */
     #diffPane{position:fixed;inset:0;z-index:80;width:100%;flex:1 1 100%;
       padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
@@ -436,7 +438,28 @@
   .step{color:var(--accent);margin-top:10px}
   .tool{color:var(--fg)}
   .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.dim{color:var(--dim)}
-  .answer{margin-top:14px;padding:12px;border-left:2px solid var(--accent);background:var(--hover);color:var(--fg);font-family:-apple-system,system-ui,sans-serif;font-size:13.5px;white-space:pre-wrap;border-radius:0 6px 6px 0}
+  .answer{margin-top:14px;padding:12px;border-left:2px solid var(--accent);background:var(--hover);color:var(--fg);font-family:-apple-system,system-ui,sans-serif;font-size:13.5px;border-radius:0 6px 6px 0}
+  /* 回答渲染成 HTML 之后不能再靠 pre-wrap 排版，段落自带换行 */
+  .answer .mdp{white-space:pre-wrap;margin:0 0 8px;line-height:1.6}
+  .answer .mdp:last-child{margin-bottom:0}
+  .answer .mdh{font-weight:600;margin:10px 0 5px}
+  .answer .mdh1{font-size:16px}
+  .answer .mdh2{font-size:15px}
+  .answer .mdh3,.answer .mdh4,.answer .mdh5,.answer .mdh6{font-size:13.5px;color:var(--fg)}
+  .answer .mdli{display:flex;gap:7px;margin:2px 0;line-height:1.6}
+  .answer .mdli-b{color:var(--dim);flex:0 0 auto;min-width:10px}
+  .answer .mdq{border-left:2px solid var(--line2, #2b3441);padding-left:10px;color:var(--dim);margin:6px 0}
+  .answer .mdhr{height:1px;background:var(--line);margin:10px 0}
+  .answer a{color:#79b8ff;text-decoration:none}
+  .answer a:hover{text-decoration:underline}
+  .answer code{background:var(--input);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font:11.5px var(--mono);color:#9fd0ff}
+  /* 代码块：不折行，横向滚。手机上折成一截一截比滚动难读得多 */
+  .answer .mdc{border:1px solid var(--line);border-radius:8px;background:#0f1217;margin:9px 0;overflow:hidden}
+  .answer .mdcbar{font:10px var(--mono);letter-spacing:.04em;color:var(--dim);padding:4px 10px;
+    border-bottom:1px solid var(--line);background:#141a22;text-transform:uppercase}
+  .answer .mdpre{margin:0;padding:9px 11px;font:11.5px/1.55 var(--mono);color:#dfe6ee;
+    white-space:pre;overflow-x:auto;-webkit-overflow-scrolling:touch;tab-size:2}
+  .answer .mdpre code{background:none;border:0;padding:0;color:inherit;font:inherit}
   footer{border-top:1px solid var(--line);padding:12px 20px;background:var(--panel)}
   form#run{display:flex;gap:10px}
   textarea{flex:1;resize:none;height:56px;overflow:auto;background:var(--input);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:13px/1.5 var(--mono);outline:none}
@@ -949,6 +972,87 @@ window.addEventListener('keydown', (e) => {
  */
 function ph(long, short){
   return (window.matchMedia && window.matchMedia('(max-width: 820px)').matches) ? short : long;
+}
+
+
+/* ---- 回答里的 markdown ----------------------------------------------------
+ * 模型写的是 markdown，以前原样贴出来：```sh 这行标记直接露在屏幕上，
+ * 代码在手机上被折成一截一截（因为 .answer 是 white-space:pre-wrap）。
+ * 这里只做「看得懂」需要的那几种：代码块、行内代码、粗体、链接、标题、
+ * 列表、引用。不做表格、不做嵌套——多一个功能就多一处能出错的地方。
+ *
+ * 顺序很重要：先按反引号切开，再对剩余的文本做转义和替换，
+ * 否则代码里的 `<` 会被当标签吃掉，或者 `**x**` 在代码里被加粗。
+ * ---------------------------------------------------------------------- */
+function mdInline(t){
+  const parts = String(t).split(/(`[^`\n]*`)/g);
+  return parts.map((p) => {
+    if (p.length > 1 && p[0] === '`' && p[p.length - 1] === '`') {
+      return '<code>' + esc(p.slice(1, -1)) + '</code>';
+    }
+    let x = esc(p);
+    x = x.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+    // 只放行 http(s)：javascript: 链接在这页里有 shell 权限，不能当装饰
+    x = x.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    return x;
+  }).join('');
+}
+
+function md(src){
+  const lines = String(src == null ? '' : src).split('\n');
+  const out = [];
+  let para = [];
+  const flush = () => {
+    if (!para.length) return;
+    out.push('<div class="mdp">' + mdInline(para.join('\n')) + '</div>');
+    para = [];
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    // 代码块：整段原样保留，横向滚动（手机上折行比截断更难读）
+    const fence = /^\s*```(\w*)\s*$/.exec(ln);
+    if (fence) {
+      flush();
+      const lang = fence[1] || '';
+      const code = [];
+      i++;
+      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) { code.push(lines[i]); i++ }
+      out.push('<div class="mdc">'
+        + (lang ? '<div class="mdcbar">' + esc(lang) + '</div>' : '')
+        + '<pre class="mdpre">' + esc(code.join('\n')) + '</pre></div>');
+      continue;
+    }
+    const h = /^(#{1,6})\s+(.+)$/.exec(ln);
+    if (h) {
+      flush();
+      out.push('<div class="mdh mdh' + h[1].length + '">' + mdInline(h[2]) + '</div>');
+      continue;
+    }
+    if (/^\s*([-*•])\s+/.test(ln)) {
+      flush();
+      out.push('<div class="mdli"><span class="mdli-b">•</span><span>'
+        + mdInline(ln.replace(/^\s*([-*•])\s+/, '')) + '</span></div>');
+      continue;
+    }
+    const ol = /^\s*(\d+)[.)]\s+/.exec(ln);
+    if (ol) {
+      flush();
+      out.push('<div class="mdli"><span class="mdli-b">' + ol[1] + '.</span><span>'
+        + mdInline(ln.replace(/^\s*\d+[.)]\s+/, '')) + '</span></div>');
+      continue;
+    }
+    if (/^\s*>\s?/.test(ln)) {
+      flush();
+      out.push('<div class="mdq">' + mdInline(ln.replace(/^\s*>\s?/, '')) + '</div>');
+      continue;
+    }
+    if (/^\s*([-*_])\1\1+\s*$/.test(ln)) { flush(); out.push('<div class="mdhr"></div>'); continue }
+    if (!ln.trim()) { flush(); continue }
+    para.push(ln);
+  }
+  flush();
+  return out.join('');
 }
 
 function applySearch(){
@@ -3105,7 +3209,7 @@ function render(kind, p){
         break;
       }
       if (!sawText && t){
-        row('answer', '<div class="answer">' + esc(t) + '</div>');
+        row('answer', '<div class="answer">' + md(t) + '</div>');
         sawText = true;
       }
       break;
@@ -3114,7 +3218,7 @@ function render(kind, p){
       if (!sawText) {
         // 非字符串一律当成"没有文本"：把对象塞进 esc 会让页面上出现 [object Object]
         const t = typeof p.text === 'string' ? p.text : ''
-        row('answer','<div class="answer">' + esc(t || '(no text)') + '</div>')
+        row('answer','<div class="answer">' + (t ? md(t) : esc('(no text)')) + '</div>')
       }
       break;
     case 'deliverables': renderDeliverables(p.items || [], p.verifications || []); break;
