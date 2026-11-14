@@ -492,6 +492,9 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         workspace: currentWorkspace,
         version: process.env.UH_VERSION || '0.1.0',
         home: pathMod.join(uhHome(), 'sessions'),
+        // 真正的主目录：底栏把 /home/你/Applications/x 缩成 ~/Applications/x，
+        // 和 Codex 的 cwd 一行放得下
+        userHome: os.homedir(),
       })
       return
     }
@@ -1246,6 +1249,10 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       json(res, 200, { sessionId: sid, ...(contId ? { continued: true, turn: turnIndex } : {}) })
 
       void (async () => {
+        // done 一定要在「从 running 里摘掉」之后再发：前端收到 done 会立刻重拉
+        // 左栏列表，如果这时候服务端还认为它在跑，那一行就会一直挂着 running
+        // （截图里跑完很久的会话还写着 running 就是这个顺序问题）
+        let done: Record<string, unknown> = {}
         try {
           const out = await h.runTask({
             task: attachedBlock + task,
@@ -1261,14 +1268,14 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
               path: v.path, result: v.result, detail: v.detail,
             })),
           })
-          broadcast(sid, 'done', { steps: out.steps, tokens: out.usage.total, compactions: out.compactions })
+          done = { steps: out.steps, tokens: out.usage.total, compactions: out.compactions }
         } catch (err) {
           broadcast(sid, 'error', { message: err instanceof Error ? err.message : String(err) })
-          broadcast(sid, 'done', {})
         } finally {
           usageCache = null  // 这次 run 产生了新 token，旧的汇总立刻作废
           running.delete(sid)
           h.dispose()
+          broadcast(sid, 'done', done)
         }
       })()
       return
@@ -1306,8 +1313,23 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         json(res, 404, { error: 'that run already finished — send it as a new task instead' })
         return
       }
-      h.steer(text)
-      json(res, 200, { ok: true, queued: true })
+      const id = h.steer(text)
+      json(res, 200, { ok: true, queued: true, id })
+      return
+    }
+
+    // 撤回一条还没生效的插话。前端「点开排队中的消息去编辑」要先走这一步，
+    // 否则用户改的时候原句已经在下一个 step 边界按旧样子生效了。
+    if (req.method === 'POST' && url.pathname === '/api/steer/withdraw') {
+      let body: { sessionId?: string; id?: string } = {}
+      try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
+      const sid = (body.sessionId ?? '').trim()
+      const id = (body.id ?? '').trim()
+      if (!id) { json(res, 400, { error: 'which note?' }); return }
+      const h = running.get(sid)
+      if (!h) { json(res, 404, { error: 'that run already finished' }); return }
+      // ok:false 表示它已经被取走并生效了——前端据此提示「已生效，改完会再发一次」
+      json(res, 200, { ok: h.withdrawSteer(id) })
       return
     }
 
@@ -1333,9 +1355,24 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
 
       // 先补发这个会话已经发生的事，再往下走实时：否则 run 到 attach 之间的
       // 第一轮思考和工具调用会永远丢掉。
-      // `live=1` 是「我正在从磁盘回放这条会话，只要新的」——没有它，打开一条
-      // 刚跑完的会话会把最后一轮再放一遍，屏幕上出现两份。
-      if (url.searchParams.get('live') !== '1') {
+      //
+      // `after=<seq>` 是「我从磁盘读到的快照到第几条为止」。读快照和接上这条
+      // 连接之间有一小段空隙——模型正在飞速跑的时候，那几百毫秒里发生的事
+      // 两头都没有：快照里没有，实时流还没接上。表现就是**切到别的会话再切
+      // 回来，正在跑的那一轮凭空少了一截，看着像停了**。带上游标，缺口正好
+      // 被服务端补齐。
+      //
+      // `live=1` 是旧参数（只接实时、不补发），保留给还没更新的页面。
+      const afterRaw = url.searchParams.get('after')
+      const afterSeq = afterRaw === null ? null : Number(afterRaw)
+      if (afterSeq !== null && Number.isFinite(afterSeq)) {
+        try {
+          const store = new EventStore()
+          for (const ev of store.read(sessionId, { fromSeq: afterSeq + 1 })) {
+            res.write(`event: ${ev.kind}\ndata: ${JSON.stringify(ev.payload)}\n\n`)
+          }
+        } catch { /* 读不到就让实时流兜着，至少不会比之前更差 */ }
+      } else if (url.searchParams.get('live') !== '1') {
         for (const ev of evBuf.get(sessionId) ?? []) {
           res.write(`event: ${ev.kind}\ndata: ${JSON.stringify(ev.payload)}\n\n`)
         }
@@ -1405,7 +1442,12 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
               detail: e.payload,
             }
           })
-        json(res, 200, { id, events, artifacts, verifications, answer })
+        // lastSeq 给页面当游标：它拿着这个数去接实时流，中间那段才不会漏
+        const lastSeq = events.at(-1)?.seq ?? 0
+        json(res, 200, {
+          id, events, artifacts, verifications, answer, lastSeq,
+          running: running.has(id),
+        })
       } catch (err) {
         json(res, 404, { error: err instanceof Error ? err.message : 'session not found' })
       }
@@ -1423,6 +1465,147 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
   return {
     url: `http://${host}:${port}`,
     close: () => server.close(),
+  }
+}
+
+// ---- 端口归属与「强制重启」------------------------------------------------
+//
+// 改了代码之后最常见的一句抱怨是「桌面端还是旧的」。原因不是构建没生效，而是
+// 7878 上还跑着上一次的 `uh serve`——新进程 listen 失败退出，界面连的还是老进程。
+// 这里把「谁占着端口」查清楚，并在明确要求时接管它。
+//
+// 接管有一条硬底线：**只杀确认是 UnitHarness 的进程**。端口上可能是用户的
+// 其他服务，误杀的代价远大于多看一次报错。
+
+export interface PortOwner {
+  pid: number
+  /** 命令行，用来判断它到底是不是我们 */
+  command: string
+  isUharness: boolean
+}
+
+function sh(cmd: string, args: string[]): string {
+  try {
+    return execFileSync(cmd, args, { encoding: 'utf8', timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    return ''
+  }
+}
+
+/** 一条命令是不是「我们的 uh serve」——注意不能只判端口，必须判进程身份 */
+function looksLikeUs(command: string): boolean {
+  if (!command) return false
+  const c = command.replace(/\\/g, '/')
+  // 只认「<uh|unitai> serve/desktop」这一种形状：路径里出现 unit-harness 的关键词
+  // 完全可能是编辑器或 npm 在工作，那不是可以杀的东西
+  return /(?:^|\/|\s)(?:uh(?:\.cjs)?|unitai|unit-harness)\s+(?:serve|desktop)\b/.test(c)
+}
+
+export function findPortOwner(port: number): PortOwner | null {
+  let pid = 0
+  if (process.platform === 'linux') {
+    // ss 是 iproute2 自带的；-H 去掉表头，避免把标题行当数据解析
+    const out = sh('ss', ['-lptnH', `sport = :${port}`])
+    const m = /pid=(\d+)/.exec(out)
+    if (m) pid = Number(m[1])
+    if (!pid) {
+      const l = sh('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t']).trim().split('\n')[0]
+      if (l) pid = Number(l)
+    }
+  } else if (process.platform === 'darwin') {
+    const l = sh('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t']).trim().split('\n')[0]
+    if (l) pid = Number(l)
+  } else if (process.platform === 'win32') {
+    const out = sh('netstat', ['-ano'])
+    for (const line of out.split('\n')) {
+      if (!line.includes('LISTENING')) continue
+      if (!new RegExp(`[:.]${port}\\s`).test(line)) continue
+      const parts = line.trim().split(/\s+/)
+      const last = parts[parts.length - 1]
+      if (last && /^\d+$/.test(last)) { pid = Number(last); break }
+    }
+  }
+  if (!pid || pid <= 0) return null
+
+  let command = ''
+  if (process.platform === 'linux') {
+    try {
+      // /proc/<pid>/cmdline 是 NUL 分隔的，直接 readFile 会得到一串内联 NUL
+      command = fsSync.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0').filter(Boolean).join(' ')
+    } catch { /* 权限或已退出 */ }
+  }
+  if (!command) command = sh('ps', ['-p', String(pid), '-o', 'command=']).trim()
+  if (!command && process.platform === 'win32') {
+    command = sh('powershell', ['-NoProfile', '-Command',
+      `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`]).trim()
+  }
+  return { pid, command, isUharness: looksLikeUs(command) }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+function portBusyHint(port: number, owner: PortOwner | null): string {
+  if (!owner) {
+    return `port ${port} is already in use, but I cannot tell which process owns it.\n` +
+      '  try:  uh serve --force     (needs iproute2/ss or lsof installed)\n' +
+      `  or:   uh serve --port ${port + 1}`
+  }
+  const who = owner.command || `pid ${owner.pid}`
+  if (!owner.isUharness) {
+    // 这里绝不能「顺手杀掉重来」：桌上可能正跑着用户的另一个服务
+    return `port ${port} is taken by something that is not UnitHarness (pid ${owner.pid}): ${who}\n` +
+      `  refusing to kill it — use another port:  uh serve --port ${port + 1}`
+  }
+  return `port ${port} is already served by UnitHarness (pid ${owner.pid}): ${who}\n` +
+    `  restart it in place:  uh serve --force\n` +
+    `  or use another port:  uh serve --port ${port + 1}`
+}
+
+/**
+ * 起服务；端口被自己上一版占着时按 force 接管。
+ *
+ * 返回 replaced 表示真的替换掉了某个进程——调用方要把它打出来，否则用户
+ * 会以为自己刚杀的进程还活着（或者反过来，以为什么都没动）。
+ */
+export async function startServerOrRestart(opts: { port: number; host?: string; force?: boolean }): Promise<{
+  srv: { url: string; close: () => void }
+  replaced: PortOwner | null
+}> {
+  const attempt = () => startServer({ port: opts.port, ...(opts.host ? { host: opts.host } : {}) })
+  try {
+    return { srv: await attempt(), replaced: null }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw err
+    const owner = findPortOwner(opts.port)
+    if (!opts.force) throw new Error(portBusyHint(opts.port, owner))
+    if (!owner) throw new Error(portBusyHint(opts.port, owner))
+    if (!owner.isUharness) throw new Error(portBusyHint(opts.port, owner))
+
+    // 先礼后兵：SIGTERM 让它自己收尾（关 SSE、落状态），5 秒不退再 SIGKILL
+    try {
+      if (process.platform === 'win32') {
+        sh('taskkill', ['/PID', String(owner.pid), '/T', '/F'])
+      } else {
+        process.kill(owner.pid, 'SIGTERM')
+      }
+    } catch { /* 已经退了 */ }
+
+    for (let i = 0; i < 50; i++) {
+      await sleep(100)
+      const still = findPortOwner(opts.port)
+      if (!still) break
+      if (i === 49) {
+        try {
+          if (process.platform === 'win32') sh('taskkill', ['/PID', String(owner.pid), '/T', '/F'])
+          else process.kill(owner.pid, 'SIGKILL')
+        } catch { /* ignore */ }
+        await sleep(300)
+      }
+    }
+    if (findPortOwner(opts.port)) {
+      throw new Error(`could not stop pid ${owner.pid} on port ${opts.port} — stop it yourself, or use --port`)
+    }
+    return { srv: await attempt(), replaced: owner }
   }
 }
 

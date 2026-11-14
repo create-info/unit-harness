@@ -13,7 +13,9 @@ export const SESSION_KINDS = [
   // 成本预算：warn 是快到线（一次），exceeded 是到线停下
   'budget/warning', 'budget/exceeded',
   'turn/start', 'turn/end', 'step/start', 'step/end',
-  'steering/message',
+  // 排队 → 应用 / 撤回。撤回也是一条事实（谁把哪句话改掉了），
+  // 否则日志里只剩「排过队」，看不出那句到底生效了没有
+  'steering/message', 'steering/withdrawn',
   'assistant/chunk', 'assistant/message',
   'llm/request', 'llm/response',
   'tool/call', 'tool/result',

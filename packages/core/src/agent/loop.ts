@@ -81,14 +81,16 @@ export interface AgentDeps {
    * 是「在它干活的时候插话」。放在 step 边界而不是工具执行中间，是因为
    * 半路改消息会让这次工具调用的上下文对不上，日志也不好读。
    */
-  drainSteer?: () => string[]
+  /** 取走积压的插话。带上 id，前端才能准确摘掉「这一条」而不误伤同名的一条 */
+  drainSteer?: () => { id: string; text: string }[]
 }
 
 export interface RunResult {
   text: string
   steps: number
   usage: { prompt: number; completion: number; total: number }
-  stoppedBy: 'model' | 'max-steps' | 'timeout' | 'interrupted' | 'budget'
+  /** 'stuck' = 同一个动作连续失败，模型在空转（不是任务太长，是原地打转） */
+  stoppedBy: 'model' | 'max-steps' | 'timeout' | 'interrupted' | 'budget' | 'stuck'
   /** 结束时完整消息列表，供续跑落盘 */
   messages: Message[]
   plan: PlanStep[]
@@ -242,7 +244,12 @@ const SPAWN_AGENT: ToolSpec = {
       type: 'object',
       properties: {
         task: { type: 'string', description: 'A complete, standalone instruction' },
-        max_steps: { type: 'integer', description: 'Budget for the sub-agent. Default 6.' },
+        // 默认不限步数：绝大多数子任务不需要人操心步数，给了上限反而会在
+        // 「读到一半」把它砍断。这个参数只用于确实想封顶的调用。
+        max_steps: {
+          type: 'integer',
+          description: 'Optional hard ceiling on the sub-agent\'s steps. Omit for no limit.',
+        },
       },
       required: ['task'],
     },
@@ -326,8 +333,14 @@ export async function runAgent(
 ): Promise<RunResult> {
   // 这条会话里的第几轮：多轮对话必须递增，单轮默认仍是 1
   const turnIndex = opts.turnIndex ?? 1
-  const maxSteps = opts.maxSteps ?? 12
-  const deadline = Date.now() + (opts.maxSeconds ?? 600) * 1000
+  // 步数不再是「默认 12 步」的硬上限。
+  //
+  // 12 步是一个探索型任务的起步价：看目录、读两个文件、grep 一次就没了，
+  // 然后这一轮被判成 max-steps，答案是空的——用户看到的是「Hit the step limit」
+  // 加一片空白。Codex 没有这个上限，边界是上下文和用户的耐心，我们同样交给
+  // 预算（token）、用户 Stop 和真正的死循环去管；想限就用 --max-steps 明说。
+  const maxSteps = opts.maxSteps ?? 0            // 0 = 不限步数
+  const deadline = opts.maxSeconds ? Date.now() + opts.maxSeconds * 1000 : Infinity
   const planEnabled = deps.planEnabled !== false
 
   // task 必须落进日志：没有它，事后回放一个会话只知道"跑了三步"，不知道用户要的是什么。
@@ -367,6 +380,10 @@ export async function runAgent(
   const costBudget = opts.budget
   // 「快到线」只提醒一次，不然每一步都弹一句
   let budgetWarned = false
+  // 卡死检测：同一条失败动作连续出现几次就停（见下面 step 末尾）
+  let stuckSig = ''
+  let stuckN = 0
+  const STUCK_REPEATS = 5
   let lastText = ''
   let plan: PlanStep[] = []
   let compactions = 0
@@ -422,7 +439,11 @@ export async function runAgent(
         if (!subTask) { finish('error', { error: 'missing task' }); return 'ERROR: spawn_agent needs a `task`' }
         if (!deps.spawnSubAgent) { finish('error', { error: 'not available' }); return 'ERROR: sub-agents are disabled for this run' }
         try {
-          const text = await deps.spawnSubAgent(subTask, { maxSteps: Number(args.max_steps ?? 6) })
+          // 不给 max_steps 就跟着默认走（=不限）；以前这里默认 6 步，
+          // 子 agent 刚好在「读了一半」时被砍，回来只有一句 (no text)
+          const text = await deps.spawnSubAgent(subTask, {
+            ...(args.max_steps ? { maxSteps: Number(args.max_steps) } : {}),
+          })
           finish('ok', { task: subTask.slice(0, 80) })
           return text
         } catch (err) {
@@ -548,19 +569,19 @@ export async function runAgent(
     }
   }
 
-  while (steps < maxSteps) {
+  while (maxSteps <= 0 || steps < maxSteps) {
     // 中断只在 step 边界生效：正在跑的工具调用会自己收到 abort 并收尾，
     // 半路硬切会让事件日志停在「调用了但没结果」的状态。
     if (opts.signal?.aborted) { stoppedBy = 'interrupted'; break }
     if (Date.now() > deadline) { stoppedBy = 'timeout'; break }
     // 用户插话：在 step 边界接上。取走而不是 peek，避免同一句被插两遍
     const steers = deps.drainSteer?.() ?? []
-    for (const text of steers) {
+    for (const s of steers) {
       messages.push({
         role: 'user',
-        content: `[the user interrupted while you were working] ${text}`,
+        content: `[the user interrupted while you were working] ${s.text}`,
       })
-      deps.ev('steering/message', { text: text.slice(0, 200), status: 'applied' })
+      deps.ev('steering/message', { id: s.id, text: s.text.slice(0, 200), status: 'applied' })
     }
     if (steers.length > 0) lastText = ''
 
@@ -580,6 +601,14 @@ export async function runAgent(
         ...(opts.signal ? { signal: opts.signal } : {}),
       })
     } catch (err) {
+      // 用户按了 Stop：这不是错误，是被打断。当成 error 抛出去，屏幕上就会出现
+      // 一行红字 "ERROR: E_LLM ABORTED: stopped by the user"——用户自己按的键，
+      // 却看起来像程序坏了。收成 interrupted，由下面正常的收尾路径处理。
+      if (opts.signal?.aborted) {
+        deps.ev('step/end', { step_index: steps, status: 'interrupted' })
+        stoppedBy = 'interrupted'
+        break
+      }
       const msg = err instanceof Error ? err.message : String(err)
       deps.ev('step/end', { step_index: steps, status: 'error', error: msg })
       // 必须补 turn/end 再抛。turn/start 已经写进日志了，只 throw 的话这一轮
@@ -696,7 +725,72 @@ export async function runAgent(
     }
 
     deps.ev('step/end', { step_index: steps, status: 'ok', kind: 'tools', tool_count: res.toolCalls.length })
-    if (steps >= maxSteps) stoppedBy = 'max-steps'
+
+    // ---- 卡死检测：同一个动作连续失败 5 次就停 ----
+    // 步数上限取消后必须补上这件事：模型如果卡在「同一条命令再试一次」上，
+    // 每步都很小、预算也不涨，不设边界就是转到天荒地老（子 agent 尤其明显：
+    // 深度被拒之后它会拿同一条 spawn_agent 一直试）。
+    // 这仍然不是「猜任务有多长」——判据是「什么都没变、还是同样的失败」。
+    for (let i = 0; i < res.toolCalls.length; i++) {
+      const c = res.toolCalls[i] as ToolCall
+      const out = outcomes[i] as string
+      // 「失败」有两种长相：工具自己报的 ERROR/BLOCKED，和命令跑完但退出码非 0
+      // （run_command 的返回是 `exit=1 isolation=...`，不是 ERROR——只认 ERROR 会
+      // 漏掉最常见的那种空转：同一条 build/test 一遍一遍地失败）
+      const exit = /^exit=(-?\d+)\b/.exec(out)
+      const failed = /^(ERROR|BLOCKED)\b/.test(out) || (exit !== null && Number(exit[1]) !== 0)
+      if (!failed) { stuckSig = ''; stuckN = 0; continue }
+      const sig = c.function.name + ':' + String(c.function.arguments || '')
+      if (sig === stuckSig) stuckN++
+      else { stuckSig = sig; stuckN = 1 }
+    }
+    if (stuckN >= STUCK_REPEATS) {
+      deps.ev('step/end', { step_index: steps, status: 'error', kind: 'stuck', repeats: stuckN, action: stuckSig.slice(0, 200) })
+      stoppedBy = 'stuck'
+      break
+    }
+
+    // 只有用户明确给了上限才可能因为步数停下；0 表示没上限
+    if (maxSteps > 0 && steps >= maxSteps) stoppedBy = 'max-steps'
+  }
+
+  // ---- 收尾：跑完却一句人话都没有 ----
+  // 工具刷了十几步、模型没来得及总结就被上限/超时打断时，lastText 是空字符串。
+  // 上层（尤其是子 agent）拿到的就是空结果，用户看到「— done —」后面什么都没有。
+  // 只要不是用户按了 Stop，就再要一次「只用已有信息汇报」，这一次不给工具。
+  // 错误路径本来就 throw 出去了，这里只剩 max-steps / timeout 需要补一句人话
+  if (!lastText.trim() && stoppedBy !== 'interrupted') {
+    deps.ev('step/start', { step_index: steps + 1, turn_index: turnIndex, reason: 'final-report' })
+    try {
+      messages.push({
+        role: 'user',
+        content:
+          (stoppedBy === 'stuck'
+            ? 'The same action kept failing the same way, so you cannot keep trying it. Stop calling tools and answer now: ' +
+              'what you tried, what the error actually said, and what you would do differently.'
+            : `You are out of room to keep working (${stoppedBy}). Stop calling tools and answer now, ` +
+              'using only what you already have: what you found, what you changed, and what is still unclear. ' +
+              'If you found nothing, say so plainly and name the one thing you would try next.'),
+      })
+      const fin = await deps.gateway.complete({
+        messages,
+        tools: [],
+        role: 'plan',
+        ...(deps.onText ? { onText: deps.onText } : {}),
+        ...(opts.signal ? { signal: opts.signal } : {}),
+      })
+      steps++
+      usage.prompt += fin.usage.prompt_tokens
+      usage.completion += fin.usage.completion_tokens
+      usage.total += fin.usage.total_tokens
+      if (fin.content.trim()) {
+        lastText = fin.content
+        messages.push({ role: 'assistant', content: fin.content })
+      }
+      deps.ev('step/end', { step_index: steps, status: 'ok', kind: 'final-report' })
+    } catch (err) {
+      deps.ev('step/end', { step_index: steps + 1, status: 'error', error: String(err).slice(0, 200) })
+    }
   }
 
   // 模型最后说了什么，必须落盘。
