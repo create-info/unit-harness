@@ -46,6 +46,12 @@ export interface UhConfig {
   remote?: 'off' | 'tailnet' | 'lan'
   /** 置顶的会话 id：左栏把它们放在最上面，跟 Codex 一样 */
   pinnedSessions?: string[]
+  /**
+   * 从左栏移除的项目（只从列表里藏起来，磁盘上一个字节都不动）。
+   * 项目列表是从会话推导出来的，所以「移除」只能记成一份名单——
+   * 真删目录是另一个动作，不该由点一下菜单完成。
+   */
+  hiddenProjects?: string[]
   /** 电脑操控：这一层直接操作真实桌面，沙箱管不到，所以开关要显式 */
   computer?: {
     enabled?: boolean

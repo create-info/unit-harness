@@ -175,12 +175,32 @@
   .sess:hover .smore,.sess .smore:focus{display:block}
   @media (hover:none){ .sess .smore{display:block} }
   .sess .pin{font-size:9px;opacity:.8}
+  .grphead{position:relative}
+  .grphead .smore.pm{right:2px}
+  .grphead:hover .smore.pm{display:block}
   .smenu{position:fixed;z-index:9998;min-width:132px;padding:4px;border-radius:10px;
     background:var(--panel);border:1px solid var(--line);box-shadow:0 10px 30px rgba(0,0,0,.35)}
   .smitem{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--fg);
     font-size:12px;padding:7px 10px;border-radius:6px;cursor:pointer}
   .smitem:hover{background:var(--hover)}
   .smitem.danger{color:var(--bad)}
+  /* 技能详情里的文件树：一行一个文件，点路径看内容，右侧删掉 */
+  .prow.openable{cursor:pointer}
+  .prow.openable:hover{background:var(--hover)}
+  .skfiles{border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:6px}
+  .skf{display:flex;align-items:center;gap:8px;padding:7px 10px;font-size:11.5px;border-top:1px solid var(--line)}
+  .skf:first-child{border-top:0}
+  .skf .skp{flex:1;min-width:0;font:11.5px ui-monospace,monospace;color:var(--fg);cursor:pointer;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .skf .skp:hover{text-decoration:underline}
+  .skf .sks{color:var(--dim);font-size:10.5px}
+  .skempty{padding:12px;color:var(--dim);font-size:11.5px}
+  /* 添加弹框里的两块主路径：AI 生成 / 外部导入 */
+  .skblock{border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--input)}
+  .skblock .skh{font-size:12.5px;font-weight:600;margin-bottom:3px}
+  .skblock .skd{font-size:11px;color:var(--dim);line-height:1.55;margin-bottom:9px}
+  .skmore{border:0;background:transparent;color:var(--dim);font-size:11.5px;cursor:pointer;padding:0}
+  .skmore:hover{color:var(--fg)}
   .sess b{display:block;color:var(--fg);font-weight:500;font-size:12px}
   .side-foot{border:0;border-top:1px solid var(--line);background:transparent;color:var(--dim);text-align:left;padding:11px 18px;cursor:pointer;font-size:12px}
   .side-foot:hover{color:var(--fg);background:var(--hover)}
@@ -1003,7 +1023,17 @@ async function loadProjects(){
       + (isCur ? '<span class="dot"></span>' : '')
       + '<span class="nm" title="' + esc(proj.path) + '">' + esc(name) + '</span>'
       + '<span class="cnt">' + (proj.items || []).length + '</span>';
-    head.onclick = () => {
+    // 项目也要能管：改名、从列表移除。菜单挂在同一个「…」上，和会话一致
+    const pmore = document.createElement('button');
+    pmore.className = 'smore pm';
+    pmore.type = 'button';
+    pmore.title = '管理这个项目';
+    pmore.textContent = '…';
+    pmore.onclick = (e) => { e.stopPropagation(); openProjMenu(e, head, proj, name) };
+    head.appendChild(pmore);
+
+    head.onclick = (e) => {
+      if (e.target.closest && e.target.closest('.smore')) return;
       if (!isCur) { switchProject(proj.path); return; }
       const sess = grp.querySelector('.grpsess');
       if (sess) sess.classList.toggle('on');
@@ -1050,6 +1080,55 @@ async function loadProjects(){
     grp.appendChild(wrap);
     box.appendChild(grp);
   }
+}
+
+/* ---- 项目的「…」菜单 ----------------------------------------------------
+ * 重命名只是给列表起个称呼（写进 ~/.uh/projects.json，不动目录名）；
+ * 移除只是从列表里藏起来，磁盘一个字节都不动——真删目录不该由一个菜单项完成。
+ * ---------------------------------------------------------------------- */
+function openProjMenu(ev, row, proj, shownName){
+  closeSessMenu();
+  const m = document.createElement('div');
+  m.className = 'smenu';
+  const add = (label, fn, danger) => {
+    const b = document.createElement('button');
+    b.className = 'smitem' + (danger ? ' danger' : '');
+    b.textContent = label;
+    b.onclick = (e) => { e.stopPropagation(); closeSessMenu(); fn() };
+    m.appendChild(b);
+  };
+  add('重命名', () => askText('项目名称', shownName || proj.path, (v) => renameProject(proj.path, v)));
+  add('从列表移除', async () => {
+    const yes = await askYes('把「' + (shownName || proj.path) + '」从左栏移除？\n只是不在列表里显示，磁盘上的文件一个都不动。');
+    if (yes) removeProject(proj.path);
+  }, true);
+  document.body.appendChild(m);
+  const r = row.getBoundingClientRect();
+  const mw = 132;
+  m.style.left = Math.max(8, Math.min(r.right - mw, innerWidth - mw - 8)) + 'px';
+  m.style.top = Math.min(r.bottom + 4, innerHeight - 140) + 'px';
+  SESSMENU = m;
+  setTimeout(() => document.addEventListener('click', (e) => {
+    if (!e.target.closest('.smenu')) closeSessMenu();
+  }, true), 0);
+}
+
+async function renameProject(path, name){
+  const r = await fetch('/api/project/rename', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path, name }),
+  });
+  if (!r.ok) { setMsg('改名失败：' + (await r.text()).slice(0, 80), true); return }
+  await loadProjects();
+}
+
+async function removeProject(path){
+  const r = await fetch('/api/project/remove', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!r.ok) { setMsg('移除失败：' + (await r.text()).slice(0, 80), true); return }
+  await loadProjects();
 }
 
 /* ---- 会话的「…」菜单 ----------------------------------------------------
@@ -1805,6 +1884,142 @@ async function saveComputer(patch) {
   } else setMsg(r.error || 'failed', true);
 }
 
+/* ---- 技能详情：它是个目录，不只是那个 md --------------------------------
+ * 打开能看到文件树，点文件看到内容并能直接改、存、删，也能新建文件
+ * （scripts/ 里的脚本、references/ 里的资料都在这儿管）。
+ * 每次改动都会重新读一遍磁盘，界面和磁盘不会各说一套。
+ * ---------------------------------------------------------------------- */
+async function openSkill(name){
+  let detail = null;
+  const mask = el('<div style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;'
+    + 'display:flex;align-items:center;justify-content:center;padding:16px"></div>');
+  const box = el('<div class="card" style="max-width:720px;width:100%;padding:16px;max-height:90vh;overflow:auto"></div>');
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+  mask.onkeydown = (e) => { if (e.key === 'Escape') mask.remove() };
+
+  const load = async () => {
+    const r = await fetch('/api/plugins/skill?name=' + encodeURIComponent(name));
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { box.innerHTML = '<div style="color:var(--bad);font-size:12px">' + esc(j.error || '读不到这个技能') + '</div>'; return null }
+    detail = j;
+    return j;
+  };
+
+  const paint = (d) => {
+    box.innerHTML = '';
+    const head = el('<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:6px"></div>');
+    head.appendChild(el('<div style="flex:1;min-width:0">'
+      + '<div style="font-size:14px;font-weight:600">' + esc(d.name) + '</div>'
+      + '<div style="font-size:11px;color:var(--dim);margin-top:2px">' + esc(d.description || '（没有描述）') + '</div>'
+      + '<div style="font-size:10.5px;color:var(--dim);margin-top:4px;word-break:break-all">'
+      + esc(d.scope === 'user' ? '全局' : d.scope) + ' · ' + esc(d.dir) + '</div></div>'));
+    const delBtn = el('<button class="sbtn danger">删除技能</button>');
+    delBtn.onclick = async () => {
+      if (!await askYes('删除技能「' + d.name + '」？整个目录都会删掉，不能恢复。')) return;
+      const r = await fetch('/api/plugins/skill/delete', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }),
+      });
+      if (!r.ok) { setMsg('删不掉：' + (await r.text()).slice(0, 80), true); return }
+      mask.remove();
+      PLUGINS = null;
+      await loadPlugins();
+      renderSettings();
+      setMsg('已删除 skill「' + name + '」');
+    };
+    head.appendChild(delBtn);
+    box.appendChild(head);
+
+    // 文件树：路径越长缩进越深不是重点，能一眼看出「有哪几个文件」才是
+    box.appendChild(el('<div class="skfiles"></div>'));
+    const list = box.querySelector('.skfiles');
+    for (const f of d.files){
+      const row = el('<div class="skf"><span class="skp">' + esc(f.path) + '</span>'
+        + '<span class="sks">' + (f.size > 1024 ? (f.size / 1024).toFixed(1) + 'K' : f.size + 'B') + '</span>'
+        + '<button class="sbtn" title="删除这个文件">删</button></div>');
+      row.querySelector('.skp').onclick = () => void openFile(f.path);
+      row.querySelector('button').onclick = async (e) => {
+        e.stopPropagation();
+        if (!await askYes('删除文件「' + f.path + '」？')) return;
+        const r = await fetch('/api/plugins/skill/file/delete', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name, path: f.path }),
+        });
+        if (!r.ok) { setMsg('删不掉：' + (await r.text()).slice(0, 80), true); return }
+        await refresh();
+      };
+      list.appendChild(row);
+    }
+    if (!d.files.length) list.appendChild(el('<div class="skempty">这个目录里还没有文件</div>'));
+
+    const newRow = el('<div style="display:flex;gap:8px;margin-top:10px"></div>');
+    const newPath = el('<input placeholder="新文件名，如 scripts/run.sh" spellcheck="false" '
+      + 'style="flex:1;min-width:0;padding:8px 10px;border-radius:8px;border:1px solid var(--line);'
+      + 'background:var(--input);color:var(--fg);font:12px ui-monospace,monospace">');
+    const addFile = el('<button class="sbtn">新建文件</button>');
+    addFile.onclick = () => {
+      const p = newPath.value.trim();
+      if (!p) { setMsg('先写个文件名', true); return }
+      void openFile(p, true);
+    };
+    newRow.appendChild(newPath);
+    newRow.appendChild(addFile);
+    box.appendChild(newRow);
+  };
+
+  const refresh = async () => {
+    const d = await load();
+    if (d) paint(d);
+  };
+
+  /** 打开（或新建）一个文件：同一个弹框里换成编辑视图 */
+  const openFile = async (path, isNew) => {
+    let text = '';
+    if (!isNew) {
+      const r = await fetch('/api/plugins/skill/file?name=' + encodeURIComponent(name)
+        + '&path=' + encodeURIComponent(path));
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { setMsg(j.error || '打不开这个文件', true); return }
+      text = j.text;
+    }
+    box.innerHTML = '';
+    const bar = el('<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"></div>');
+    bar.appendChild(el('<div style="flex:1;font:12px ui-monospace,monospace;word-break:break-all">' + esc(path) + '</div>'));
+    const back = el('<button class="sbtn">返回</button>');
+    back.onclick = () => void refresh();
+    const save = el('<button class="sbtn primary">保存</button>');
+    bar.appendChild(back);
+    bar.appendChild(save);
+    box.appendChild(bar);
+
+    const ta = el('<textarea spellcheck="false" style="width:100%;box-sizing:border-box;min-height:52vh;'
+      + 'padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--input);'
+      + 'color:var(--fg);font:12px/1.55 ui-monospace,monospace"></textarea>');
+    ta.value = text;
+    box.appendChild(ta);
+
+    save.onclick = async () => {
+      save.disabled = true;
+      save.textContent = '保存中…';
+      try {
+        const r = await fetch('/api/plugins/skill/file', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name, path, text: ta.value }),
+        });
+        if (!r.ok) { setMsg('存不进去：' + (await r.text()).slice(0, 80), true); return }
+        PLUGINS = null;
+        await loadPlugins();
+        await refresh();
+      } finally {
+        save.disabled = false;
+        save.textContent = '保存';
+      }
+    };
+  };
+
+  await refresh();
+}
+
 /* ---- 添加 skill：贴一段 / 给个链接 / 指个目录 ---------------------------
  * 三种来源，一个终点：<skills 根>/<name>/SKILL.md。装完磁盘上就多一个目录，
  * 所以插件列表和 / 补全都立刻能看到，不需要重启也不需要第二份注册表。
@@ -1812,94 +2027,129 @@ async function saveComputer(patch) {
  * 工作区的 .uh/skills。
  * ---------------------------------------------------------------------- */
 function openAddSkill(){
-  let mode = 'content';
+  // 真实用法就两种：让 AI 写，或者从外面导进来。手写 Markdown 是少数派，
+  // 所以它折叠在最后——先问三个来源再让人填，等于把少数派当主路径。
   const mask = el('<div style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;'
     + 'display:flex;align-items:center;justify-content:center;padding:16px"></div>');
   const box = el('<div class="card" style="max-width:560px;width:100%;padding:16px;max-height:88vh;overflow:auto"></div>');
   box.appendChild(el('<div style="font-size:14px;font-weight:600;margin-bottom:4px">添加 Skill</div>'));
-  box.appendChild(el('<div style="font-size:11.5px;color:var(--dim);line-height:1.6;margin-bottom:10px">'
-    + '装完立刻出现在插件列表和 <code>/</code> 补全里。默认全局（所有项目可用）。</div>'));
+  box.appendChild(el('<div style="font-size:11.5px;color:var(--dim);line-height:1.6;margin-bottom:12px">'
+    + '技能就是一个目录（<code>SKILL.md</code> + 可选的 <code>scripts/</code>）。装完立刻进插件列表和 <code>/</code> 补全。</div>'));
 
-  const tabs = el('<div class="segmode" style="margin-bottom:10px"></div>');
-  const fields = el('<div></div>');
-  const nameWrap = el('<input id="__skname" placeholder="名字（字母数字，可带 - _ .）" spellcheck="false" '
+  const inp = (id, ph, mono) => el('<input id="' + id + '" placeholder="' + ph + '" spellcheck="false" '
     + 'style="width:100%;box-sizing:border-box;padding:9px 11px;border-radius:8px;border:1px solid var(--line);'
-    + 'background:var(--input);color:var(--fg);font-size:12.5px;margin-bottom:8px">');
-  const bodyWrap = el('<div></div>');
+    + 'background:var(--input);color:var(--fg);font:' + (mono ? '12px ui-monospace,monospace' : '12.5px system-ui') + '">');
 
-  const DEFS = [
-    ['content', '粘贴内容', '<textarea id="__sktext" placeholder="---\nname: my-skill\ndescription: 一句话说明它干什么\n---\n\n正文…" spellcheck="false" '
-      + 'style="width:100%;box-sizing:border-box;min-height:200px;padding:10px;border-radius:8px;'
-      + 'border:1px solid var(--line);background:var(--input);color:var(--fg);font:12px ui-monospace,monospace"></textarea>'],
-    ['url', '从链接', '<input id="__skurl" placeholder="https://raw.githubusercontent.com/…/SKILL.md" spellcheck="false" '
-      + 'style="width:100%;box-sizing:border-box;padding:9px 11px;border-radius:8px;border:1px solid var(--line);'
-      + 'background:var(--input);color:var(--fg);font-size:12.5px">'
-      + '<div style="font-size:11px;color:var(--dim);margin-top:6px">单个 .md 文件地址；名字留空就从文件名推。</div>'],
-    ['path', '本地目录', '<input id="__skpath" placeholder="/path/to/skill  或  ~/some/SKILL.md" spellcheck="false" '
-      + 'style="width:100%;box-sizing:border-box;padding:9px 11px;border-radius:8px;border:1px solid var(--line);'
-      + 'background:var(--input);color:var(--fg);font:12.5px ui-monospace,monospace">'
-      + '<div style="font-size:11px;color:var(--dim);margin-top:6px">目录里要有 SKILL.md；'
-      + '整目录会一起复制（scripts/ 等），.git 跳过。</div>'],
-  ];
-  const paint = () => {
-    tabs.innerHTML = '';
-    for (const [k, label] of DEFS){
-      const b = el('<button class="smode' + (mode === k ? ' on' : '') + '">' + label + '</button>');
-      b.onclick = () => { mode = k; paint() };
-      tabs.appendChild(b);
-    }
-    bodyWrap.innerHTML = DEFS.find(([k]) => k === mode)?.[2] || '';
+  // ---- A. 让 AI 写 ----
+  const aBox = el('<div class="skblock"></div>');
+  aBox.appendChild(el('<div class="skh">让 AI 写一个</div>'));
+  aBox.appendChild(el('<div class="skd">说清楚什么时候该用它就行，正文和目录结构由 AI 按 create-skill 的规范生成。</div>'));
+  const aName = inp('__skai_name', '名字（可留空，让 AI 取）', true);
+  const aDesc = inp('__skai_desc', '什么时候用它？例如：发布 npm 包前跑一遍检查');
+  aBox.appendChild(aName);
+  aBox.appendChild(el('<div style="height:8px"></div>'));
+  aBox.appendChild(aDesc);
+  const aGo = el('<button class="sbtn primary" style="margin-top:10px">交给 AI 生成</button>');
+  aGo.onclick = () => {
+    const nm = aName.value.trim();
+    const desc = aDesc.value.trim();
+    if (!desc) { setMsg('先写一句它的用途，AI 才知道怎么写', true); return }
+    mask.remove();
+    const namePart = nm ? ('名字用 ' + nm + '。') : '名字你按用途取一个（英文小写、短横线连接）。';
+    $('#task').value = '读一下 create-skill 这个技能，按它的规范新建一个技能。' + namePart
+      + '什么时候用它：' + desc + '\n'
+      + '落到 ~/.uh/skills/ 下（目录名和 frontmatter 的 name 保持一致），写完跑 uh skill list 确认能被发现，'
+      + '然后把 SKILL.md 的正文摘要给我看一眼。';
+    const form = $('#run');
+    if (form && form.requestSubmit) form.requestSubmit();
+    else if (form) form.dispatchEvent(new Event('submit', { cancelable: true }));
   };
-  paint();
+  aBox.appendChild(aGo);
+  box.appendChild(aBox);
 
-  const proj = el('<label style="display:flex;align-items:center;gap:7px;font-size:11.5px;color:var(--dim);margin:10px 0 0">'
-    + '<input type="checkbox" id="__skproj"> 只给当前项目（写进工作区的 .uh/skills）</label>');
-
-  box.appendChild(tabs);
-  box.appendChild(nameWrap);
-  box.appendChild(bodyWrap);
-  box.appendChild(proj);
-
-  const msg = el('<div style="font-size:11.5px;color:var(--bad);min-height:16px;margin-top:8px"></div>');
-  box.appendChild(msg);
-
-  const btnRow = el('<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:6px"></div>');
-  const no = el('<button class="btn">取消</button>');
-  const ok = el('<button class="btn" style="background:var(--accent);border-color:var(--accent);color:#fff">添加</button>');
-  no.onclick = () => mask.remove();
-  ok.onclick = async () => {
-    const payload = {
-      mode,
-      name: nameWrap.value.trim(),
-      scope: $('#__skproj')?.checked ? 'project' : 'user',
-      content: mode === 'content' ? ($('#__sktext')?.value || '') : undefined,
-      url: mode === 'url' ? ($('#__skurl')?.value || '') : undefined,
-      path: mode === 'path' ? ($('#__skpath')?.value || '') : undefined,
-    };
-    ok.disabled = true;
-    ok.textContent = '添加中…';
+  // ---- B. 从外部导入 ----
+  const bBox = el('<div class="skblock"></div>');
+  bBox.appendChild(el('<div class="skh">从外部导入</div>'));
+  bBox.appendChild(el('<div class="skd">GitHub 仓库 / 目录、任意 <code>SKILL.md</code> 链接，或本机路径。<br>'
+    + '给仓库或 skills 目录会把这个目录里的技能全部导入（含 <code>scripts/</code>）。</div>'));
+  const bIn = inp('__skim_url', 'https://github.com/owner/repo/tree/main/skills  或  ~/my-skill');
+  bBox.appendChild(bIn);
+  const bRow = el('<div style="display:flex;gap:8px;align-items:center;margin-top:10px"></div>');
+  const bScope = el('<label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--dim)">'
+    + '<input type="checkbox" id="__skproj"> 只给当前项目</label>');
+  const bGo = el('<button class="sbtn primary">导入</button>');
+  bRow.appendChild(bScope);
+  bRow.appendChild(el('<span style="flex:1"></span>'));
+  bRow.appendChild(bGo);
+  bBox.appendChild(bRow);
+  const bMsg = el('<div style="font-size:11.5px;color:var(--bad);min-height:16px;margin-top:6px"></div>');
+  bBox.appendChild(bMsg);
+  bGo.onclick = async () => {
+    const input = bIn.value.trim();
+    if (!input) { bMsg.textContent = '粘一个地址或路径'; return }
+    bGo.disabled = true;
+    bGo.textContent = '导入中…';
     try {
       const r = await fetch('/api/plugins/skill', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          mode: 'auto', input, name: '',
+          scope: $('#__skproj')?.checked ? 'project' : 'user',
+        }),
       });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok) { msg.textContent = j.error || ('失败：HTTP ' + r.status); return }
+      if (!r.ok) { bMsg.textContent = j.error || ('失败：HTTP ' + r.status); return }
       mask.remove();
       PLUGINS = null;
       await loadPlugins();
       renderSettings();
-      setMsg('已添加 skill「' + j.name + '」' + (j.scope === 'project' ? '（仅本项目）' : '（全局）'));
+      const names = j.names || [j.name];
+      setMsg(names.length > 1 ? ('已导入 ' + names.length + ' 个技能：' + names.join('、')) : ('已导入「' + j.name + '」'));
     } catch (e) {
-      msg.textContent = '失败：' + e;
+      bMsg.textContent = '失败：' + e;
     } finally {
-      ok.disabled = false;
-      ok.textContent = '添加';
+      bGo.disabled = false;
+      bGo.textContent = '导入';
     }
   };
-  btnRow.appendChild(no);
-  btnRow.appendChild(ok);
-  box.appendChild(btnRow);
+  box.appendChild(bBox);
+
+  // ---- C. 手写（少数派，折起来） ----
+  const cBox = el('<div class="skblock"></div>');
+  const cToggle = el('<button class="skmore">或者，直接粘贴一份 Markdown</button>');
+  const cBody = el('<div style="display:none"></div>');
+  const cName = inp('__skname', '名字（字母数字，可带 - _ .）', true);
+  const cText = el('<textarea id="__sktext" placeholder="---&#10;name: my-skill&#10;description: 一句话说明什么时候用它&#10;---&#10;&#10;正文…" spellcheck="false" '
+    + 'style="width:100%;box-sizing:border-box;min-height:170px;margin-top:8px;padding:10px;border-radius:8px;'
+    + 'border:1px solid var(--line);background:var(--input);color:var(--fg);font:12px ui-monospace,monospace"></textarea>');
+  const cGo = el('<button class="sbtn" style="margin-top:8px">保存</button>');
+  cGo.onclick = async () => {
+    const content = cText.value;
+    if (!content.trim()) { setMsg('内容是空的', true); return }
+    const r = await fetch('/api/plugins/skill', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'content', name: cName.value.trim(), content, scope: 'user' }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { setMsg(j.error || '保存失败', true); return }
+    mask.remove();
+    PLUGINS = null;
+    await loadPlugins();
+    renderSettings();
+    setMsg('已添加「' + j.name + '」');
+  };
+  cToggle.onclick = () => { cBody.style.display = cBody.style.display === 'none' ? 'block' : 'none' };
+  cBody.appendChild(cName);
+  cBody.appendChild(cText);
+  cBody.appendChild(cGo);
+  cBox.appendChild(cToggle);
+  cBox.appendChild(cBody);
+  box.appendChild(cBox);
+
+  const close = el('<div style="display:flex;justify-content:flex-end;margin-top:12px">'
+    + '<button class="btn" id="__skclose">关闭</button></div>');
+  box.appendChild(close);
+  close.querySelector('#__skclose').onclick = () => mask.remove();
 
   mask.appendChild(box);
   document.body.appendChild(mask);
@@ -2407,7 +2657,8 @@ function renderSettings() {
     if (PTAB === 'all' || PTAB === 'skills') {
       for (const k of P.skills || []) {
         if (!hit(k.name + ' ' + k.description)) continue;
-        rows.push({ id: k.id, name: k.name, desc: k.description || '（没有描述）', tag: '技能', enabled: k.enabled });
+        rows.push({ id: k.id, name: k.name, desc: k.description || '（没有描述）',
+          tag: k.builtin ? '内置' : '技能', enabled: k.enabled, skill: k.name });
       }
     }
     if (PTAB === 'all' || PTAB === 'hooks') {
@@ -2447,6 +2698,15 @@ function renderSettings() {
         const row = el('<div class="prow"><span class="picon">' + esc((r.name[0] || '?').toUpperCase()) + '</span>'
           + '<span class="ptxt"><b>' + esc(r.name) + '</b><i>' + esc(r.desc) + '</i></span>'
           + '<span class="ptag">' + esc(r.tag) + '</span></div>');
+        // 技能是个目录，点进去能管里面的文件；MCP/钩子只是配置项，点了没意义
+        if (r.skill) {
+          row.classList.add('openable');
+          row.title = '管理这个技能的文件';
+          row.addEventListener('click', (e) => {
+            if (e.target.closest('.sw')) return; // 别把开关点成打开
+            openSkill(r.skill);
+          });
+        }
         row.appendChild(toggle(r.enabled, async (on) => {
           // 开关失败必须说出来。之前这里不看返回值：服务端 400、写错 key、
           // 或者列表用另一套 id，界面都一样——点一下弹回去，像是鼠标坏了。

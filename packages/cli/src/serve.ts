@@ -20,6 +20,7 @@ import {
 import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget, WatchManager } from '@unit-harness/core'
 import {
   loadMcpServers, discoverSkills, skillRoots, globalMcpConfigPath, projectMcpConfigPath,
+  isBuiltinSkill, syncBuiltinSkills,
   expandMentions,
 } from '@unit-harness/core'
 import { pluginDirs } from './plugin-dirs.ts'
@@ -162,7 +163,10 @@ const subs = new Map<string, Set<Subscriber>>()
  * 当前工作区。桌面端要能切项目，所以它不能是启动时定死的常量——
  * 每次 run 都把它传给 Harness。刷新页面不丢（服务端内存），重启回到默认。
  */
-let currentWorkspace = process.env.UH_WORKSPACE || workspaceDir()
+// 优先级：显式参数 > 环境变量 > 默认工作区。
+// `--workspace` 以前会被静默忽略（只有环境变量说了算），于是「指定了工作区却没生效」
+// 这种问题只能在别处绕一大圈才发现。
+let currentWorkspace = ''
 /** 用量要读全部会话日志，别让设置页每开一次就重扫一遍 */
 let usageCache: { at: number; data: Record<string, unknown> } | null = null
 
@@ -718,6 +722,10 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
 }> {
   const port = opts.port ?? 7878
   const host = opts.host ?? '127.0.0.1'
+  // 内置技能先落地，再开始接请求：否则第一次打开插件页会是空列表，
+  // 而「create-skill」这种东西本来就是为了让人一上手就能用上
+  try { syncBuiltinSkills() } catch { /* 装不进就不装，不能因此起不来 */ }
+  currentWorkspace = opts.workspace || process.env.UH_WORKSPACE || workspaceDir()
   // 只听 loopback 时不设防（本机就是你的）。一旦绑到别的地址，这个端口
   // 就能让局域网里任何人驱动一个有 shell 的 agent——必须带口令。
   const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
@@ -1421,6 +1429,8 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         skills: skills.map((s) => ({
           id: 'skill:' + s.name,
           name: s.name,
+          // 随版本来的那几个标出来：用户知道哪些是「删了就没了」、哪些是自己加的
+          builtin: isBuiltinSkill(s.name),
           description: s.description ?? '',
           allowedTools: s.allowedTools ?? [],
           scripts: (s.scripts ?? []).map((x) => x.rel),
@@ -1441,21 +1451,128 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       return
     }
 
+    /** GitHub 仓库 / 子目录 → 一批 skill 文件。没 token 也能用（60 次/小时） */
+    const importFromGitHub = async (
+      url: URL, root: string, forcedName: string,
+    ): Promise<Array<{ name: string; dir: string; files: number }>> => {
+      const parts = url.pathname.split('/').filter(Boolean)      // owner/repo/tree/branch/path…
+      const owner = parts[0]
+      const repo = (parts[1] ?? '').replace(/\.git$/, '')
+      if (!owner || !repo) throw new Error('这不是一个 GitHub 仓库地址')
+      let branch = ''
+      let sub = ''
+      if (parts[2] === 'tree' || parts[2] === 'blob') {
+        branch = parts[3] ?? ''
+        sub = parts.slice(4).join('/')
+      }
+      const api = `${process.env.UH_GITHUB_API ?? 'https://api.github.com'}/repos/${owner}/${repo}/contents`
+      const headers: Record<string, string> = { accept: 'application/vnd.github+json', 'user-agent': 'unit-harness' }
+      const tok = process.env.UH_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN
+      if (tok) headers.authorization = `Bearer ${tok}`
+
+      const list = async (p: string): Promise<Array<{ name: string; type: string; path: string; download_url?: string }>> => {
+        const r = await fetch(`${api}/${p}${branch ? `?ref=${encodeURIComponent(branch)}` : ''}`, {
+          headers, signal: AbortSignal.timeout(20000),
+        })
+        if (r.status === 404) throw new Error(`${owner}/${repo}${p ? '/' + p : ''} 不存在（或私有仓库没给 token）`)
+        if (r.status === 403) throw new Error('GitHub 限流了：设一个 UH_GITHUB_TOKEN 再试')
+        if (!r.ok) throw new Error(`GitHub 返回 HTTP ${r.status}`)
+        const j = await r.json() as unknown
+        return Array.isArray(j) ? j as never : [{ ...(j as object), type: 'file' } as never]
+      }
+
+      const download = async (u: string): Promise<string> => {
+        const r = await fetch(u, { headers, signal: AbortSignal.timeout(20000) })
+        if (!r.ok) throw new Error(`下载失败 HTTP ${r.status}`)
+        return r.text()
+      }
+
+      /** 把一个目录整个搬进来（含 scripts/），返回装了哪些 */
+      const takeDir = async (dirPath: string, dirName: string): Promise<{ name: string; dir: string; files: number }> => {
+        const entries = await list(dirPath)
+        const mdEntry = entries.find((e) => e.name === 'SKILL.md')
+        // 没有 SKILL.md 就不是技能。不报错地装进来，只会让列表里多一个空壳
+        if (!mdEntry?.download_url) throw new Error(`${dirName} 里没有 SKILL.md`)
+        const md = await download(mdEntry.download_url)
+        const name = forcedName || (/^name:\s*(.+)$/m.exec(/^---\r?\n([\s\S]*?)\r?\n---/.exec(md)?.[1] ?? '')?.[1] ?? '')
+          .replace(/["']/g, '').trim() || dirName
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) throw new Error(`技能名不合法：${name}`)
+        if (discoverSkills(currentWorkspace).some((x) => x.name === name)) {
+          throw new Error(`已经有同名 skill「${name}」了`)
+        }
+        const target = pathMod.join(root, name)
+        const files = entries.filter((e) => e.type === 'file' && e.download_url)
+        if (files.length > 60) throw new Error('这个目录里文件太多了（>60），不像是一个 skill')
+        mkdirSync(target, { recursive: true })
+        for (const f of files) {
+          writeFileSync(pathMod.join(target, f.name), await download(f.download_url as string))
+        }
+        // 再往里一层：scripts/ references/ 这类子目录
+        for (const e of entries.filter((x) => x.type === 'dir' && x.name !== '.git')) {
+          const subEntries = await list(e.path)
+          const subDir = pathMod.join(target, e.name)
+          mkdirSync(subDir, { recursive: true })
+          for (const f of subEntries.filter((x) => x.type === 'file' && x.download_url)) {
+            writeFileSync(pathMod.join(subDir, f.name), await download(f.download_url as string))
+          }
+        }
+        return { name, dir: target, files: files.length }
+      }
+
+      const entries = await list(sub)
+      // 给的是 skills 根目录：里面每个带 SKILL.md 的子目录都是一个技能
+      const dirs = entries.filter((e) => e.type === 'dir')
+      if (dirs.length) {
+        const out: Array<{ name: string; dir: string; files: number }> = []
+        for (const d of dirs.slice(0, 20)) {
+          try { out.push(await takeDir(d.path, forcedName && dirs.length === 1 ? forcedName : d.name)) }
+          catch (err) {
+            // 单个失败不该拖垮整批：多数时候那只是个没 SKILL.md 的目录
+            if (dirs.length === 1) throw err
+          }
+        }
+        if (!out.length) throw new Error('这个目录下的子目录里都没有 SKILL.md')
+        return out
+      }
+      // 给的是单个文件
+      const file = entries[0]
+      if (!file?.download_url) throw new Error('这个地址既不是目录也不是文件')
+      const text = await download(file.download_url)
+      // 文件名是 SKILL.md 时不能拿它当技能名——那是所有技能都叫 SKILL 的意思。
+      // 这种情况用它在仓库里的父目录名。
+      const baseName = file.name.replace(/\.md$/i, '')
+      const parent = (file.path.split('/').slice(-2, -1)[0] ?? '')
+      const name = forcedName || (baseName.toLowerCase() === 'skill' ? parent : baseName)
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) throw new Error(`技能名不合法：${name}`)
+      if (discoverSkills(currentWorkspace).some((x) => x.name === name)) {
+        throw new Error(`已经有同名 skill「${name}」了`)
+      }
+      const target = pathMod.join(root, name)
+      mkdirSync(target, { recursive: true })
+      writeFileSync(pathMod.join(target, 'SKILL.md'), text)
+      return [{ name, dir: target, files: 1 }]
+    }
+
     // 加装 skill：贴一段、给个 URL、指个目录，三种都是同一个终点——
     // <skills 根>/<name>/SKILL.md。装完立刻出现在 / 补全和插件列表里，
     // 因为它就是磁盘上的一个目录，没有第二份注册表要同步。
     if (req.method === 'POST' && url.pathname === '/api/plugins/skill') {
       const body = JSON.parse(await readBody(req).catch(() => '{}')) as {
-        mode?: 'content' | 'url' | 'path'
+        mode?: 'auto' | 'github' | 'content' | 'url' | 'path'
         name?: string
         content?: string
         url?: string
         path?: string
+        /** auto 模式下用户只粘一个东西进来，分类由服务端做 */
+        input?: string
         scope?: 'user' | 'project'
       }
-      const mode = body.mode
-      if (mode !== 'content' && mode !== 'url' && mode !== 'path') {
-        json(res, 400, { error: "mode 只能是 content / url / path" })
+      // 用户不该先分「这是链接还是路径」。auto 让服务端看一眼就决定。
+      const input = String(body.input ?? body.url ?? body.path ?? '').trim()
+      let mode = body.mode ?? 'auto'
+      if (mode === 'auto') mode = /^https?:\/\//i.test(input) ? 'url' : 'path'
+      if (mode !== 'content' && mode !== 'url' && mode !== 'path' && mode !== 'github') {
+        json(res, 400, { error: "mode 只能是 auto / github / content / url / path" })
         return
       }
 
@@ -1468,6 +1585,25 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       const clean = (raw: string): string => {
         const t = String(raw || '').trim()
         return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(t) ? t : ''
+      }
+
+      // GitHub 地址单独一条路：一个仓库/目录里可能有多个技能，也可能带 scripts/，
+      // 所以不能当成「下载一个 md」处理。
+      if (mode === 'github' || /^https?:\/\/(www\.)?github\.com\//i.test(input)) {
+        try {
+          const imported = await importFromGitHub(new URL(input), root, clean(body.name ?? ''))
+          json(res, 200, {
+            ok: true,
+            name: imported[0]?.name ?? '',
+            names: imported.map((x) => x.name),
+            dir: imported[0]?.dir ?? '',
+            files: imported.reduce((n, x) => n + x.files, 0),
+            scope: body.scope === 'project' ? 'project' : 'user',
+          })
+        } catch (err) {
+          json(res, 400, { error: err instanceof Error ? err.message : String(err) })
+        }
+        return
       }
 
       let text = ''
@@ -1486,7 +1622,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         text = String(body.content ?? '')
         if (!text.trim()) { json(res, 400, { error: '内容为空' }); return }
       } else if (mode === 'url') {
-        const target = String(body.url ?? '').trim()
+        const target = String(body.url ?? input).trim()
         if (!/^https?:\/\//i.test(target)) { json(res, 400, { error: '给一个 http(s) 地址' }); return }
         try {
           const r = await fetch(target, { signal: AbortSignal.timeout(15000) })
@@ -1506,7 +1642,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         }
         if (!text.trim()) { json(res, 400, { error: '这个地址是空的' }); return }
       } else {
-        fromDir = String(body.path ?? '').trim().replace(/^~(?=\/)/, os.homedir())
+        fromDir = String(body.path ?? input).trim().replace(/^~(?=\/)/, os.homedir())
         const st = fromDir ? statSyncSafe(fromDir) : null
         if (!st) { json(res, 400, { error: '这个路径不存在' }); return }
         if (!name) {
@@ -1561,6 +1697,122 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         scope: body.scope === 'project' ? 'project' : 'user',
         description: skill?.description ?? '',
       })
+      return
+    }
+
+    // ---- skill 不只是一个 md：它是个目录，里面还能有 scripts/ references/ 等 ----
+    // 所以管理面板要能看文件树、看内容、改内容、加文件、删文件、整个删掉。
+    // 所有路径都相对 skill 目录，越界一律拒绝（这个名字来自 HTTP）。
+    if (url.pathname.startsWith('/api/plugins/skill/') || (url.pathname === '/api/plugins/skill' && req.method === 'GET')) {
+      const action = url.pathname.replace('/api/plugins/skill', '').replace(/^\//, '') || 'detail'
+      // POST 的 name 在 body 里，GET 的在查询串里——两边都要认，否则「保存」永远报名字不合法
+      const bodyOnce = req.method === 'POST'
+        ? JSON.parse(await readBody(req).catch(() => '{}')) as Record<string, unknown>
+        : {}
+      const qname = String(url.searchParams.get('name') ?? bodyOnce.name ?? '')
+      const name = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(qname) ? qname : ''
+      if (!name) { json(res, 400, { error: 'name 不合法' }); return }
+
+      const skill = discoverSkills(currentWorkspace).find((s) => s.name === name)
+      if (!skill) { json(res, 404, { error: '没有这个 skill' }); return }
+      const rootInfo = skillRoots(currentWorkspace).find((r) => r.label === skill.root)
+      const baseDir = rootInfo
+        ? pathMod.join(rootInfo.dir, fs6.existsSync(pathMod.join(rootInfo.dir, name)) ? name : name + '.md')
+        : ''
+      // 单文件形式的 skill（<root>/name.md）没有子文件可管，后面按「无目录」处理
+      const isDir = Boolean(baseDir) && statSyncSafe(baseDir)?.isDirectory() === true
+      const skillDir = isDir ? baseDir : pathMod.dirname(baseDir)
+
+      /** 相对路径 → 绝对路径，且必须还在 skill 目录里 */
+      const safe = (rel: string): string | null => {
+        const clean = String(rel ?? '').replace(/^\/+/, '')
+        if (!clean || clean.includes('\0')) return null
+        const abs = pathMod.resolve(skillDir, clean)
+        return abs === skillDir || abs.startsWith(skillDir + pathMod.sep) ? abs : null
+      }
+
+      if (req.method === 'GET' && action === 'detail') {
+        const files: Array<{ path: string; size: number }> = []
+        if (isDir) {
+          // 深度有限：skill 目录应该很小，扫太深只会拖慢面板
+          const walk = (dir: string, prefix: string, depth: number): void => {
+            if (depth > 4 || files.length >= 300) return
+            let entries: Array<{ name: string; isDir: boolean }> = []
+            try {
+              entries = fs6.readdirSync(dir, { withFileTypes: true })
+                .map((e) => ({ name: String(e.name), isDir: e.isDirectory() }))
+            } catch { return }
+            for (const e of entries.sort((a, b) => Number(b.isDir) - Number(a.isDir) || a.name.localeCompare(b.name))) {
+              if (e.name === '.git') continue
+              const rel = prefix ? prefix + '/' + e.name : e.name
+              if (e.isDir) { walk(pathMod.join(dir, e.name), rel, depth + 1); continue }
+              const st = statSyncSafe(pathMod.join(dir, e.name))
+              files.push({ path: rel, size: Number(st?.size ?? 0) })
+            }
+          }
+          walk(skillDir, '', 0)
+        } else {
+          const st = statSyncSafe(skillDir)
+          files.push({ path: pathMod.basename(skillDir), size: Number(st?.size ?? 0) })
+        }
+        json(res, 200, {
+          name: skill.name,
+          description: skill.description ?? '',
+          scope: skill.root ?? '',
+          dir: skillDir,
+          isDir,
+          files,
+        })
+        return
+      }
+
+      if (req.method === 'GET' && action === 'file') {
+        const abs = safe(url.searchParams.get('path') ?? '')
+        if (!abs) { json(res, 400, { error: '路径越界' }); return }
+        const st = statSyncSafe(abs)
+        if (!st?.isFile()) { json(res, 404, { error: '没有这个文件' }); return }
+        if (st.size > 512 * 1024) { json(res, 400, { error: '文件太大（>512KB），不在面板里打开' }); return }
+        const text = readFileSyncSafe(abs)
+        // 用 \0 判断二进制：编辑框里塞进一坨二进制只会让浏览器卡住
+        if (text.includes('\0')) { json(res, 400, { error: '这是二进制文件' }); return }
+        json(res, 200, { path: url.searchParams.get('path') ?? '', text, size: st.size })
+        return
+      }
+
+      if (req.method === 'POST' && action === 'file') {
+        const body = bodyOnce as { path?: string; text?: string }
+        const abs = safe(body.path ?? '')
+        if (!abs) { json(res, 400, { error: '路径越界' }); return }
+        try {
+          mkdirSync(pathMod.dirname(abs), { recursive: true })
+          writeFileSync(abs, String(body.text ?? ''))
+        } catch (err) {
+          json(res, 500, { error: err instanceof Error ? err.message : '写不进去' })
+          return
+        }
+        json(res, 200, { ok: true, path: pathMod.relative(skillDir, abs) })
+        return
+      }
+
+      if (req.method === 'POST' && action === 'file/delete') {
+        const body = bodyOnce as { path?: string }
+        const abs = safe(body.path ?? '')
+        if (!abs || abs === skillDir) { json(res, 400, { error: '路径越界' }); return }
+        try { rmSync(abs, { recursive: true, force: true }) } catch { /* 没了也算删掉 */ }
+        json(res, 200, { ok: true })
+        return
+      }
+
+      if (req.method === 'POST' && action === 'delete') {
+        try { rmSync(skillDir, { recursive: true, force: true }) } catch (err) {
+          json(res, 500, { error: err instanceof Error ? err.message : '删不掉' })
+          return
+        }
+        json(res, 200, { ok: true })
+        return
+      }
+
+      json(res, 405, { error: '不支持的动作' })
       return
     }
 
@@ -1771,8 +2023,14 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
           seen.set(ws, { path: ws, sessions: 1, lastUsed: when })
         }
       }
-      const list = [...seen.values()].sort((a, b) => (a.lastUsed < b.lastUsed ? 1 : -1))
-      if (!seen.has(currentWorkspace)) {
+      // 被「移除」的项目只是从列表里藏起来：磁盘还在，随时能重新加回来
+      const hidden = new Set(readConfig().hiddenProjects ?? [])
+      const list = [...seen.values()]
+        .filter((p) => !hidden.has(p.path))
+        .sort((a, b) => (a.lastUsed < b.lastUsed ? 1 : -1))
+      // 当前工作区永远要在列表里，除非它正是被移除的那个——那种情况下补回来
+      // 等于移除操作没生效
+      if (!seen.has(currentWorkspace) && !hidden.has(currentWorkspace)) {
         list.unshift({ path: currentWorkspace, sessions: 0, lastUsed: new Date().toISOString() })
       }
 
@@ -1813,6 +2071,34 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       currentWorkspace = abs
       if (typeof body.name === 'string') writeProjectName(abs, body.name)
       json(res, 200, { current: currentWorkspace, name: readProjectNames()[abs] || '' })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/project/rename') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as { path?: string; name?: string }
+      const p = String(body.path ?? '').trim()
+      if (!p) { json(res, 400, { error: 'path is empty' }); return }
+      writeProjectName(p, String(body.name ?? ''))
+      json(res, 200, { ok: true, path: p, name: readProjectNames()[p] || '' })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/project/remove') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as { path?: string }
+      const p = String(body.path ?? '').trim()
+      if (!p) { json(res, 400, { error: 'path is empty' }); return }
+      const cfg = readConfig()
+      const set = new Set(cfg.hiddenProjects ?? [])
+      set.add(p)
+      cfg.hiddenProjects = [...set]
+      writeConfig(cfg)
+      // 移除的是当前工作区：得换一个，否则左栏空了但界面还在一个看不见的项目里
+      if (p === currentWorkspace) {
+        const rest = collectSessions().map((x) => x.workspace).filter((w) => w && w !== p)
+        const next = rest.find((w) => w && !set.has(w)) ?? os.homedir()
+        currentWorkspace = next
+      }
+      json(res, 200, { ok: true, current: currentWorkspace })
       return
     }
 
@@ -2354,11 +2640,15 @@ function portBusyHint(port: number, owner: PortOwner | null): string {
  * 返回 replaced 表示真的替换掉了某个进程——调用方要把它打出来，否则用户
  * 会以为自己刚杀的进程还活着（或者反过来，以为什么都没动）。
  */
-export async function startServerOrRestart(opts: { port: number; host?: string; force?: boolean }): Promise<{
+export async function startServerOrRestart(opts: { port: number; host?: string; force?: boolean; workspace?: string }): Promise<{
   srv: { url: string; close: () => void }
   replaced: PortOwner | null
 }> {
-  const attempt = () => startServer({ port: opts.port, ...(opts.host ? { host: opts.host } : {}) })
+  const attempt = () => startServer({
+    port: opts.port,
+    ...(opts.host ? { host: opts.host } : {}),
+    ...(opts.workspace ? { workspace: opts.workspace } : {}),
+  })
   try {
     return { srv: await attempt(), replaced: null }
   } catch (err) {

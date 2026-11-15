@@ -68,7 +68,7 @@ test('a skill can be installed by pasting, by url, or from a directory', async (
 
   const remote = await serveSkillMd(FM('from-url', '从链接装'))
   const child = spawn(process.execPath, [CLI, 'serve', '--port', String(port), '--workspace', ws], {
-    env: { ...process.env, UH_HOME: home, NO_COLOR: '1' },
+    env: { ...process.env, UH_HOME: home, NO_COLOR: '1', UH_BUILTIN_SKILLS: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   const post = (body) => fetch(`http://127.0.0.1:${port}/api/plugins/skill`, {

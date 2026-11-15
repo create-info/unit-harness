@@ -52,6 +52,9 @@ test('the plugins page lists what is really installed, and a toggle is persisted
   writeFileSync(join(work, '.uh', 'skills', 'bump-version', 'SKILL.md'),
     '---\nname: bump-version\ndescription: 改版本号\n---\n正文\n')
 
+  // 内置技能会往 UH_HOME/skills 里落三个目录，这里要数「项目里有什么」，
+  // 所以先关掉它们，免得断言跟着版本变
+  process.env.UH_BUILTIN_SKILLS = '0'
   const srv = await startServer({ ...process.env, UH_HOME: home, UH_WORKSPACE: work })
   try {
     const p = await get('/api/plugins')

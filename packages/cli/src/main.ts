@@ -21,7 +21,7 @@ import {
   readSessionEvents, editsForLastTurn, applyUndo, isRestorable, isTurnUndone, markTurnUndone,
   hydrateEdits, discoverSkills,
 } from '@unit-harness/core'
-import { sanitizeSecret } from '@unit-harness/core'
+import { sanitizeSecret, syncBuiltinSkills } from '@unit-harness/core'
 import type { Message, ImageInput, ApprovalRequest } from '@unit-harness/core'
 import { readFileSync, readdirSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import * as readline from 'node:readline'
@@ -1556,6 +1556,8 @@ Sandbox:
 }
 
 async function main(): Promise<void> {
+  // 内置技能：终端这条路也要装上，不然 `uh run` 和网页端看到的是两套技能
+  try { syncBuiltinSkills() } catch { /* 装不进去不影响主流程 */ }
   switch (cmd) {
     case '--version': case '-v': case 'version':
       console.log(VERSION); return
@@ -1594,8 +1596,11 @@ async function main(): Promise<void> {
       const hostIdx = argv.indexOf('--host')
       const lan = argv.includes('--lan')
       const host = hostIdx > 0 ? argv[hostIdx + 1] : (lan ? '0.0.0.0' : undefined)
+      const wsFlag = flag('workspace')
       const { srv, replaced } = await startServerOrRestart({
         port, ...(host ? { host } : {}), force: argv.includes('--force'),
+        // --workspace 要真的生效：它决定左栏从哪个项目开始、技能从哪几个根扫
+        ...(wsFlag ? { workspace: wsFlag.replace(/^~(?=\/)/, os.homedir()) } : {}),
       })
       if (replaced) console.log(`stopped the previous UnitHarness on port ${port} (pid ${replaced.pid})`)
       console.log(`UnitHarness UI  ${srv.url}`)
