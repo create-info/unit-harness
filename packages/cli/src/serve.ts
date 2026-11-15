@@ -19,7 +19,8 @@ import {
   listCheckpoints, editsAfterSeq, undoToCheckpoint, lastRestoreSeq,
   buildAdapters, readChannels, writeChannels, missingFields,
   getBinding, setBinding, claimMessage, bindingKey,
-  readConfig, resolveProvider, resolveContextWindow, setProviderEntry, uhHome, windowFromModelEntry,
+  compactThreshold, readConfig, resolveProvider, resolveContextWindow, setProviderEntry, uhHome,
+  windowFromModelEntry,
   workspaceDir, writeConfig } from '@unit-harness/core'
 import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget, WatchManager } from '@unit-harness/core'
 import { JUNK_DIRS } from '@unit-harness/core'
@@ -1479,6 +1480,16 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         denyNetwork: sandboxPrefs().denyNetwork,
         unconfined: sandboxPrefs().unconfined,
         workspace: currentWorkspace,
+        // 上下文窗口：前端要在输入框旁边显示「还剩多少」。这里给出模型真实窗口
+        // 和来源（config/server/builtin/default），前端才能把"猜的"标出来。
+        context: (() => {
+          const w = resolveContextWindow({
+            model: entry.model ?? '',
+            explicit: entry.contextWindow,
+            reported: entry.maxContextWindow ? { id: entry.model ?? '', max: entry.maxContextWindow } : undefined,
+          })
+          return { window: w.tokens, source: w.source, compactAt: compactThreshold(w.tokens) }
+        })(),
         // 前端拿这个列表画下拉框：不写死任何一家，加 provider 只改注册表
         providers: PROVIDERS.map((p) => ({
           id: p.id,

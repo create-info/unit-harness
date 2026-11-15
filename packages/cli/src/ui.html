@@ -130,6 +130,40 @@
   .modelbtn:hover{border-color:var(--hoverline)}
   .modelbtn.bad{color:var(--bad);border-color:var(--badbg)}
   .modelbtn .caret{color:var(--dim);font-size:9px}
+  /* 上下文：一枚圆环 + 脑子图标 + 数字，点开看详情。
+     为什么做成圆环而不是一句文字：它是"容器还剩多少"的空间隐喻，
+     一眼就能看出满没满，不用读数字。文字只做辅助。 */
+  #ctx{display:flex;align-items:center;gap:7px;padding:3px 10px 3px 4px;border:1px solid var(--line);
+       border-radius:99px;background:var(--hover);cursor:pointer;white-space:nowrap;
+       font:11.5px var(--mono);color:var(--dim);position:relative;user-select:none}
+  #ctx:hover{border-color:var(--hoverline);color:var(--fg)}
+  #ctx svg{display:block;flex:0 0 auto}
+  #ctx .ring-bg{stroke:var(--line);fill:none}
+  #ctx .ring-fg{stroke:var(--fg);fill:none;stroke-linecap:round;
+                transition:stroke-dashoffset .45s cubic-bezier(.4,0,.2,1),stroke .3s}
+  #ctx .brain{stroke:var(--dim);transition:stroke .3s}
+  #ctx:hover .brain{stroke:var(--fg)}
+  #ctx .num{font-variant-numeric:tabular-nums}
+  #ctx.warn{border-color:var(--warnbg)}
+  #ctx.warn .ring-fg{stroke:var(--warn)}
+  #ctx.warn .brain{stroke:var(--warn)}
+  #ctx.warn .num{color:var(--warn)}
+  #ctx.full{border-color:var(--badbg)}
+  #ctx.full .ring-fg{stroke:var(--bad)}
+  #ctx.full .brain{stroke:var(--bad)}
+  #ctx.full .num{color:var(--bad)}
+  #ctx.guess{opacity:.7}
+  /* 点开后的气泡：三行就够——窗口多大、用掉多少、什么时候压缩 */
+  /* fixed 而不是 absolute：footer 有 overflow 裁切，absolute 的气泡会被切掉 */
+  #ctxPop{position:fixed;min-width:228px;background:var(--panel);
+          border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 32px rgba(0,0,0,.45);
+          padding:11px 13px;display:none;z-index:8;font-size:11.5px;line-height:1.65;color:var(--fg)}
+  #ctxPop.on{display:block}
+  #ctxPop .h{font-size:10.5px;color:var(--dim);letter-spacing:.04em;text-transform:uppercase;margin-bottom:6px}
+  #ctxPop .row{display:flex;justify-content:space-between;gap:18px}
+  #ctxPop .row span:first-child{color:var(--dim)}
+  #ctxPop .row span:last-child{font-family:var(--mono)}
+  #ctxPop .hint{margin-top:7px;padding-top:7px;border-top:1px solid var(--line);color:var(--dim);font-size:10.5px}
   .appr{display:flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:7px;padding:4px 9px;cursor:pointer;font-size:11.5px}
   .appr:hover{border-color:var(--hoverline);color:var(--fg)}
   .appr.full{color:var(--bad);border-color:var(--badbg)}
@@ -780,6 +814,24 @@
       <button class="modelbtn" id="modelPick" title="Switch model"><span id="mpName">no model</span><span class="caret">▾</span></button>
       <button class="appr" id="apprBtn" title="How runs are approved"><span id="apprIco">🛡</span><span id="apprName">Request approval</span></button>
       <button class="mbcwd" id="mpWork" title="Switch project folder"></button>
+      <!-- 上下文：圆环走一圈 = 压缩阈值用完。脑子图标说明这是"模型的记忆" -->
+      <div id="ctx" role="button" tabindex="0" aria-label="Context window">
+        <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
+          <circle class="ring-bg" cx="13" cy="13" r="11.2" stroke-width="2"></circle>
+          <circle class="ring-fg" id="ctxRing" cx="13" cy="13" r="11.2" stroke-width="2"
+                  transform="rotate(-90 13 13)" stroke-dasharray="70.37 70.37" stroke-dashoffset="70.37"></circle>
+          <!-- 图标：三条横线 = 堆叠的上下文层。
+               试过简笔脑子（糊成墨点）和同心弧（挤成一团），13px 里都认不出。
+               三条平行粗线是这个尺寸下唯一还站得住的图形，意思也直白：历史是一行行摞起来的。 -->
+          <g class="brain" stroke-width="1.9" stroke-linecap="round">
+            <path d="M9.6 9.3h6.8"></path>
+            <path d="M8.8 13h8.4"></path>
+            <path d="M9.6 16.7h6.8"></path>
+          </g>
+        </svg>
+        <span class="num" id="ctxText">—</span>
+        <div id="ctxPop"></div>
+      </div>
     </div>
     <div class="attach" id="attach"></div>
     <div class="fpick" id="fpick"></div>
@@ -1523,6 +1575,93 @@ function openModelMenu(){
   m.classList.toggle('on');
 }
 
+/**
+ * 上下文窗口指示：总数 / 已用 / 百分比。
+ *
+ * 为什么要有这块：模型什么时候开始丢东西，用户是看不见的。等到发现
+ * "它怎么忘了我刚才说的"，已经过去好几轮了。Codex 在底栏常驻一行
+ * 「42% context left」，就是这个道理——把不可见的成本变成可见的数字。
+ *
+ * 三条规则：
+ *   - 百分比按**压缩触发点**算，不按窗口上限。90% 的窗口还剩 30% 就压了，
+ *     拿上限做分母会让人以为还早。
+ *   - 超过 70% 标黄、100% 标红，并在 title 里说清楚会发生什么。
+ *   - 窗口是猜的（source=default）时透明度降下来，别让用户以为是实测值。
+ */
+let CTX = { window: 0, compactAt: 0, source: '', used: 0 };
+
+const RING_LEN = 2 * Math.PI * 11.2;   // 圆环周长，跟 HTML 里的 dasharray 一致
+
+function paintCtx(used){
+  const box = $('#ctx'), text = $('#ctxText'), ring = $('#ctxRing');
+  if (!box) return;
+  if (used !== undefined) CTX.used = used;
+  if (!CTX.window) { box.style.display = 'none'; return; }
+  box.style.display = 'flex';
+
+  const limit = CTX.compactAt || CTX.window;
+  // 进度按**压缩阈值**做分母，不按窗口上限：分母用上限的话，环永远走不到头，
+  // 用户以为还早，其实下一句话就要开始摘要了。
+  const frac = Math.max(0, Math.min(1, CTX.used / limit));
+  const left = Math.max(0, limit - CTX.used);
+  const k = (n) => n >= 1000 ? (n / 1000).toFixed(n < 10000 ? 1 : 0) + 'k' : String(n);
+
+  // 环：dashoffset 从满到 0，顺时针填满
+  ring.style.strokeDasharray = RING_LEN + ' ' + RING_LEN;
+  ring.style.strokeDashoffset = String(RING_LEN * (1 - frac));
+
+  // 数字只写"还剩多少"。旁边有环，百分比是冗余的。
+  text.textContent = frac >= 1 ? '压缩中' : k(left);
+  box.classList.toggle('warn', frac >= 0.7 && frac < 1);
+  box.classList.toggle('full', frac >= 1);
+  box.classList.toggle('guess', CTX.source === 'default');
+
+  const long = CTX.source === 'default'
+    ? '窗口是估的（服务端没报，取内置表/默认值）'
+    : ({ config: '窗口来自设置', 'server-loaded': '窗口来自服务端已加载值',
+         'server-max': '窗口来自服务端最大值', builtin: '窗口按模型名推断' }[CTX.source] || '');
+  box.title = k(left) + ' tokens 可用于压缩 · 点开看明细';
+  const pop = $('#ctxPop');
+  if (pop) pop.innerHTML =
+    '<div class="h">Context window</div>' +
+    '<div class="row"><span>窗口</span><span>' + CTX.window.toLocaleString() + '</span></div>' +
+    '<div class="row"><span>本次请求</span><span>' + CTX.used.toLocaleString() + '</span></div>' +
+    '<div class="row"><span>压缩于</span><span>' + limit.toLocaleString() +
+      ' (' + Math.round((limit / CTX.window) * 100) + '%)</span></div>' +
+    '<div class="hint">' + esc(long) + (frac >= 1
+      ? ' · <b>已超阈值，历史正在被摘要</b>'
+      : ' · 还剩 ' + left.toLocaleString() + ' tokens') + '</div>';
+}
+
+// 点开/关掉明细。键盘也能开——它不是纯装饰，里面的数字是唯一看得到的地方。
+function bindCtxPop(){
+  const box = $('#ctx');
+  if (!box || box.dataset.bound) return;
+  box.dataset.bound = '1';
+  const toggle = (on) => {
+    const pop = $('#ctxPop');
+    if (!pop) return;
+    const open = on === undefined ? !pop.classList.contains('on') : on;
+    if (open) {
+      // 气泡是 fixed 的：先显示（尺寸才能量），再把右边缘对齐按钮、底边压在按钮上方
+      pop.classList.add('on');
+      const r = box.getBoundingClientRect();
+      pop.style.left = 'auto';
+      pop.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+      pop.style.bottom = (window.innerHeight - r.top + 9) + 'px';
+      pop.style.top = 'auto';
+    } else {
+      pop.classList.remove('on');
+    }
+  };
+  box.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+    if (e.key === 'Escape') toggle(false);
+  });
+  document.addEventListener('click', () => toggle(false));
+}
+
 async function loadSettings(){
   SETTINGS = await fetch('/api/settings').then(r => r.json());
   applyUi(SETTINGS.ui);
@@ -1542,6 +1681,13 @@ async function loadSettings(){
   $('#mpWork').textContent = home && ws.startsWith(home) ? '~' + ws.slice(home.length) : ws;
   $('#mpWork').title = ws;
   paintApproval(SETTINGS.approval || 'ask');
+  if (SETTINGS.context) {
+    CTX.window = SETTINGS.context.window || 0;
+    CTX.compactAt = SETTINGS.context.compactAt || 0;
+    CTX.source = SETTINGS.context.source || '';
+    bindCtxPop();
+    paintCtx();
+  }
   // 占位只留一句话。工作区、沙箱、审批模式底栏都写着，占位里再讲一遍，
   // 窄屏上会被切在半句中间，看着像坏了。
   $('#task').placeholder = ph('描述要做的事，Enter 发送 / Shift+Enter 换行', '描述要做的事…');
@@ -4710,7 +4856,13 @@ function render(kind, p){
       row('ok', '✓ ' + name + ' finished · ' + p.steps + ' steps' + (secs ? ' · ' + secs : ''));
       break;
     }
-    // llm/response 不显示：工具调用行紧接着就会出现，多一行统计只是噪音
+    // llm/response 不显示成一行流水——工具调用行紧接着就会出现，多一行统计只是噪音。
+    // 但它的 usage 是唯一真实的用量来源，所以喂给底栏的上下文指示。
+    case 'llm/response': {
+      const u = p.usage || {};
+      if (typeof u.prompt_tokens === 'number') paintCtx(u.prompt_tokens);
+      break;
+    }
     case 'tool/call': {
       // label 是服务端翻译好的人话（"Reading src/cli.ts"），永远优先用它。
       // 只有翻译缺失时才退回原始信息，绝不会把 run_command 这种词直接扔到屏幕上。
