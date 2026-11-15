@@ -188,13 +188,20 @@
   /* 「…」按钮的公共外观。
      之前只写了 .sess .smore 这一条，项目头用的 .smore.pm 根本没被匹配到，
      于是它按浏览器默认按钮渲染成一个带边框的白方块——又丑又不像能点。 */
+  /* 三个点用 box-shadow 画，不用「…」这个字符：
+     那个字符的墨迹落在基线上，跟 10px 的数字并排时永远是歪的（截图里 ⋯ 明显偏上），
+     而且字号一改就再歪一次。2px 的圆点居中放在按钮里，几何位置就是死的。 */
   .smore{border:0;background:transparent;color:var(--dim);border-radius:6px;
-    width:18px;height:18px;line-height:1;font-size:14px;cursor:pointer;padding:0;
+    width:18px;height:18px;line-height:0;font-size:0;cursor:pointer;padding:0;
     display:none;align-items:center;justify-content:center}
+  .smore::before{content:'';width:2px;height:2px;border-radius:50%;background:currentColor;
+    box-shadow:4px 0 0 currentColor,8px 0 0 currentColor}
   .smore:hover{background:var(--hover);color:var(--fg)}
   /* 右边给「…」留出位置，否则长标题会从按钮底下钻出来一截 */
   .sess{position:relative;padding-right:24px}
-  .sess .smore{position:absolute;right:2px;top:50%;transform:translateY(-50%)}
+  /* 会话是两行（标题 + 时间），居中的话三个点会停在两行之间的缝里；
+     贴着标题那一行的中线才对得上。 */
+  .sess .smore{position:absolute;right:2px;top:6px;transform:none}
   .sess:hover .smore,.sess .smore:focus{display:flex}
   @media (hover:none){ .sess .smore{display:flex} }
   .sess .pin{font-size:9px;opacity:.8}
@@ -235,7 +242,10 @@
   .skblock .skd{font-size:11px;color:var(--dim);line-height:1.55;margin-bottom:9px}
   .skmore{border:0;background:transparent;color:var(--dim);font-size:11.5px;cursor:pointer;padding:0}
   .skmore:hover{color:var(--fg)}
-  .sess b{display:block;color:var(--fg);font-weight:500;font-size:12px}
+  /* 标题单独一行，且给右边留出三个点的位置——
+     不留的话标题会一直画到按钮底下，跟「…」叠在一起。 */
+  .sess b{display:block;color:var(--fg);font-weight:500;font-size:12px;
+    padding-right:30px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .side-foot{border:0;border-top:1px solid var(--line);background:transparent;color:var(--dim);text-align:left;padding:11px 18px;cursor:pointer;font-size:12px}
   .side-foot:hover{color:var(--fg);background:var(--hover)}
   .account{border-top:1px solid var(--line);padding:9px 12px;display:flex;align-items:center;gap:8px;cursor:pointer;font-size:11.5px;color:var(--dim)}
