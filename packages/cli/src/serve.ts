@@ -1505,20 +1505,33 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
             : cloneBase.replace('https://', `https://x-access-token:${tok}@`)
           // 只下元数据、不拉工作树：体积是仓库大小的零头
           git(['init', '-q'])
-          // 令牌有时效，不能写进磁盘上的 remote 配置
-          git(['-c', `url.${remote}.insteadOf=https://github.com/${owner}/${repo}.git`,
-            'fetch', '-q', '--depth=1', '--filter=blob:none', '--no-tags', remote,
-            branch || 'HEAD'])
+          // 地址直接写在命令行上，不写进 remote 配置：令牌有时效，也不该落盘。
+          // 之前这里还套了一层 -c url.X.insteadOf=Y，X 和 Y 是同一个地址，
+          // 纯属自己映射自己，网络一抖就报一句看不懂的 Command failed。
+          const fetchArgs = ['fetch', '-q', '--depth=1', '--filter=blob:none', '--no-tags',
+            remote, branch || 'HEAD']
+          // GitHub 到这台机器经常抖：失败重试两次，别让一次超时变成「装不了」
+          for (let i = 0; ; i++) {
+            try { git(fetchArgs); break }
+            catch (err) {
+              if (i >= 2) throw err
+              await new Promise((r) => setTimeout(r, 1500 * (i + 1)))
+            }
+          }
           git(['sparse-checkout', 'init', '--no-cone'])
           // 只保留这棵子树的 blob；子树的其余部分（内含 references/ scripts/）全都要
           git(['sparse-checkout', 'set', `/${sub ? sub + '/' : ''}`])
           git(['checkout', '-q', 'FETCH_HEAD'])
           ok = true
         } catch (err) {
-          why = err instanceof Error ? err.message : String(err)
+          // execFileSync 的 message 只有一行命令；真正的原因在 stderr 末尾
+          const e = err as { stderr?: Buffer; message?: string }
+          const stderr = e.stderr ? e.stderr.toString().trim() : ''
+          const lines = stderr.split('\n').filter(Boolean)
+          why = lines.length ? lines.slice(-2).join(' ') : (e.message ?? String(err))
         }
         if (!ok) {
-          throw new Error('拉不到这个仓库：' + (why.split('\n')[0] ?? why).slice(0, 120))
+          throw new Error('拉不到这个仓库：' + why.slice(0, 200))
         }
 
         const repoRoot = tmp
