@@ -409,6 +409,15 @@
   .lgbody code{background:var(--input);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:11px;color:var(--fg)}
   .lgbody input{width:100%;background:var(--input);color:var(--fg);border:1px solid var(--line);border-radius:7px;padding:9px 11px;font:12px var(--mono);outline:none}
   .lgbody input:focus{border-color:var(--hoverline)}
+  /* 已登录时这一块是「账户卡」：三行标签 + 值，会员状态用颜色区分。
+     之前是把接口返回的 JSON 直接糊在这里，读完也不知道还有几天。 */
+  .lgacct{display:flex;flex-direction:column;gap:9px}
+  .lgrow{display:flex;align-items:baseline;gap:12px;font-size:12.5px}
+  .lgrow>span{flex:0 0 58px;color:var(--dim);font-size:11.5px}
+  .lgrow>b{font-weight:500;color:var(--fg);min-width:0;overflow-wrap:anywhere}
+  .lvok{color:var(--ok)}
+  .lvbad{color:var(--bad)}
+  .lghint{margin:14px 0 0;font-size:11.5px;color:var(--soft);line-height:1.6}
   .lgfoot{border-top:1px solid var(--line);padding:11px 18px;display:flex;gap:8px;align-items:center}
   .lgfoot .msg{flex:1;font-size:11.5px;color:var(--dim)}
   .lgfoot .msg.err{color:var(--bad)}
@@ -786,7 +795,7 @@
 </div>
 <div id="loginModal">
   <div class="lgcard">
-    <div class="dhead"><b>Sign in to UnitAI</b><button class="icon" id="lgClose">✕</button></div>
+    <div class="dhead"><b id="lgTitle">UnitAI account</b><button class="icon" id="lgClose">✕</button></div>
     <div class="lgbody" id="lgBody">
       <p>Open <code id="lgUrl">unitai.site/mcp</code> in your browser (where you are already signed in), copy the token shown there, and paste it below.</p>
       <p style="font-size:11.5px">The token lasts 30 days and is stored at <code>~/.uh/account.json</code> (0600). It never enters the event log.</p>
@@ -3364,9 +3373,27 @@ async function openLogin(){
   if (signedIn){
     const u = ACCOUNT.user || {};
     const mem = ACCOUNT.membership || {};
-    $('#lgWho').innerHTML = '<p>Signed in as <b>' + esc(u.nickname || u.name || '') + '</b>'
-      + (u.phone ? ' · ' + esc(u.phone) : '')
-      + '</p><p style="font-size:11.5px;margin:0">Membership: ' + esc(JSON.stringify(mem).slice(0, 120)) + '</p>';
+    $('#lgTitle').textContent = 'UnitAI account';
+    // 直接把接口返回的 JSON 打印出来，是「调试信息」，不是给人看的东西：
+    // 一句话里塞 days_left / expired / expiring / plan 四份重复的时间。
+    const planName = ({ monthly: 'Monthly', yearly: 'Yearly', lifetime: 'Lifetime' })[mem.member_plan || mem.plan]
+      || mem.member_plan || mem.plan || '—';
+    const until = mem.member_until_text || mem.until_text || '';
+    const days = Number(mem.days_left);
+    let state
+    if (mem.is_member !== true) state = '<span class="lvbad">not subscribed</span>'
+    else if (mem.expired) state = '<span class="lvbad">expired</span>'
+    else {
+      state = '<span class="lvok">' + esc(planName) + '</span>'
+        + (until ? ' · until ' + esc(until) : '')
+        + (Number.isFinite(days) ? ' · <b>' + days + '</b> days left' : '')
+    }
+    $('#lgWho').innerHTML = '<div class="lgacct">'
+      + '<div class="lgrow"><span>account</span><b>' + esc(u.nickname || u.name || 'signed in') + '</b></div>'
+      + (u.phone ? '<div class="lgrow"><span>phone</span><b>' + esc(u.phone) + '</b></div>' : '')
+      + '<div class="lgrow"><span>plan</span><b>' + state + '</b></div>'
+      + '</div>'
+      + '<p class="lghint">This account pays for what runs here: model routing, monthly quota, and the UnitAI MCP server. Changes apply to sessions you start next.</p>';
   }
 }
 
