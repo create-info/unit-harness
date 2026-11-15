@@ -3658,8 +3658,20 @@ async function saveSandbox(patch) {
   } else setMsg(r.error || 'failed', true);
 }
 
+/**
+ * 「常用模型」快选条早就删了，但调用点留在这里。
+ * 后果不是少个控件——是**每次保存都在最后一行抛 ReferenceError**，
+ * 于是保存之后的确认、清空、重绘全都不执行，界面上看起来像「没保存」。
+ * 留一个空实现：控件没了，调用点不该是定时炸弹。
+ */
+function paintModelPicker() { /* 控件已移除 */ }
+
 async function postSettings(patch) {
-  const r = await fetch('/api/settings', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(patch) }).then(x => x.json());
+  // 一定要带上「改的是哪家」：不带的话服务端只能猜，猜不到整条保存作废。
+  // 注意用全局 SETTINGS —— renderSettings 里的 S 是局部变量，这里引用不到。
+  const prov = (SETTINGS && SETTINGS.provider) || '';
+  const withProvider = prov ? { provider: prov, ...patch } : patch;
+  const r = await fetch('/api/settings', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(withProvider) }).then(x => x.json());
   if (r.error) setMsg(r.error, true);
   await loadSettings();
   paintModelPicker();

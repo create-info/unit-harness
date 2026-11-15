@@ -2125,7 +2125,10 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       let body: { provider?: string; model?: string; baseUrl?: string; apiKey?: string; clearKey?: boolean } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty body */ }
 
-      const id = body.provider?.trim()
+      // 没写明是哪家就用当前选中的那家。之前这里强制要求 provider，
+      // 而设置页保存「只改 key / 只改模型」时并不会带它——于是每次保存都是
+      // 400 unknown provider：界面上点保存、点回车，看起来在保存，其实什么都没存下。
+      const id = body.provider?.trim() || readConfig().defaultProvider || ''
       if (!id || !findProvider(id)) { json(res, 400, { error: 'unknown provider' }); return }
 
       // key 只写不读：请求里带空串表示「不改」，clearKey 才是真删
