@@ -3304,6 +3304,7 @@ function renderSettings() {
         wrap.style.display = 'flex'; wrap.style.gap = '7px';
         const i = document.createElement('input');
         i.type = 'text'; i.id = 'fModel'; i.value = S.model || ''; i.placeholder = 'e.g. deepseek-v4-flash';
+        i.setAttribute('list', 'modelList');
         i.onchange = async () => { await postSettings({ model: i.value.trim() }); setMsg('model saved'); paintModelPicker(); };
         const b = document.createElement('button');
         b.className = 'btn'; b.textContent = 'List';
@@ -3325,17 +3326,20 @@ function renderSettings() {
             if (r.error) { setMsg(r.error, true); return; }
             const list = (r.models || []);
             if (!list.length) { setMsg('this provider returned no models', true); return; }
-            const cur = i.value;
-            i.value = list.includes(cur) ? cur : list[0];
-            await postSettings({ model: i.value });
-            setMsg(list.length + ' models — picked ' + i.value);
-            paintModelPicker();
+            // 不替用户挑：列出来，点哪个用哪个。自动填一个看似省事，
+            // 实际上是把「这家有哪几个模型」这件事藏起来了——刚发生过一次。
+            showModelChoices(list, i);
           } catch (e) { b.disabled = false; b.textContent = 'List'; setMsg(String(e.message || e), true); }
         };
         wrap.appendChild(i); wrap.appendChild(b);
         return wrap;
       })()),
     ]));
+    // List 的结果落在这里（见 showModelChoices）
+    const choices = document.createElement('div');
+    choices.id = 'modelChoices';
+    choices.style.padding = '0 4px 8px';
+    body.appendChild(choices);
     return;
   }
 
@@ -3665,6 +3669,40 @@ async function saveSandbox(patch) {
  * 留一个空实现：控件没了，调用点不该是定时炸弹。
  */
 function paintModelPicker() { /* 控件已移除 */ }
+
+/**
+ * 「List」之后把这家返回的模型全摆出来，点一下就用它。
+ *
+ * 之前是自动挑第一个并直接保存（picked deepseek-flash）——那等于替用户做了选择，
+ * 还把「这家到底有几个模型」藏了起来。列出来之后，选哪个是用户的事。
+ */
+function showModelChoices(list, input) {
+  const host = document.getElementById('modelChoices');
+  if (!host) return;
+  host.innerHTML = '';
+  const head = document.createElement('div');
+  head.style.cssText = 'font-size:11.5px;color:var(--dim);margin:6px 0 6px';
+  head.textContent = `这家返回 ${list.length} 个模型，点一个就用它：`;
+  host.appendChild(head);
+  const bar = document.createElement('div');
+  bar.style.cssText = 'display:flex;flex-wrap:wrap;gap:7px';
+  for (const m of list) {
+    const chip = document.createElement('button');
+    chip.className = 'btn';
+    chip.textContent = m;
+    chip.style.fontFamily = 'var(--mono,monospace)';
+    if (m === input.value) { chip.style.borderColor = 'var(--ok)'; chip.style.color = 'var(--ok)'; }
+    chip.onclick = async () => {
+      input.value = m;
+      await postSettings({ model: m });
+      for (const c of bar.querySelectorAll('button')) { c.style.borderColor = ''; c.style.color = ''; }
+      chip.style.borderColor = 'var(--ok)'; chip.style.color = 'var(--ok)';
+      setMsg('模型已设为 ' + m);
+    };
+    bar.appendChild(chip);
+  }
+  host.appendChild(bar);
+}
 
 async function postSettings(patch) {
   // 一定要带上「改的是哪家」：不带的话服务端只能猜，猜不到整条保存作废。
