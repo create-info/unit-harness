@@ -810,6 +810,7 @@
       <div class="setitem" data-p="model">模型</div>
       <div class="setitem" data-p="sandbox">沙箱</div>
       <div class="setgrp">集成</div>
+      <div class="setitem" data-p="channels">渠道</div>
       <div class="setitem" data-p="plugins">插件</div>
       <div class="setitem" data-p="remote">远程访问</div>
       <div class="setitem" data-p="computer">电脑操控</div>
@@ -3374,6 +3375,139 @@ function renderSettings() {
       srow('配置文件', '模型与 key。权限 0600。', (() => { const d = document.createElement('span'); d.className = 'val'; d.textContent = '~/.uh/config.json'; return d; })()),
       srow('账号令牌', ACCOUNT.signedIn ? '已登录。登出会删除这个文件。' : '未登录——不影响使用。', (() => { const d = document.createElement('span'); d.className = 'val'; d.textContent = '~/.uh/account.json'; return d; })()),
     ]));
+    return;
+  }
+
+  /**
+   * 渠道：微信 / 企业微信 / 飞书。
+   *
+   * 这个页面只干三件事：告诉用户「要填什么」「还缺什么」「填完往哪儿填回调地址」。
+   * 密钥框永远留空——服务端不回传原文，空着表示「不改」，
+   * 否则一次误点保存就把已经能用的凭据抹了。
+   */
+  if (SETPAGE === 'channels') {
+    let CH = null;
+    const msg = document.createElement('div');
+    msg.className = 'msg';
+    msg.style.margin = '6px 0 10px';
+    body.appendChild(msg);
+
+    const field = (label, key, opts) => {
+      const o = opts || {};
+      const i = document.createElement('input');
+      i.className = 'val';
+      i.dataset.k = key;
+      i.style.width = '230px';
+      i.placeholder = o.placeholder || '';
+      if (o.type) i.type = o.type;
+      i.autocomplete = 'off';
+      const wrap = document.createElement('div');
+      wrap.style.display = 'flex';
+      wrap.style.alignItems = 'center';
+      wrap.style.gap = '8px';
+      wrap.appendChild(i);
+      return srow(label, o.desc || '', wrap);
+    };
+
+    const pages = [
+      ['weixin', '微信（订阅号/服务号）', '/webhook/weixin', [
+        field('Token', 'token', { placeholder: '服务器配置里的 Token' }),
+        field('AppID', 'appId', { placeholder: 'wx…' }),
+        field('AppSecret', 'appSecret', { placeholder: '已设置，留空表示不改', type: 'password' }),
+        field('API 代理（可选）', 'baseUrl', { placeholder: 'http://1.2.3.4/wxapi' }),
+      ]],
+      ['wecom', '企业微信（自建应用）', '/webhook/wecom', [
+        field('CorpID', 'corpId', { placeholder: 'ww…' }),
+        field('AgentId', 'agentId', { placeholder: '1000002' }),
+        field('应用 Secret', 'secret', { placeholder: '已设置，留空表示不改', type: 'password' }),
+        field('Token', 'token', { placeholder: '接收消息的 Token' }),
+        field('EncodingAESKey', 'encodingAesKey', { placeholder: '43 位', type: 'password' }),
+      ]],
+      ['feishu', '飞书（企业自建应用）', '/webhook/feishu', [
+        field('App ID', 'appId', { placeholder: 'cli_…' }),
+        field('App Secret', 'appSecret', { placeholder: '已设置，留空表示不改', type: 'password' }),
+        field('Verification Token', 'verificationToken', { placeholder: '事件订阅里的 token' }),
+        field('Encrypt Key', 'encryptKey', { placeholder: '开了加密就填', type: 'password' }),
+      ]],
+    ];
+
+    for (const [id, label, path, rows] of pages) {
+      const sec = section(label, rows);
+      const bar = document.createElement('div');
+      bar.style.cssText = 'display:flex;align-items:center;gap:10px;padding:0 4px 10px';
+      const st = document.createElement('span');
+      st.className = 'val';
+      st.style.fontSize = '11.5px';
+      const save = document.createElement('button');
+      save.className = 'btn';
+      save.textContent = '保存';
+      save.onclick = async () => {
+        const payload = {};
+        for (const i of sec.querySelectorAll('input[data-k]')) {
+          payload[i.dataset.k] = i.type === 'password' && !i.value ? '' : i.value.trim();
+        }
+        save.disabled = true;
+        try {
+          const r = await (await fetch('/api/channels', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ [id]: payload }),
+          })).json();
+          msg.textContent = (r.missing && r.missing[id])
+            ? '还缺：' + r.missing[id].join('、')
+            : '已保存。回调地址填 ' + location.origin + path;
+          msg.style.color = (r.missing && r.missing[id]) ? 'var(--warn)' : 'var(--ok)';
+          await paintChannels();
+        } catch (e) {
+          msg.textContent = '保存失败：' + e.message;
+          msg.style.color = 'var(--bad)';
+        } finally { save.disabled = false; }
+      };
+      bar.appendChild(save);
+      const url = document.createElement('span');
+      url.style.cssText = 'font-size:11.5px;color:var(--dim);overflow-wrap:anywhere';
+      url.textContent = '回调地址：' + location.origin + path;
+      bar.appendChild(url);
+      sec.appendChild(bar);
+      body.appendChild(sec);
+    }
+
+    const hint = document.createElement('div');
+    hint.style.cssText = 'font-size:11.5px;color:var(--dim);line-height:1.8;padding:2px 4px 12px';
+    hint.innerHTML = '注意：这三个地址要让对方的服务器能访问到本机。'
+      + '局域网地址对方是连不上的，需要公网入口（反向代理或内网穿透），'
+      + '并且 <b>HTTPS</b> 是飞书和企业微信的硬要求。'
+      + '发到这里的每句话都会开一轮 agent，和你在网页里输入是完全一样的：'
+      + '同一句话接同一条会话，上下文和检查点都连着。';
+    body.appendChild(hint);
+
+    const paintChannels = async () => {
+      let d;
+      try { d = await (await fetch('/api/channels')).json(); } catch { return }
+      for (const [id] of pages) {
+        const miss = (d.missing || {})[id];
+        const on = (d.active || []).includes(id);
+        const sec = body.querySelectorAll('.sec')[pages.findIndex((p) => p[0] === id)];
+        if (!sec) continue;
+        const t = sec.querySelector('h3');
+        if (t) t.textContent = pages.find((p) => p[0] === id)[1] + (on ? ' · 已启用' : miss ? ' · 未完成' : ' · 未配置');
+        t && (t.style.color = on ? 'var(--ok)' : miss ? 'var(--warn)' : 'var(--dim)');
+      }
+      CH = d;
+    };
+    paintChannels().then(() => {
+      // 回填已经存过的非密钥字段，省得每次都要重打
+      const c = (CH && CH.config) || {};
+      const fill = (id, k, v) => {
+        const sec = body.querySelectorAll('.sec')[pages.findIndex((p) => p[0] === id)];
+        const i = sec && sec.querySelector('input[data-k="' + k + '"]');
+        if (i && v) i.value = v;
+      };
+      fill('weixin', 'appId', c.weixin && c.weixin.appId);
+      fill('weixin', 'baseUrl', c.weixin && c.weixin.baseUrl);
+      fill('wecom', 'corpId', c.wecom && c.wecom.corpId);
+      fill('wecom', 'agentId', c.wecom && c.wecom.agentId);
+      fill('feishu', 'appId', c.feishu && c.feishu.appId);
+    });
     return;
   }
 

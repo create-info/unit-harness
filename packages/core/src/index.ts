@@ -23,6 +23,18 @@ export {
   listCheckpoints, editsAfterSeq, undoToCheckpoint, lastRestoreSeq,
 } from './checkpoint/store.ts'
 export type { FileEdit, UndoResult, CheckpointSummary } from './checkpoint/store.ts'
+export {
+  buildAdapters, readChannels, writeChannels, missingFields,
+  getBinding, setBinding, dropBinding, claimMessage, channelsPath, bindingKey,
+} from './channel/store.ts'
+export type { ChannelsConfig, ChatBinding } from './channel/store.ts'
+export type { ChannelAdapter, IncomingMessage, OutgoingReply, ChannelContext } from './channel/types.ts'
+export { makeWecom, wecomSend, wecomPassiveXml } from './channel/wecom.ts'
+export type { WecomConfig } from './channel/wecom.ts'
+export { makeFeishu, feishuSend } from './channel/feishu.ts'
+export type { FeishuConfig } from './channel/feishu.ts'
+export { makeWeixin, weixinSend, weixinPassiveXml } from './channel/weixin.ts'
+export type { WeixinConfig } from './channel/weixin.ts'
 export type { ApprovalGate, ApprovalPolicy, ApprovalRequest, ApprovalDecision } from './approval/gate.ts'
 export { buildSystemPrompt, findProjectInstructions } from './agent/prompt.ts'
 export { compactMessages, shouldCompact, safeCutIndex } from './agent/compact.ts'

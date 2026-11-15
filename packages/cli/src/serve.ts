@@ -17,8 +17,11 @@ import { spawn, execFileSync } from 'node:child_process'
 import {
   EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey, readState,
   listCheckpoints, editsAfterSeq, undoToCheckpoint, lastRestoreSeq,
+  buildAdapters, readChannels, writeChannels, missingFields,
+  getBinding, setBinding, claimMessage, bindingKey,
   readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig } from '@unit-harness/core'
 import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget, WatchManager } from '@unit-harness/core'
+import type { IncomingMessage } from '@unit-harness/core'
 import {
   loadMcpServers, discoverSkills, skillRoots, globalMcpConfigPath, projectMcpConfigPath,
   isBuiltinSkill, syncBuiltinSkills,
@@ -279,6 +282,55 @@ async function unitai(path: string, token: string, init?: RequestInit): Promise<
 
 /** 正在跑的 harness，`POST /api/stop` 要能找到它 */
 const running = new Map<string, Harness>()
+
+/**
+ * 渠道来信 → 一条 agent 会话里的一轮。
+ *
+ * 三条不能省的规矩：
+ *  1. **同一个人接到同一条会话**（binding）：上下文连着，检查点也才连得起来；
+ *  2. **同一个聊天排队**：连发两句时两轮会同时改同一个仓库，谁最后写谁算，
+ *     那正是「我明明让它先删再建」却只剩一半的原因；
+ *  3. **重投去重**：渠道没等到 200 会重投，不去重就执行两三遍。
+ */
+const chatQueue = new Map<string, Promise<unknown>>()
+
+async function askViaChannel(msg: IncomingMessage): Promise<string | null> {
+  // 渠道重投：这句话已经跑过了，不要跑第二次，也不要回第二句
+  if (!claimMessage(msg.channel, msg.messageId)) return null
+  const key = bindingKey(msg.channel, msg.chatId)
+  const prev = chatQueue.get(key) ?? Promise.resolve()
+  const job = prev.catch(() => {}).then(() => runChannelTurn(msg))
+  chatQueue.set(key, job.catch(() => {}))
+  return (await job) as string
+}
+
+async function runChannelTurn(msg: IncomingMessage): Promise<string> {
+  const b = getBinding(msg.channel, msg.chatId)
+  const st = b ? readState(b.sessionId) : null
+  const turns = (b?.turns ?? 0) + 1
+  const h = new Harness({
+    pluginDirs: [],
+    logLevel: 'error',
+    label: `[${msg.channel}] ${msg.text.slice(0, 50)}`,
+    ...(b ? { resumeSessionId: b.sessionId } : {}),
+  })
+  await h.start()
+  const sid = h.sessionId ?? ''
+  if (sid) running.set(sid, h)
+  try {
+    const out = await h.runTask({
+      task: msg.text,
+      displayTask: msg.text,
+      ...(st?.messages.length ? { resumeFrom: st.messages } : {}),
+      ...(turns > 1 ? { turnIndex: turns } : {}),
+    })
+    if (sid) setBinding(msg.channel, msg.chatId, { sessionId: sid, turns, updatedAt: new Date().toISOString() })
+    const text = (out.text ?? '').trim()
+    return text || '（这一轮没有输出）'
+  } finally {
+    if (sid) running.delete(sid)
+  }
+}
 
 /**
  * 等人在网页上点「允许/拒绝」的审批。
@@ -811,7 +863,9 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         || Boolean(deviceForToken(given)) || Boolean(deviceForToken(cookie))
       if (!ok) {
         // 只放行「装成 app」需要的静态件，接口一个都不给
-        const open = ['/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/sw.js', '/favicon.ico', '/favicon.png'].includes(url.pathname)
+        // /webhook/ 也要放行：渠道服务器不会带我们的口令，它们各自的验签在 adapter 里
+        const open = url.pathname.startsWith('/webhook/')
+          || ['/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/sw.js', '/favicon.ico', '/favicon.png'].includes(url.pathname)
         if (!open) {
           res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' })
           // 光说「去那台机器上看文件」在手机上没用：手机不是那台机器，
@@ -880,6 +934,70 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' })
       res.end(SERVICE_WORKER)
       return
+    }
+
+    // ---- 渠道：微信 / 企业微信 / 飞书 ------------------------------------
+    // 一个人在一个群里说的话，应该接到同一条 agent 会话上：上下文连续，检查点也连续。
+    // 这些请求来自公网，不可能带本机口令——所以放行到 /webhook/，改由各渠道自己验签。
+    // 验不过一律当「没收到」，回 200 空体：回错误码只会让对方重投，越投越多。
+    if (url.pathname.startsWith('/webhook/')) {
+      const id = url.pathname.slice('/webhook/'.length).split('/')[0] ?? ''
+      const adapter = buildAdapters(readChannels()).find((a) => a.id === id)
+      if (!adapter) { res.writeHead(404, { 'content-type': 'text/plain' }); res.end('no such channel'); return }
+      const body = req.method === 'POST' ? await readBody(req) : ''
+      const query: Record<string, string> = {}
+      url.searchParams.forEach((v, k) => { query[k] = v })
+      const headers: Record<string, string | undefined> = {}
+      for (const [k, v] of Object.entries(req.headers)) headers[k.toLowerCase()] = Array.isArray(v) ? v[0] : v
+      try {
+        const out = await adapter.handle({ method: req.method ?? 'GET', query, body, headers }, {
+          ask: (msg) => askViaChannel(msg),
+          log: (lvl, m) => { if (lvl === 'error') console.error(m); else console.warn(m) },
+        })
+        if (!out) { res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }); res.end(''); return }
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', ...(out.headers ?? {}) })
+        res.end(out.body ?? '')
+      } catch (err) {
+        console.error(`webhook ${id} failed:`, err)
+        res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end('')
+      }
+      return
+    }
+
+    // 渠道配置：设置页要能填、能看到还缺什么。密钥只回「有没有」，不回原文。
+    if (url.pathname === '/api/channels') {
+      if (req.method === 'GET') {
+        const cfg = readChannels()
+        const mask = (v?: string) => (v ? '••••' + v.slice(-4) : '')
+        json(res, 200, {
+          config: {
+            wecom: { corpId: cfg.wecom?.corpId ?? '', agentId: cfg.wecom?.agentId ?? '', hasSecret: Boolean(cfg.wecom?.secret), hasToken: Boolean(cfg.wecom?.token), hasAes: Boolean(cfg.wecom?.encodingAesKey) },
+            feishu: { appId: cfg.feishu?.appId ?? '', hasSecret: Boolean(cfg.feishu?.appSecret), hasVerificationToken: Boolean(cfg.feishu?.verificationToken), hasEncryptKey: Boolean(cfg.feishu?.encryptKey) },
+            weixin: { appId: cfg.weixin?.appId ?? '', baseUrl: cfg.weixin?.baseUrl ?? '', hasSecret: Boolean(cfg.weixin?.appSecret), hasToken: Boolean(cfg.weixin?.token), secretHint: mask(cfg.weixin?.appSecret) },
+          },
+          missing: missingFields(cfg),
+          active: buildAdapters(cfg).map((a) => a.id),
+          webhookBase: 'https://<你的公网地址>/webhook/',
+        })
+        return
+      }
+      if (req.method === 'POST') {
+        const body = JSON.parse(await readBody(req).catch(() => '{}')) as Record<string, Record<string, string> | undefined>
+        const cur = readChannels()
+        const next = { ...cur }
+        // 只覆盖传上来的字段；空串表示「保持原值」（界面上不回显密钥，凑不全会误清）
+        for (const ch of ['wecom', 'feishu', 'weixin'] as const) {
+          const inc = body[ch]
+          if (!inc) continue
+          const merged: Record<string, string> = { ...(cur[ch] as Record<string, string> | undefined) }
+          for (const [k, v] of Object.entries(inc)) if (v !== '') merged[k] = v
+          next[ch] = merged as never
+        }
+        writeChannels(next)
+        json(res, 200, { ok: true, missing: missingFields(next), active: buildAdapters(next).map((a) => a.id) })
+        return
+      }
     }
 
     // ---- 远程访问（配对设备）----
