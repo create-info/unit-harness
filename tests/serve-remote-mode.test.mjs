@@ -66,7 +66,9 @@ test('one port: switching remote access rebinds in place, and off really closes 
     const st0 = await (await fetch(base + '/api/remote')).json()
     assert.equal(st0.mode, 'off')
     assert.equal(st0.loopback, true)
-    assert.deepEqual(st0.urls, [], 'off: 手机没有可用地址')
+    // 「关闭」时列出来的只可能是域名转发那条（https）；不会给裸 IP 端口。
+    // 这台机器上有没有真开 tailscale serve 都不影响这条断言。
+    assert.ok(st0.urls.every((u) => u.startsWith('https://')), 'off: 不给裸 IP 地址，实际是 ' + JSON.stringify(st0.urls))
 
     const lan = lanAddr()
 

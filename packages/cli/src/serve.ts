@@ -897,20 +897,29 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
     if (req.method === 'POST' && url.pathname === '/api/remote/check') {
       const ts = tailscaleState()
       const fail = (step: string, detail: string) => json(res, 200, { ok: false, step, detail })
-      if (remoteMode === 'off') return fail('mode', '远程访问还没打开——上面切到「仅 Tailscale」或「局域网」')
+      // 「关闭」不等于不可用：端口只对本机开着、但 tailscale serve 把域名转发进来，
+      // 是一种更干净的配置（外面连端口的机会都没有）。这种情况不该让人去开端口。
+      const viaServe = ts.state === 'up' && Boolean(ts.serving) && Boolean(ts.host)
+      if (remoteMode === 'off' && !viaServe) {
+        return fail('mode', '远程访问还没打开——上面切到「仅 Tailscale」或「局域网」，或者用 tailscale serve 转发域名')
+      }
       if (ts.state === 'absent') return fail('tailscale', '这台电脑没装 Tailscale')
       if (ts.state === 'logged-out') return fail('tailscale', 'Tailscale 装了但没登录：在电脑上跑 tailscale up')
       if (!ts.ip) return fail('tailscale', '还没拿到 tailnet 地址')
 
       // 端口真在听吗：从自己的 tailnet 地址连一次（走的是同一块网卡，
-      // 能连上说明监听没问题，剩下的问题一定在手机那侧）
-      const portOk = await new Promise<boolean>((resolve) => {
-        const sock = net.connect({ host: ts.ip!, port, timeout: 1500 })
-        sock.once('connect', () => { sock.destroy(); resolve(true) })
-        sock.once('error', () => { sock.destroy(); resolve(false) })
-        sock.once('timeout', () => { sock.destroy(); resolve(false) })
-      })
-      if (!portOk) return fail('port', `端口 ${port} 在 ${ts.ip} 上连不上`)
+      // 能连上说明监听没问题，剩下的问题一定在手机那侧）。
+      // 走域名转发时端口本来就不对外，改成从域名这一侧探——这才是手机会走的路。
+      const portOk = viaServe
+        ? await fetch(`https://${ts.host}/manifest.webmanifest`, { signal: AbortSignal.timeout(4000) })
+          .then((r) => r.ok).catch(() => false)
+        : await new Promise<boolean>((resolve) => {
+          const sock = net.connect({ host: ts.ip!, port, timeout: 1500 })
+          sock.once('connect', () => { sock.destroy(); resolve(true) })
+          sock.once('error', () => { sock.destroy(); resolve(false) })
+          sock.once('timeout', () => { sock.destroy(); resolve(false) })
+        })
+      if (!portOk) return fail('port', viaServe ? `https://${ts.host} 打不开` : `端口 ${port} 在 ${ts.ip} 上连不上`)
 
       const peer = (ts.peers ?? []).find((p) => p.online) ?? (ts.peers ?? [])[0]
       if (!peer) return fail('phone', 'tailnet 里只有这台电脑——手机还没装 Tailscale，或者没登录同一个账号')

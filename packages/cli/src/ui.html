@@ -1949,8 +1949,11 @@ function renderRemote(body){
 
   // 这一页就是一个引导：① 开端口 → ② 电脑装 Tailscale → ③ 手机同账号 →
   // ④ 扫码打开 → ⑤ 测一下。每一步都当场能看到状态，不用去别的窗口猜。
+  const viaServe = ts.state === 'up' && Boolean(ts.serving) && Boolean(ts.host);
   const modes = [
-    ['off', '关闭', '只听本机，手机连不上。'],
+    ['off', '关闭', viaServe
+      ? '只对本机开端口，手机经 ' + (ts.host || '') + ' 转发进来——外面连端口的机会都没有，最稳。'
+      : '只听本机，手机连不上。'],
     ['tailnet', '仅 Tailscale', '跨网络可用；同一个 Wi-Fi 外的机器即使能连到端口也进不来。'],
     ['lan', '局域网', '同一个 Wi-Fi 下就能连，最快；同网段的机器也能连（仍需口令）。'],
   ];
@@ -1965,8 +1968,9 @@ function renderRemote(body){
   }
 
   const steps = [];
-  steps.push(srow('① 打开远程访问（端口 ' + R.port + '）',
-    modes.find((m) => m[0] === mode)?.[2] || '', seg));
+  const step1 = srow('① 打开远程访问（端口 ' + R.port + '）',
+    modes.find((m) => m[0] === mode)?.[2] || '', seg);
+  steps.push(step1);
   steps.push(srow('② 这台电脑的 Tailscale',
     ts.state === 'up'
       ? (ts.ip || '') + (ts.host ? ' · ' + ts.host : '')
@@ -1982,7 +1986,7 @@ function renderRemote(body){
 
   // ④ 地址：手机照着敲不现实，所以给复制和扫码
   if (urls.length) {
-    const full = urls[0] + '/?t=' + encodeURIComponent(R.token || '');
+    const full = urls[0] + '/?t=' + encodeURIComponent(R.token || '');  // 有域名时 urls[0] 就是 https 域名
     const box = document.createElement('div');
     box.className = 'surl';
     box.innerHTML = '<code>' + esc(full) + '</code>';
