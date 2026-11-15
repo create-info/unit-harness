@@ -197,6 +197,17 @@
   .smore::before{content:'';width:2px;height:2px;border-radius:50%;background:currentColor;
     box-shadow:4px 0 0 currentColor,8px 0 0 currentColor}
   .smore:hover{background:var(--hover);color:var(--fg)}
+  /* 空状态：新会话原来是一整块白板，用户不知道能干什么 */
+  .welcome{max-width:640px;margin:clamp(44px,12vh,120px) auto 0;padding:0 8px;text-align:center}
+  .wtitle{font-family:var(--sans);font-size:19px;font-weight:600;color:var(--fg);letter-spacing:-.01em}
+  .wsub{margin-top:9px;font-size:12.5px;color:var(--dim);line-height:1.8}
+  .wsub code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size:12px}
+  .wchips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:20px}
+  .wchip{appearance:none;border:1px solid var(--line);background:transparent;color:var(--fg);
+    font-family:var(--sans);font-size:12.5px;padding:7px 13px;border-radius:99px;cursor:pointer;
+    transition:border-color .12s,color .12s,transform .12s}
+  .wchip:hover{border-color:var(--accent);color:var(--accent);transform:translateY(-1px)}
+  .wchip.ghost{border-style:dashed;color:var(--dim)}
   /* 右边给「…」留出位置，否则长标题会从按钮底下钻出来一截 */
   .sess{position:relative;padding-right:24px}
   /* 会话是两行（标题 + 时间），居中的话三个点会停在两行之间的缝里；
@@ -205,7 +216,15 @@
   .sess:hover .smore,.sess .smore:focus{display:flex}
   @media (hover:none){ .sess .smore{display:flex} }
   .sess .pin{font-size:9px;opacity:.8}
-  .grphead{position:relative}
+  /* 项目头吸顶。
+     #sessions 里只有一个项目的会话是展开的时，别的项目会被推到 30 条会话之后
+     （实测 unit-harness / TEST / Codex 都在 y≈1674，要滚过整屏才看得见）。
+     吸顶至少保证：滚动时始终知道自己在哪个项目、并且上一/下一个项目就在手边。 */
+  .grphead{position:sticky;top:0;z-index:3;background:var(--panel);border-radius:0}
+  /* 吸顶时下沿压住滚过去的会话，不然字会从行间透出来 */
+  .grphead::after{content:'';position:absolute;left:8px;right:8px;bottom:-1px;height:1px;
+    background:linear-gradient(var(--line),transparent);opacity:0;transition:opacity .12s}
+  .grphead.stuck::after{opacity:1}
   /* 跟会话行一个规矩：不悬停就不出现。之前这里没写 display:none，
      于是每个项目名右侧都挂着一个「…」，把本来就不宽的名字挤掉半截。 */
   .grphead .smore.pm{position:absolute;right:2px;top:50%;transform:translateY(-50%)}
@@ -883,6 +902,16 @@ function followTail(force){
   });
 }
 
+// 项目头吸顶后需要知道自己「被吸住了」，否则下沿会和滚过去的会话糊在一起
+const sessionsEl = $('#sessions');
+if (sessionsEl){
+  sessionsEl.addEventListener('scroll', () => {
+    for (const g of sessionsEl.querySelectorAll('.grphead')){
+      g.classList.toggle('stuck', g.getBoundingClientRect().top <= sessionsEl.getBoundingClientRect().top + 1);
+    }
+  }, { passive: true });
+}
+
 logEl.addEventListener('scroll', () => {
   FOLLOW = atBottom();
   $('#jump')?.classList.toggle('on', !FOLLOW);
@@ -906,7 +935,7 @@ setTimeout(() => {
 }, 0);
 
 // 文本是逐字进来的，Observer 会连着触发很多次；rAF 里已做去重
-new MutationObserver(() => followTail()).observe(logEl, { childList: true, subtree: true, characterData: true });
+new MutationObserver(() => { followTail(); syncWelcome(); }).observe(logEl, { childList: true, subtree: true, characterData: true });
 /** 这次跑出来的交付物，过程流里只显示一个计数，靠它攒 */
 let ARTIFACTS = [];
 let es = null, started = Date.now(), firstTs = 0, lastTs = 0;
@@ -1114,8 +1143,8 @@ async function loadProjects(){
       const pin = s.pinned ? '<span class="pin">📌</span> ' : '';
       d.innerHTML = '<b>' + live + pin + esc(s.label || s.id) + '</b>'
         + (s.running ? '<span class="live"><span class="rdot"></span>running</span> · ' : '')
-        + esc(relTime(s.created)) + ' · ' + s.events + ' events';
-      d.title = (s.label || s.id) + '\n' + s.created + ' · ' + s.events + ' events';
+        + esc(relTime(s.created)) + ' · ' + s.events + ' 步';
+      d.title = (s.label || s.id) + '\n' + s.created + ' · ' + s.events + ' 步';
       d.onclick = (e) => { if (!e.target.closest('.smore')) openSession(s.id) };
 
       // Codex 的列表也是这样：鼠标停在一条上，右边冒出「…」，点开才看见
@@ -1489,10 +1518,9 @@ async function loadSettings(){
   $('#mpWork').textContent = home && ws.startsWith(home) ? '~' + ws.slice(home.length) : ws;
   $('#mpWork').title = ws;
   paintApproval(SETTINGS.approval || 'ask');
-  // 手机上输入框只有 180pt 宽，长占位提示会被切在半句上，看着像坏了
-  $('#task').placeholder = ph(
-    'Describe the task. It runs in a sandbox; the workspace is ' + SETTINGS.workspace,
-    'Describe the task…');
+  // 占位只留一句话。工作区、沙箱、审批模式底栏都写着，占位里再讲一遍，
+  // 窄屏上会被切在半句中间，看着像坏了。
+  $('#task').placeholder = ph('描述要做的事，Enter 发送 / Shift+Enter 换行', '描述要做的事…');
 }
 
 /* ---- 打开项目：弹窗 + 本地目录浏览（参考 Codex 的新建/切换项目）----------
@@ -1813,6 +1841,52 @@ $('#stopBtn').addEventListener('click', () => { void stopRun() });
  * 「新对话」和「接着这条会话说」是两件事，界面上必须区分得开：不清 id 的话，
  * 下一句话会续进旧会话，用户以为从零开始，其实模型还记着上文。
  */
+/**
+ * 空状态。
+ *
+ * 原来新开的会话是一整块空白 + 一个只有占位符的输入框：用户不知道「它能做什么」，
+ * 也不知道「该怎么说」。Codex 在这里放的是入口建议，点一下词就进输入框。
+ * 这里只做同一件事：说明白这个仓库能干什么，并给出可以直接改的四个说法。
+ */
+const WELCOME_SUGGEST = [
+  ['看看这个项目', '看一下这个项目是做什么的，用几句话说明它的结构和入口'],
+  ['找一个问题', '通读代码，找出最应该先修的一处问题，说清理由'],
+  ['补一组测试', '给核心模块补一组能真正跑起来的测试，并跑给我看'],
+  ['解释这个报错', '']
+];
+
+function syncWelcome(){
+  const w = logEl.querySelector('.welcome');
+  // 有会话、或者屏幕已经有内容了，欢迎页就没有意义
+  if (CURRENT_SID || [...logEl.children].some((e) => !e.classList.contains('welcome'))) {
+    if (w) w.remove();
+    return;
+  }
+  if (w) return;
+  const host = document.createElement('div');
+  host.className = 'welcome';
+  const ws = SETTINGS.workspace || '';
+  const home = (window.INFO && window.INFO.userHome) || '';
+  const short = home && ws.startsWith(home) ? '~' + ws.slice(home.length) : ws;
+  host.innerHTML = '<div class="wtitle">要做什么？</div>'
+    + '<div class="wsub">它在这个目录里跑，动手之前会问你要不要批准：<code>' + esc(short) + '</code></div>'
+    + '<div class="wchips">'
+    + WELCOME_SUGGEST.map((s, i) => '<button class="wchip' + (s[1] ? '' : ' ghost') + '" data-i="' + i + '">'
+        + esc(s[0]) + '</button>').join('')
+    + '</div>';
+  host.addEventListener('click', (e) => {
+    const b = e.target.closest('.wchip');
+    if (!b) return;
+    const s = WELCOME_SUGGEST[Number(b.dataset.i)];
+    if (!s) return;
+    // 没有具体说法的那条只是提示：把光标放进输入框，让用户自己把报错贴上来
+    $('#task').value = s[1];
+    $('#task').focus();
+    $('#task').dispatchEvent(new Event('input'));
+  });
+  logEl.appendChild(host);
+}
+
 function startNewTask(){
   if (es){ es.close(); es = null; }
   CURRENT_SID = '';
@@ -1824,6 +1898,7 @@ function startNewTask(){
   firstTs = 0;
   runGrp = null;
   sawText = false;
+  syncWelcome();
   setRunning(false);
   paintQueueState();
 }
@@ -4238,13 +4313,13 @@ function setRunning(on){
   $('#go').style.display = '';
   $('#stopBtn').style.display = on ? '' : 'none';
   $('#task').disabled = false;
+  // 三个状态三种说法：跑着的时候是插话，接过一条会话是续聊，都没开是新任务。
+  // 之前这三句是英文，界面其余部分是中文，看着像两套东西拼的。
   $('#task').placeholder = on
-    ? ph('Add a note mid-run — it lands at the next step', 'Note to add…')
+    ? ph('跑着的时候也能插话，会在下一步生效', '插一句…')
     : (CURRENT_SID
-        // 多轮：同一句话在"新任务"和"接着说"里意思完全不同，占位提示要说清楚
-        ? ph('Say what to change — this continues the conversation above', 'Say what to change…')
-        : ph('Describe the task. It runs in a sandbox; every write is logged and undoable.',
-             'Describe the task…'));
+        ? ph('接着说，会续在这条会话里', '接着说…')
+        : ph('描述要做的事', '描述要做的事…'));
   if (!on) clearQueue();
   paintQueueState();
 }
@@ -4632,7 +4707,7 @@ async function openSession(id){
   for (const el of document.querySelectorAll('.sess')) el.classList.remove('active');
   // 打开一条会话 = 接下来是在跟它说话，输入框的提示要跟着改，
   // 否则用户会以为再发一句是「新任务」
-  $('#task').placeholder = 'Say what to change — this continues the conversation above';
+  $('#task').placeholder = '接着说，会续在这条会话里';
   // 屏幕上已经有全部历史，所以不 clear；用 lastSeq 当游标接实时流，
   // 快照与连接之间的那几条会被服务端补上（正是「切回来发现少了一截」的缺口）
   const lastSeq = typeof detail.lastSeq === 'number'
@@ -4749,7 +4824,10 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
   if ((SETTINGS.ui || {}).mode === 'system') applyUi(SETTINGS.ui);
 });
 
-boot();
+// boot 会去拉设置、拉会话列表，中途还会清一次 #log；等它 settle 再画欢迎页，
+// 否则刚画上去就被清掉。没有任何事件进来时 logEl 也不会被 mutate，
+// MutationObserver 同样等不到它。
+boot().then(() => syncWelcome()).catch(() => syncWelcome());
 restorePending();
 
 // 注册 service worker：手机浏览器只有见到它，「添加到主屏幕」才会升级成真正的安装。
