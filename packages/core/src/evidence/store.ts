@@ -355,4 +355,28 @@ export class EventStore {
     this.append(sessionId, 'session/end', { reason }, { source: 'agent' })
     this.writeMeta({ ...this.get(sessionId)!, status: 'ended', updated_at: now() })
   }
+
+  /**
+   * 进程启动时收尾：把"上次是活的、现在没人在跑"的会话标成 ended。
+   *
+   * 会话的 active 是写在 meta.json 上的，而进程被杀（`--force` 重启、关机、
+   * crash）时没人来得及写 ended，于是它们永远是 active。这不只是个标签问题：
+   * `list()` 拿 active 当"正在跑"，左栏会显示一圈永远转着的会话，点进去
+   * 一条事件也没有——用户看到的就是"卡住了，什么都没有"。
+   *
+   * 只动 meta，不往 events.jsonl 里补一条假的 session/end：那会让"这条会话
+   * 是怎么结束的"变成编的。时间戳说真话就够了。
+   *
+   * @returns 被收尾的会话 id
+   */
+  endInterrupted(): string[] {
+    const out: string[] = []
+    for (const s of this.list({ limit: 2000 })) {
+      if (s.status !== 'active') continue
+      const next: SessionMeta = { ...(this.get(s.id) as SessionMeta), status: 'ended', updated_at: now() }
+      this.writeMeta(next)
+      out.push(s.id)
+    }
+    return out
+  }
 }

@@ -758,7 +758,10 @@ function collectSessions(workspace?: string): Array<{ id: string; label: string;
         label: s.label ?? '(untitled)',
         created: localStamp(s.created_at),
         events: s.last_seq,
-        status: s.status,
+        // meta 上的 active 只说明"上次进程退出时它还是活的"。真正的判据是
+        // 这个进程里有没有人在跑它——否则重启之后每一条旧会话都挂着一个
+        // 永远转不完的圈，点进去空空的。
+        status: running.has(s.id) ? 'active' : (s.status === 'failed' ? 'failed' : 'ended'),
         workspace: (s as { workspace?: string }).workspace ?? '',
       }))
   } catch {
@@ -3066,6 +3069,13 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
   })
 
   await listenOnce()
+
+  // 收尾上次进程没来得及结束的会话：`--force` 重启、关机、crash 都是这样。
+  // 放在监听之后做，是因为它要扫一遍全部会话目录，不该挡住端口可用。
+  try {
+    const swept = new EventStore().endInterrupted()
+    if (swept.length) console.log(`[uh] closed ${swept.length} session(s) left open by a previous process`)
+  } catch { /* 会话目录不可读不该拖垮服务启动 */ }
 
   /**
    * 换绑定地址。

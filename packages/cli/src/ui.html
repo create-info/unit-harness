@@ -1056,6 +1056,8 @@ function waitSid(ms){
 /** 这条 SSE 现在挂在哪条会话上。CURRENT_SID 是"下一句续到哪"，两者必须分开：
  *  打开一条历史会话时它们是同一个，但换项目/点新对话时流要先关掉。 */
 let STREAM_SID = '';
+/** 断流后那个"去看看它还在不在跑"的定时器。只留一个，否则每次断都排一个。 */
+let RECONNECT_T = null;
 
 /**
  * 「工作区有外部改动」的小条。
@@ -5285,7 +5287,27 @@ function attach(id, opts){
                       'turn/end','assistant/message','answer','deliverables','done','error','budget/warning','budget/exceeded','fs/changed']){
     es.addEventListener(kind, (e) => render(kind, JSON.parse(e.data)));
   }
-  es.onerror = () => { /* the browser retries */ };
+  /**
+   * 断了。
+   *
+   * 最常见的成因不是网络，是**服务重启了**（`uh serve --force`、重编译、机器重启）。
+   * 浏览器会自己重连，但重连上来是一条新的流，界面上那个「运行中」的状态
+   * 没有任何人去纠正它——看起来就是「卡住不动了，什么都没有」。
+   * 所以断流一会儿之后问一次服务端：它还在跑吗？不在了就把状态收掉，
+   * 并刷新会话列表，别让左栏挂着永远转着的圈。
+   */
+  es.onerror = () => {
+    if (RECONNECT_T) return;
+    RECONNECT_T = setTimeout(async () => {
+      RECONNECT_T = null;
+      try {
+        const d = await (await fetch('/api/session/' + encodeURIComponent(id))).json();
+        if (!d || d.error) return;             // 连不上就等浏览器自己重试
+        if (!d.running) setRunning(false);     // 服务端已经没有这条在跑了
+        void loadProjects();                   // 左栏的 running 点是启动时拉的，已经过期
+      } catch { /* 服务真的没起来，等下一轮 */ }
+    }, 1500);
+  };
 }
 
 /**
