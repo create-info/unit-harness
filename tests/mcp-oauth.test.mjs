@@ -15,8 +15,12 @@ import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const here = fileURLToPath(new URL('..', import.meta.url))
 
-// token 落在 uhHome() 下，先隔离
-const tmpHome = mkdtempSync(join(tmpdir(), 'uh-oauth-'))
+import { tmpHome as mkTmpHome } from './helpers/tmp.mjs'
+
+// token 落在 uhHome() 下，先隔离。
+// 目录由 helper 在文件跑完后统一删除——之前这个目录从来没被清理过，
+// 每跑一次全量就在 /tmp 里留一个 uh-oauth-xxxx。
+const tmpHome = mkTmpHome('uh-oauth-')
 process.env.UH_HOME = tmpHome
 
 const oauth = await import(

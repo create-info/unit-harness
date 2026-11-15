@@ -864,6 +864,34 @@ function mcpCount(st: { tools?: number; prompts?: number; resources?: number }):
   return bits.join(' + ')
 }
 
+/**
+ * 按终端宽度折行；拿不到宽度就按 100 列。
+ *
+ * 长描述本身是有用的信息（准入条件、返回什么、跑在哪），截到 100 字
+ * 会让人以为模型也只拿到半句。这里只折行，不删字。
+ */
+function padText(text: string, indent = '      '): string {
+  return wrapLines(text).join('\n' + indent)
+}
+
+/** 只算折行，不加缩进——调用方要自己控制每一行（首行也要缩进） */
+function wrapLines(text: string): string[] {
+  const width = Math.max(60, (process.stdout.columns ?? 100) - 10)
+  const lines: string[] = []
+  let cur = ''
+  for (const w of text.split(' ')) {
+    if (cur && cur.length + w.length + 1 > width) { lines.push(cur); cur = w } else cur = cur ? cur + ' ' + w : w
+  }
+  if (cur) lines.push(cur)
+  // 中文没有空格，长句挤在一行会顶出边界；按列硬切
+  const out: string[] = []
+  for (const l of lines) {
+    if (l.length <= width) { out.push(l); continue }
+    for (let i = 0; i < l.length; i += width) out.push(l.slice(i, i + width))
+  }
+  return out
+}
+
 async function cmdMcp(sub?: string, rest: string[] = []): Promise<void> {
   if (sub === 'add') {
     const name = rest[0]
@@ -928,9 +956,20 @@ async function cmdMcp(sub?: string, rest: string[] = []): Promise<void> {
           }
         } else {
           console.log(`✓ ${n}  (${st.transport})  ${mcpCount(st)}`)
+          // 描述整段打出来，不再截到 100 字。
+          // 截图里那些「…（r」不是被服务端截断的——工具描述原样进了模型上下文，
+          // 这里只是终端显示；但只给前半句，会让人以为模型也只拿到半句。
+          const stub = '[MCP:' + n + '] '
           for (const t of reg.tools) {
+            const body = (t.description ?? '').replace(/\s+/g, ' ').trim()
+            // 前缀 `[MCP:unitai] ` 每个工具都重复，单独占一行，正文从同一列开始，
+            // 扫一眼就能对上行。折行算的是「去掉前缀之后的正文」。
+            const same = body.startsWith(stub)
+            const text = same ? body.slice(stub.length) : body
             console.log(`    ${t.name}`)
-            if (t.description) console.log(`        ${t.description.slice(0, 100)}`)
+            if (!body) continue
+            if (same) console.log('      ' + stub.trimEnd())
+            console.log(wrapLines(text).map((l) => '      ' + l).join('\n'))
           }
         }
       } finally {

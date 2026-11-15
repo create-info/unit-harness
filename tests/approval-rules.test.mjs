@@ -12,12 +12,15 @@ import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
 
+import { tmpHome as makeTmp } from './helpers/tmp.mjs'
+
 const here = path.dirname(fileURLToPath(import.meta.url))
 
 // 规则文件落在 uhHome() 下，动手前先把 HOME 指到临时目录，
 // 否则测试会往用户真实的 ~/.uh/approval-rules.json 里写东西
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'uh-rules-'))
-process.env.UH_HOME = tmpHome
+// 清理交给 helper：跑完自动删，不用每个用例记得写 finally
+const home = makeTmp('uh-rules-')
+process.env.UH_HOME = home
 
 const rulesMod = await import(
   pathToFileURL(path.join(here, '..', 'packages', 'core', 'src', 'approval', 'rules.ts')).href
@@ -182,7 +185,7 @@ test('a rule can be forgotten', () => {
 })
 
 test('a corrupt rules file degrades to "ask every time" instead of throwing', () => {
-  fs.writeFileSync(path.join(tmpHome, 'approval-rules.json'), '{not json')
+  fs.writeFileSync(path.join(home, 'approval-rules.json'), '{not json')
   assert.deepEqual(loadRules(), [])
   // 而且还能重新写回一份好的
   addRule(['npm', 'test'], '/p')
@@ -190,6 +193,6 @@ test('a corrupt rules file degrades to "ask every time" instead of throwing', ()
 })
 
 test('the rules file is not world-readable', { skip: process.platform === 'win32' }, () => {
-  const mode = fs.statSync(path.join(tmpHome, 'approval-rules.json')).mode & 0o777
+  const mode = fs.statSync(path.join(home, 'approval-rules.json')).mode & 0o777
   assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`)
 })

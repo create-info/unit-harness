@@ -589,6 +589,33 @@ function collectSessions(workspace?: string): Array<{ id: string; label: string;
   }
 }
 
+/**
+ * 口令页。
+ *
+ * 之前这里只有一句「口令在启动它的那台机器上：~/.uh/serve-token」——
+ * 在电脑上开到 0.0.0.0 之后用 127.0.0.1 打开，会看到这句话；手机上也一样。
+ * 但手机用户既拿不到那台机器的终端，也不该为了看一眼界面去敲一条 URL。
+ * 所以给一个能输入口令的表单：POST /__unlock 种 cookie 然后回到原来那页。
+ */
+function unlockPage(host: string): string {
+  return '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
+    + '<title>UnitHarness · 口令</title>'
+    + '<body style="background:#0b0b0d;color:#e6e6e6;font:15px system-ui;padding:32px;line-height:1.7;max-width:560px;margin:0 auto">'
+    + '<h2 style="font-weight:600">需要口令</h2>'
+    + '<p style="color:#9a9aa5">这个 uh 监听在 ' + host + '，同一网络里谁都能连到这个端口，所以要先证明是你。</p>'
+    + '<p style="color:#9a9aa5">口令在启动它的那台机器上：<code>~/.uh/serve-token</code>。'
+    + '手机上不方便看文件？在电脑上跑 <code>uh pair --name &quot;我的手机&quot;</code>，扫它给的码也行。</p>'
+    + '<form method="POST" action="/__unlock" style="margin-top:24px">'
+    + '<input name="t" autocomplete="off" spellcheck="false" placeholder="粘贴口令" '
+    + 'style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:10px;border:1px solid #2a2a32;'
+    + 'background:#15151a;color:#e6e6e6;font:15px ui-monospace,monospace">'
+    + '<button type="submit" style="margin-top:12px;width:100%;padding:12px;border-radius:10px;border:0;'
+    + 'background:#7c5cff;color:#fff;font:15px system-ui;font-weight:600">进入</button>'
+    + '</form>'
+    + '<p style="color:#6a6a75;font-size:13px;margin-top:20px">输入一次，浏览器会记住一年。'
+    + '口令只存在你这台设备的 cookie 里。</p></body>'
+}
+
 export async function startServer(opts: ServeOptions = {}): Promise<{ url: string; close: () => void }> {
   const port = opts.port ?? 7878
   const host = opts.host ?? '127.0.0.1'
@@ -599,6 +626,25 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${host}:${port}`)
+
+    // 口令页的表单提交口，必须在鉴权之前处理——否则「进来要口令、交口令
+    // 也要口令」，自己把自己锁在门外。
+    if (req.method === 'POST' && url.pathname === '/__unlock') {
+      const form = new URLSearchParams(await readBody(req))
+      const tried = (form.get('t') ?? '').trim()
+      const good = (Boolean(token) && safeEqual(tried, token)) || Boolean(deviceForToken(tried))
+      if (!good) {
+        res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' })
+        res.end(unlockPage(host).replace('placeholder="粘贴口令"', 'placeholder="口令不对，再试一次"'))
+        return
+      }
+      res.writeHead(303, {
+        location: '/',
+        'set-cookie': `uh_t=${encodeURIComponent(tried)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=31536000`,
+      })
+      res.end()
+      return
+    }
 
     if (token) {
       const given = url.searchParams.get('t')
@@ -614,10 +660,10 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         const open = ['/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/sw.js', '/favicon.ico', '/favicon.png'].includes(url.pathname)
         if (!open) {
           res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' })
-          res.end('<!doctype html><meta charset="utf-8"><body style="background:#0b0b0d;color:#e6e6e6;font:15px system-ui;padding:40px">'
-            + '<h2>需要一个口令</h2><p>这个 uh 监听在 ' + host + '，不是只有你能访问的地址。</p>'
-            + '<p>口令在启动它的那台机器上：<code>~/.uh/serve-token</code>。'
-            + '打开 <code>/?t=&lt;口令&gt;</code> 即可，之后浏览器会记住。</p></body>')
+          // 光说「去那台机器上看文件」在手机上没用：手机不是那台机器，
+          // 人在手机上也没法 cat。所以这一页要能直接输口令，输一次就记住。
+          // 口令仍然不打在页面上（页面可能被投屏、被截图），只给输入框。
+          res.end(unlockPage(host))
           return
         }
       } else if (given && !cookie) {
@@ -1029,7 +1075,10 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
 
       json(res, 200, {
         mcp: Object.entries(mcp.servers).map(([name, cfg]) => ({
-          id: name,
+          // id 必须是「关它的时候写进配置的那个 key」，带前缀。
+          // 之前这里给的是裸名字，前端把裸名字发回 /toggle，写进去一条
+          // `unitai`，而读取时问的是 `mcp:unitai` —— 于是开关怎么点都弹回原位。
+          id: 'mcp:' + name,
           name,
           // stdio 说命令，http 说地址——"它到底是什么"要在列表里看得见
           command: cfg.command ? [cfg.command, ...(cfg.args ?? [])].join(' ') : '',
@@ -1038,7 +1087,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
           enabled: !disabled.has('mcp:' + name),
         })),
         skills: skills.map((s) => ({
-          id: s.name,
+          id: 'skill:' + s.name,
           name: s.name,
           description: s.description ?? '',
           allowedTools: s.allowedTools ?? [],
@@ -1064,6 +1113,12 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     if (req.method === 'POST' && url.pathname === '/api/plugins/toggle') {
       const body = JSON.parse(await readBody(req) || '{}') as { id?: string; enabled?: boolean }
       if (!body.id) { json(res, 400, { error: 'id required' }); return }
+      // 只收带前缀的 id：裸名字写进去不会生效，而「关掉了却还在跑」
+      // 比报错更难查，所以宁可当场拒绝
+      if (!/^(mcp|skill|hook):/.test(body.id)) {
+        json(res, 400, { error: 'id must look like mcp:<name>, skill:<name> or hook:<event>' })
+        return
+      }
       const cfg = readConfig()
       const set = new Set(cfg.disabledPlugins ?? [])
       if (body.enabled === false) set.add(body.id)

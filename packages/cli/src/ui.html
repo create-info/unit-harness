@@ -1835,10 +1835,22 @@ function renderSettings() {
           + '<span class="ptxt"><b>' + esc(r.name) + '</b><i>' + esc(r.desc) + '</i></span>'
           + '<span class="ptag">' + esc(r.tag) + '</span></div>');
         row.appendChild(toggle(r.enabled, async (on) => {
-          await fetch('/api/plugins/toggle', {
-            method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ id: r.id, enabled: on }),
-          });
+          // 开关失败必须说出来。之前这里不看返回值：服务端 400、写错 key、
+          // 或者列表用另一套 id，界面都一样——点一下弹回去，像是鼠标坏了。
+          try {
+            const res = await fetch('/api/plugins/toggle', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ id: r.id, enabled: on }),
+            });
+            if (!res.ok) {
+              const j = await res.json().catch(() => ({}));
+              setMsg('没改成：' + (j.error || res.status));
+            } else {
+              setMsg(on ? r.name + ' 已启用' : r.name + ' 已停用（下一轮生效）');
+            }
+          } catch (e) {
+            setMsg('没改成：' + (e && e.message ? e.message : String(e)));
+          }
           await loadPlugins();
           renderSettings();
         }));

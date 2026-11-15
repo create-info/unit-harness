@@ -91,6 +91,15 @@ export function readConfig(): UhConfig {
       // 与其每加一个设置就记得改这行，不如把"未知字段"原样留着——
       // 老版本读新文件时不该把它不认识的东西删掉。
       ...(parsed.ui && typeof parsed.ui === 'object' ? { ui: parsed.ui } : {}),
+      // 只认带前缀的 id。早先开关写错过一次，配置里留下一条裸名字 `unitai`——
+      // 它永远匹配不上 `mcp:unitai`，留着只会让人以为「这东西关不掉」。
+      ...(Array.isArray(parsed.disabledPlugins)
+        ? {
+            disabledPlugins: parsed.disabledPlugins.filter(
+              (x): x is string => typeof x === 'string' && /^(mcp|skill|hook):/.test(x),
+            ),
+          }
+        : {}),
     }
   } catch {
     return { providers: {} }
