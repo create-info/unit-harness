@@ -62,7 +62,7 @@ export interface AgentDeps {
     kind:
       | 'turn/start' | 'turn/end' | 'step/start' | 'step/end' | 'plan/updated'
       | 'assistant/message'
-      | 'tool/call' | 'tool/result' | 'session/compacted' | 'steering/message'
+      | 'tool/call' | 'tool/result' | 'tool/output' | 'session/compacted' | 'steering/message'
       | 'budget/warning' | 'budget/exceeded',
     payload: Record<string, unknown>,
   ) => string | null
@@ -437,7 +437,14 @@ export async function runAgent(
       name === 'search_images'
     let callEvId: string | null = null
     if (needsOwnEvent) {
-      callEvId = deps.ev('tool/call', { tool: name, args_preview: String(call.function.arguments).slice(0, 200) })
+      // args 是完整参数（页面点开看「它拿什么去调」），args_preview 留给
+      // 一行式摘要。两者都存：只留 200 字预览的话，参数一多就只剩半截 JSON。
+      const rawArgs = String(call.function.arguments || '')
+      callEvId = deps.ev('tool/call', {
+        tool: name,
+        args_preview: rawArgs.slice(0, 200),
+        args: rawArgs.slice(0, 4000),
+      })
     }
     const finish = (status: 'ok' | 'error', detail?: Record<string, unknown>): void => {
       if (needsOwnEvent) {
@@ -771,12 +778,30 @@ export async function runAgent(
     const patches = res.toolCalls.map((c, i) => ({ c, i })).filter((x) => x.c.function.name === 'apply_patch')
     const others = res.toolCalls.map((c, i) => ({ c, i })).filter((x) => x.c.function.name !== 'apply_patch')
 
-    if (others.length > 1) {
-      await Promise.all(others.map(async ({ c, i }) => { outcomes[i] = await execOne(c) }))
-    } else {
-      for (const { c, i } of others) outcomes[i] = await execOne(c)
+    // 跑完补一条 tool/output：页面点开结果那行就能看到工具真正返回了什么。
+    // 只进事件日志、不进模型消息流（messages 里已经有一条 tool 消息了），
+    // 所以多这一条不会让模型多读一遍。
+    const runOne = async (c: ToolCall): Promise<string> => {
+      const out = await execOne(c)
+      // 事件里的工具名不一定等于模型看到的工具名：run_command 在审计里叫
+      // `exec`（它跑的是沙箱 exec）。两条都用同一个 key，界面才能把返回
+      // 挂到对应的那一行上；挂不上就只剩一个「参数」，看不到结果。
+      const key = c.function.name === 'run_command' ? 'exec' : c.function.name
+      deps.ev('tool/output', {
+        tool: key,
+        name: c.function.name,
+        output: String(out ?? '').slice(0, 8000),
+        truncated: String(out ?? '').length > 8000,
+      })
+      return out
     }
-    for (const { c, i } of patches) outcomes[i] = await execOne(c)
+
+    if (others.length > 1) {
+      await Promise.all(others.map(async ({ c, i }) => { outcomes[i] = await runOne(c) }))
+    } else {
+      for (const { c, i } of others) outcomes[i] = await runOne(c)
+    }
+    for (const { c, i } of patches) outcomes[i] = await runOne(c)
 
     for (let i = 0; i < res.toolCalls.length; i++) {
       messages.push({ role: 'tool', tool_call_id: (res.toolCalls[i] as ToolCall).id, content: clip(outcomes[i] as string) })

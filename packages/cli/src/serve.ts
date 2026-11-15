@@ -688,7 +688,9 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     }
 
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+      // 这一页会跟着每次 build 变。不设 no-store 的话，手机上「添加到主屏幕」
+      // 之后拿到的是旧页面，改了界面也看不见，还得手动清缓存。
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       res.end(UI)
       return
     }

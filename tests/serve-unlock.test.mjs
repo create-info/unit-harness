@@ -12,11 +12,25 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import net from 'node:net'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const CLI = join(process.cwd(), 'dist', 'uh.cjs')
+
+/** 真找一个空端口：写死 8100+random 会撞上别的测试、别的进程（这台机器上
+ *  8105 就长期被另一个服务占着），一撞就是 12 秒超时，看起来像代码坏了 */
+async function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer()
+    s.once('error', reject)
+    s.listen(0, '127.0.0.1', () => {
+      const port = s.address().port
+      s.close(() => resolve(port))
+    })
+  })
+}
 
 async function waitUp(port) {
   for (let i = 0; i < 80; i++) {
@@ -31,7 +45,7 @@ async function waitUp(port) {
 
 test('the lock page takes a password in a form, and remembers it as a cookie', async () => {
   const home = mkdtempSync(join(tmpdir(), 'uh-unlock-'))
-  const port = 8100 + Math.floor(Math.random() * 60)
+  const port = await freePort()
   const child = spawn(process.execPath, [CLI, 'serve', '--port', String(port), '--lan'], {
     env: { ...process.env, UH_HOME: home, NO_COLOR: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],

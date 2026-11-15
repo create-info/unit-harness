@@ -18,7 +18,10 @@ export const SESSION_KINDS = [
   'steering/message', 'steering/withdrawn',
   'assistant/chunk', 'assistant/message',
   'llm/request', 'llm/response',
-  'tool/call', 'tool/result',
+  // tool/output 是工具真正返回的内容：过程行点开能看到「它拿什么调的、
+  // 又拿回了什么」。和 tool/result 分开，是因为 result 是结论（ok/error），
+  // output 可能很长，界面上要不要展开由用户决定。
+  'tool/call', 'tool/result', 'tool/output',
   'artifact/emitted',
   'plan/updated',
   'verification/asserted',

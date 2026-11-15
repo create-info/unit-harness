@@ -135,3 +135,33 @@ function sessionDirOf(home) {
   }
   return dir
 }
+
+test('every tool call leaves a tool/output event with what the tool actually returned', async () => {
+  // 过程行点开看到的是「参数 + 输出」。输出不在 tool/result 里（那只是 ok/error），
+  // 所以必须有一条独立的 tool/output，否则界面上永远只有参数、没有结果。
+  const seen = []
+  const server = startMock(seen, ['echo', 'hello-from-mock'])
+  await new Promise((r) => server.listen(0, '127.0.0.1', r))
+  const port = server.address().port
+  const home = mkdtempSync(join(tmpdir(), 'uh-test-'))
+
+  try {
+    await runCli(
+      ['run', 'say hello', '--base-url', `http://127.0.0.1:${port}/v1`, '--model', 'mock', '--max-steps', '3'],
+      { UH_HOME: home },
+    )
+
+    const evs = readFileSync(join(sessionDirOf(home), 'events.jsonl'), 'utf8')
+      .trim().split('\n').map((l) => JSON.parse(l))
+    const outs = evs.filter((e) => e.kind === 'tool/output')
+    assert.equal(outs.length, 1, 'one tool/output per tool call')
+    const p = outs[0].payload
+    // run_command 在审计事件里叫 exec：界面按这个名字把输出挂回结果行
+    assert.equal(p.tool, 'exec', 'run_command reports as exec so the UI can match rows')
+    assert.equal(p.name, 'run_command', 'the model-facing name rides along')
+    assert.match(String(p.output), /hello-from-mock/, 'the actual output is in the event')
+  } finally {
+    server.close()
+    rmSync(home, { recursive: true, force: true })
+  }
+})

@@ -200,6 +200,9 @@
   .think .hd{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:11px;cursor:pointer;user-select:none;margin-bottom:3px}
   .think.fold .bd{display:none}
   .say{background:var(--hover);border:1px solid var(--line);border-radius:9px;padding:9px 12px;margin:7px 0;white-space:pre-wrap;line-height:1.65;font-size:12.5px;color:var(--fg)}
+  /* 收笔后这段是排过版的 HTML：pre-wrap 会把 md() 里的换行当字面空白，
+     段落之间多出几行空，所以渲染过的用 normal */
+  .say.rendered{white-space:normal}
   .say.typing::after{content:'▍';color:var(--accent);animation:blink 1s steps(2) infinite}
   @keyframes blink{50%{opacity:0}}
   .fcard{display:flex;align-items:center;gap:9px;border:1px solid var(--line);background:var(--hover);border-radius:8px;padding:7px 11px;margin:6px 0;font-size:11.5px;cursor:pointer}
@@ -449,7 +452,18 @@
   .row.expandable:hover .c{color:var(--fg)}
   .det{margin:2px 0 8px 62px;padding:8px 10px;border-left:2px solid var(--line);
     background:var(--input);color:var(--fg);font:11.5px/1.5 var(--mono);
-    white-space:pre-wrap;word-break:break-all;border-radius:0 6px 6px 0}
+    white-space:pre-wrap;word-break:break-word;border-radius:0 6px 6px 0}
+  /* 点开的小标题（参数 / 命令 / 输出）和正文分开：不分开的话一长串 JSON
+     看不出哪里是参数、哪里是返回 */
+  .detlab{font:10px/1.6 -apple-system,system-ui,sans-serif;letter-spacing:.08em;
+    text-transform:uppercase;color:var(--dim);margin:2px 0 3px}
+  .detlab:not(:first-child){margin-top:10px}
+  .detpre{margin:0;font:11.5px/1.55 var(--mono);white-space:pre-wrap;word-break:break-word;
+    max-height:340px;overflow:auto;background:transparent;color:var(--fg)}
+  @media (max-width:820px){
+    .det{margin-left:0}
+    .detpre{max-height:260px}
+  }
   .step{color:var(--accent);margin-top:10px}
   .tool{color:var(--fg)}
   .ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.dim{color:var(--dim)}
@@ -1077,6 +1091,7 @@ function md(src){
       return b.length === a.length && b.every((c) => /^:?-{2,}:?$/.test(c));
     };
     if (isSep(lines[i + 1])) {
+      flush();
       const align = splitRow(lines[i + 1]).map((c) => {
         const l = c.startsWith(':'), r = c.endsWith(':');
         return l && r ? 'center' : r ? 'right' : l ? 'left' : '';
@@ -2495,23 +2510,53 @@ function foldFinishedRun(){
  * 真实命令、参数、路径。Codex 也是这个分工——过程行可折叠，点开才是全文。
  * 没有细节可显示的行就不加这个行为，别让用户点了没反应。
  */
-function attachDetail(el, p){
-  const detail = String(p.detail || p.args_preview || '').trim();
-  if (!detail) return;
+/* 一行过程能点开看到的东西：参数、工具返回、真实命令。
+   以前只有 run_command 的 detail，MCP 工具点开是空的——用户看到的就是
+   「它调了 find_tools」，但不知道传了什么、拿回了什么。 */
+function toolSections(p){
+  const out = [];
+  let args = '';
+  if (typeof p.args === 'string' && p.args.trim()) {
+    // 模型给的是 JSON 字符串：能解析就缩进着显示，解析不了就原样
+    try { args = JSON.stringify(JSON.parse(p.args), null, 2) } catch { args = p.args }
+  } else if (p.args_preview) args = String(p.args_preview);
+  if (args.trim()) out.push({ label: '参数', text: args.trim() });
+  if (p.detail && String(p.detail).trim() && String(p.detail).trim() !== args.trim()) {
+    out.push({ label: '命令', text: String(p.detail).trim() });
+  }
+  return out;
+}
+
+function attachDetail(el, p, extra){
+  const sections = toolSections(p).concat(extra || []);
+  if (!sections.length) return;
   el.classList.add('expandable');
-  el.title = 'Click for the command';
+  el.title = sections.map((s) => s.label).join(' / ') + ' — 点开看';
   el.addEventListener('click', (e) => {
     if (e.target.closest('.det')) return;
     const next = el.nextElementSibling;
-    if (next && next.classList.contains('det')){ next.remove(); return; }
+    if (next && next.classList.contains('det')){ next.remove(); el.classList.remove('open'); return; }
     const box = document.createElement('div');
     box.className = 'det';
-    // 用 <pre> 里的等宽字体：命令里有引号、反斜杠，折行会读错
-    box.textContent = detail;
+    // 用 <pre> 里的等宽字体：命令和 JSON 里有引号、反斜杠，折行会读错
+    for (const s of sections) {
+      const lab = document.createElement('div');
+      lab.className = 'detlab';
+      lab.textContent = s.label;
+      const pre = document.createElement('pre');
+      pre.className = 'detpre';
+      pre.textContent = s.text;
+      box.appendChild(lab);
+      box.appendChild(pre);
+    }
     el.after(box);
+    el.classList.add('open');
     followTail();
   });
 }
+
+/* 结果那行：tool/output 是后到的，先记下最近一次的工具行，等它来挂上去 */
+const LASTTOOL = new Map();
 
 function procRow(cls, text){
   const g = openRun();
@@ -2576,7 +2621,16 @@ function closeRun(){
 }
 
 function closeStreams(){
-  if (sayEl){ sayEl.classList.remove('typing'); sayEl = null; }
+  if (sayEl){
+    sayEl.classList.remove('typing');
+    // 流式时只能一段一段往 textContent 里塞，那时候还没法按 markdown 排版
+    // （半截的代码块、没闭合的 ** 都渲染不出来）。整段收笔时再排一次，
+    // 用户看到的最终答案就是「标题是标题、表格是表格」。
+    // 这是之前「页面最后还是 md 格式」的根因：结尾这段谁也没再渲染过。
+    const raw = sayEl.textContent;
+    if (raw.trim()){ sayEl.innerHTML = md(raw); sayEl.classList.add('rendered'); }
+    sayEl = null;
+  }
   if (thinkEl){ thinkEl = null; }
 }
 
@@ -3202,10 +3256,27 @@ function render(kind, p){
       attachDetail(el, p);
       break;
     }
-    case 'tool/result':
+    case 'tool/result': {
       // 「✗」只留给真的失败；exit=0 显示成 Done，别让用户去读退出码
-      procRow(p.status === 'ok' ? 'ok' : 'bad', (p.status === 'ok' ? '✓ ' : '✗ ') + who(p) + esc(String(p.label || (p.status === 'ok' ? 'Done' : 'That did not work'))));
+      const el = procRow(p.status === 'ok' ? 'ok' : 'bad', (p.status === 'ok' ? '✓ ' : '✗ ') + who(p) + esc(String(p.label || (p.status === 'ok' ? 'Done' : 'That did not work'))));
+      // 输出是下一条事件才到的：先把这行记下，等 tool/output 挂上去
+      LASTTOOL.set(String(p.tool || ''), el);
+      // 兜底：事件里的工具名和模型看到的名字不完全一致时（exec / run_command），
+      // 至少还能挂到最近的那条结果上，不至于只剩「参数」没有「结果」
+      LASTTOOL.set('__last__', el);
       break;
+    }
+    // 工具真正返回的内容。挂在对应的结果行上，点开才看——
+    // 不默认展开：一次找工具能返回几千字，铺在屏幕上会把答案顶走
+    case 'tool/output': {
+      const el = LASTTOOL.get(String(p.tool || '')) || LASTTOOL.get('__last__');
+      const text = String(p.output || '');
+      if (!text.trim()) break;
+      const extra = [{ label: p.truncated ? '输出（已截断）' : '输出', text: text.trim() }];
+      if (el) attachDetail(el, {}, extra);
+      else procRow('tool', '● ' + esc(String(p.tool || 'tool')) + ' · ' + text.length + ' chars');
+      break;
+    }
     case 'steering/message':
       // 排队时只进输入框上方的暂存区，应用了才落到对话里——这样「还没轮到」
       // 和「已经照做了」在屏幕上是两个地方，不会混在一起
@@ -3441,7 +3512,9 @@ function attach(id, opts){
     ? '&after=' + encodeURIComponent(String(o.after))
     : (o.live ? '&live=1' : '');
   es = new EventSource('/api/stream?session=' + encodeURIComponent(id) + qs);
-  for (const kind of ['turn/start','step/start','llm/request','llm/response','tool/call','tool/result','plan/updated',
+  // 这份列表决定「哪些事件会被画到屏幕上」：服务端推了但这里没登记的，
+  // 会安静地丢掉（tool/output 一开始就是这样，界面永远看不到工具返回了什么）。
+  for (const kind of ['turn/start','step/start','llm/request','llm/response','tool/call','tool/result','tool/output','plan/updated',
                       'steering/message','steering/withdrawn','agent/spawned','agent/finished','text/delta','reasoning/delta','checkpoint/file','approval/needs','approval/requested','approval/resolved','session/compacted','artifact/emitted',
                       'turn/end','assistant/message','answer','deliverables','done','error','budget/warning','budget/exceeded','fs/changed']){
     es.addEventListener(kind, (e) => render(kind, JSON.parse(e.data)));
