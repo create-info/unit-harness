@@ -15,11 +15,26 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import os from 'node:os'
 import { mkdtempSync, rmSync, existsSync, statSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const CLI = join(process.cwd(), 'dist', 'uh.cjs')
+
+/**
+ * 「手机」怎么模拟：从本机连自己的局域网地址，对端就不是 127.0.0.1 了。
+ * 鉴权现在按对端地址判断（本机免口令、外面必须带口令），所以测试不能再用
+ * localhost 假装是手机——那一路现在是故意放行的。
+ */
+function phoneAddr() {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const n of list ?? []) {
+      if (n.family === 'IPv4' && !n.internal && !/^172\.(1[7-9]|2\d|3[01])\./.test(n.address)) return n.address
+    }
+  }
+  return ''
+}
 
 async function waitUp(port, home) {
   for (let i = 0; i < 60; i++) {
@@ -32,7 +47,12 @@ async function waitUp(port, home) {
   throw new Error('server did not come up on ' + port + ' (home=' + home + ')')
 }
 
-test('a non-loopback server demands a token, and remembers it as a cookie', async () => {
+test('a non-loopback server demands a token, and remembers it as a cookie', async (t) => {
+  const phone = phoneAddr()
+  if (!phone) {
+    t.skip('这台机器没有局域网地址，无法模拟手机连进来')
+    return
+  }
   const home = mkdtempSync(join(tmpdir(), 'uh-serve-'))
   const port = 7930 + Math.floor(Math.random() * 40)
   const child = spawn(process.execPath, [CLI, 'serve', '--port', String(port), '--lan'], {
@@ -55,22 +75,23 @@ test('a non-loopback server demands a token, and remembers it as a cookie', asyn
     assert.ok(token.length >= 20, 'token looks too short')
 
     // 2. 没有口令：接口 401，静态件放行（否则手机上装不出图标）
-    const api = await fetch(`http://127.0.0.1:${port}/api/info`)
+    const LAN = `http://${phone}:${port}`
+    const api = await fetch(`${LAN}/api/info`)
     assert.equal(api.status, 401)
-    const man = await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`)
+    const man = await fetch(`${LAN}/manifest.webmanifest`)
     assert.equal(man.status, 200)
     const manifest = await man.json()
     const sizes = (manifest.icons ?? []).map((i) => i.sizes)
     assert.ok(sizes.includes('192x192') && sizes.includes('512x512'), 'Chrome wants both sizes: ' + sizes)
     assert.equal(manifest.display, 'standalone')
 
-    const icon = await fetch(`http://127.0.0.1:${port}/icon-192.png`)
+    const icon = await fetch(`${LAN}/icon-192.png`)
     assert.equal(icon.status, 200)
     const png = Buffer.from(await icon.arrayBuffer())
     assert.equal(png.subarray(1, 4).toString(), 'PNG', 'the icon must be a real PNG')
 
     // 3. 带口令：种 cookie，并把口令从地址栏抹掉
-    const first = await fetch(`http://127.0.0.1:${port}/?t=${token}`, { redirect: 'manual' })
+    const first = await fetch(`${LAN}/?t=${token}`, { redirect: 'manual' })
     assert.equal(first.status, 302)
     const cookie = first.headers.get('set-cookie') ?? ''
     assert.ok(cookie.includes('uh_t='), 'a cookie must be set: ' + cookie)
@@ -78,7 +99,7 @@ test('a non-loopback server demands a token, and remembers it as a cookie', asyn
     assert.equal(first.headers.get('location'), '/', 'the token must be stripped from the URL')
 
     // 4. 之后靠 cookie 就能用
-    const withCookie = await fetch(`http://127.0.0.1:${port}/api/info`, {
+    const withCookie = await fetch(`${LAN}/api/info`, {
       headers: { cookie: 'uh_t=' + token },
     })
     assert.equal(withCookie.status, 200)
@@ -102,7 +123,11 @@ test('a loopback server stays tokenless — localhost is you', async () => {
     await waitUp(port, home)
     const r = await fetch(`http://127.0.0.1:${port}/api/info`)
     assert.equal(r.status, 200, 'localhost must not ask for a token')
-    assert.ok(!existsSync(join(home, 'serve-token')), 'no token file should be created for loopback')
+    // 口令文件是启动时就准备好的：设置页里一开远程，下一次请求就要用它，
+    // 不能等到那时候再临时生成。本机访问不校验它，但它必须在且只有本人能读。
+    const tf = join(home, 'serve-token')
+    assert.ok(existsSync(tf), 'the token is prepared even while listening on loopback')
+    assert.equal(statSync(tf).mode & 0o777, 0o600)
   } finally {
     child.kill('SIGKILL')
     rmSync(home, { recursive: true, force: true })

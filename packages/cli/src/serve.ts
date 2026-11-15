@@ -6,6 +6,7 @@
  * 一个二进制的体积和启动速度都和 CLI 一样。
  */
 import http from 'node:http'
+import net from 'node:net'
 import os from 'node:os'
 import pathMod, { join as pjoin } from 'node:path'
 import fsSync, { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
@@ -292,7 +293,13 @@ const watchManager = new WatchManager({
  * 三条状态分开报：没装 / 装了没登录 / 在线。只说「不可用」会让人以为是
  * 网络问题，实际是差了 `tailscale up` 那一步。
  */
-function tailscaleState(): { state: 'absent' | 'logged-out' | 'up'; ip?: string; host?: string; serving?: boolean } {
+function tailscaleState(): {
+  state: 'absent' | 'logged-out' | 'up'
+  ip?: string
+  host?: string
+  serving?: boolean
+  peers?: Array<{ name: string; ip: string; os: string; online: boolean }>
+} {
   let ip = ''
   try {
     ip = (execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })
@@ -319,7 +326,34 @@ function tailscaleState(): { state: 'absent' | 'logged-out' | 'up'; ip?: string;
       .toString().trim()
     serving = out.length > 0 && !/no serve config/i.test(out)
   } catch { /* 老版本没有这个子命令 */ }
-  return { state: 'up', ip, host, serving }
+  // tailnet 里还有谁：引导页要能直接说「你的手机在不在这个网络里」，
+  // 让人去控制台翻列表是最没必要的一步
+  const peers: Array<{ name: string; ip: string; os: string; online: boolean }> = []
+  try {
+    const j = JSON.parse(execFileSync('tailscale', ['status', '--json'], { timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'] }).toString())
+    for (const p of Object.values(j?.Peer ?? {}) as Array<Record<string, unknown>>) {
+      const ips = (p.TailscaleIPs as string[] | undefined) ?? []
+      peers.push({
+        name: String(p.HostName ?? ''),
+        ip: ips.find((a) => !a.includes(':')) ?? ips[0] ?? '',
+        os: String(p.OS ?? ''),
+        online: Boolean(p.Online),
+      })
+    }
+  } catch { /* 拿不到就报空 */ }
+  return { state: 'up', ip, host, serving, peers }
+}
+
+/** `::ffff:192.168.1.5` / `::1` 这类写法先归一，不然前缀判断全会错 */
+function normalizeAddr(a: string | undefined): string {
+  const s = String(a ?? '')
+  return s.startsWith('::ffff:') ? s.slice(7) : s
+}
+
+/** Tailscale 的地址段固定是 100.64.0.0/10 —— 只有 tailnet 里的设备在里头 */
+function isTailnetAddr(a: string): boolean {
+  const m = /^100\.(\d+)\./.exec(a)
+  return Boolean(m) && Number(m![1]) >= 64 && Number(m![1]) <= 127
 }
 
 /** 手机真正连得上的地址：跳过 docker/bridge 那几个（列出来只会让人多试几次） */
@@ -665,15 +699,33 @@ function unlockPage(host: string): string {
     + '口令只存在你这台设备的 cookie 里。</p></body>'
 }
 
-export async function startServer(opts: ServeOptions = {}): Promise<{ url: string; close: () => void }> {
+export async function startServer(opts: ServeOptions = {}): Promise<{
+  url: string
+  close: () => void
+  /** 换远程访问档位（设置页/测试用），端口号不变 */
+  setRemoteMode: (m: 'off' | 'tailnet' | 'lan') => Promise<void>
+}> {
   const port = opts.port ?? 7878
   const host = opts.host ?? '127.0.0.1'
   // 只听 loopback 时不设防（本机就是你的）。一旦绑到别的地址，这个端口
   // 就能让局域网里任何人驱动一个有 shell 的 agent——必须带口令。
   const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
-  const token = loopback ? '' : (opts.token || process.env.UH_SERVE_TOKEN || serveToken())
+  // 口令一直准备好：默认只听本机时用不到，但设置页一开远程就要马上生效
+  const token = opts.token || process.env.UH_SERVE_TOKEN || serveToken()
 
-  const server = http.createServer(async (req, res) => {
+  // ---- 远程访问：一个端口，设置页里开关 ------------------------------------
+  //
+  // 以前是「想给手机用就再起一个 --lan 的进程」，于是 7878 和 7911 各跑一份，
+  // 会话、插件、审批状态都不在一处，用户还要记两个端口。现在只有 7878：
+  // 绑定地址由这里的三档决定，改完了就地换绑，不重启进程。
+  type RemoteMode = 'off' | 'tailnet' | 'lan'
+  const savedRemote = readConfig().remote
+  let remoteMode: RemoteMode = loopback
+    ? (savedRemote === 'tailnet' || savedRemote === 'lan' ? savedRemote : 'off')
+    : 'lan'
+  let bindAddr = remoteMode === 'off' ? '127.0.0.1' : '0.0.0.0'
+
+  const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     const url = new URL(req.url ?? '/', `http://${host}:${port}`)
 
     // 口令页的表单提交口，必须在鉴权之前处理——否则「进来要口令、交口令
@@ -695,7 +747,20 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       return
     }
 
-    if (token) {
+    // 「能不能不输口令」取决于对端是谁，不是端口绑在哪：
+    // 开了远程访问之后端口绑到 0.0.0.0，桌面上用 127.0.0.1 打开不该突然要口令。
+    const peer = normalizeAddr(req.socket.remoteAddress)
+    const peerLocal = peer === '127.0.0.1' || peer === '::1'
+
+    // 「仅 Tailscale」：端口对局域网开着，但只认 100.64/10 来的包。
+    // 光靠绑定地址做不到这一点——tailscale0 和 eth0 都在同一个 socket 上。
+    if (remoteMode === 'tailnet' && !peerLocal && !isTailnetAddr(peer)) {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
+      res.end('这台机器只接受 Tailscale 网络内的连接')
+      return
+    }
+
+    if (token && !peerLocal) {
       const given = url.searchParams.get('t')
         ?? String(req.headers['x-uh-token'] ?? '')
         ?? ''
@@ -784,18 +849,20 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       const token = serveToken()
       const addrs = lanAddresses()
       const ts = tailscaleState()
-      const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
-      // 手机真能打开的地址。只听本机时，只有 tailscale serve 转发进来才有门——
-      // 这时候列 IP 是骗人的：手机连 100.x:7878 会被拒绝。
-      // 去重：Tailscale IP 本身就是一块网卡地址，会同时出现在 addrs 和 ts.ip 里，
-      // 不去重的话同一个地址在页面上列两遍。
-      const urls = loopback
+      const loopback = remoteMode === 'off'
+      // 手机真能打开的地址，完全由当前模式决定：
+      //   off     一个都没有（端口根本没对外）
+      //   tailnet 只有 100.x 那条（局域网机器连得上也进不来）
+      //   lan     局域网各地址 + 100.x（去重：Tailscale IP 本身就是一块网卡）
+      const urls = remoteMode === 'off'
         ? (ts.state === 'up' && ts.serving && ts.host ? [`https://${ts.host}`] : [])
         : [...new Set([
-          ...addrs.map((a) => `http://${a}:${port}`),
+          ...(remoteMode === 'lan' ? addrs.filter((a) => !isTailnetAddr(a)).map((a) => `http://${a}:${port}`) : []),
           ...(ts.state === 'up' && ts.ip ? [`http://${ts.ip}:${port}`] : []),
         ])]
       json(res, 200, {
+        // 三档模式：off（只听本机）/ tailnet（只认 Tailscale）/ lan（局域网）
+        mode: remoteMode,
         // 只听本机还是对整个局域网开着：这决定了手机现在连不连得上
         loopback,
         port,
@@ -807,6 +874,65 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         // 能不开公网就不开：tailscale 装了但没登录时，这里明确告诉用户下一步
         tailscale: ts,
       })
+      return
+    }
+    // 引导页的「测试一下」：一条命令把链路逐段点一遍，省得用户在两台设备之间猜。
+    // 顺序就是出问题的顺序：模式 → 端口 → Tailscale → 手机。
+    if (req.method === 'POST' && url.pathname === '/api/remote/check') {
+      const ts = tailscaleState()
+      const fail = (step: string, detail: string) => json(res, 200, { ok: false, step, detail })
+      if (remoteMode === 'off') return fail('mode', '远程访问还没打开——上面切到「仅 Tailscale」或「局域网」')
+      if (ts.state === 'absent') return fail('tailscale', '这台电脑没装 Tailscale')
+      if (ts.state === 'logged-out') return fail('tailscale', 'Tailscale 装了但没登录：在电脑上跑 tailscale up')
+      if (!ts.ip) return fail('tailscale', '还没拿到 tailnet 地址')
+
+      // 端口真在听吗：从自己的 tailnet 地址连一次（走的是同一块网卡，
+      // 能连上说明监听没问题，剩下的问题一定在手机那侧）
+      const portOk = await new Promise<boolean>((resolve) => {
+        const sock = net.connect({ host: ts.ip!, port, timeout: 1500 })
+        sock.once('connect', () => { sock.destroy(); resolve(true) })
+        sock.once('error', () => { sock.destroy(); resolve(false) })
+        sock.once('timeout', () => { sock.destroy(); resolve(false) })
+      })
+      if (!portOk) return fail('port', `端口 ${port} 在 ${ts.ip} 上连不上`)
+
+      const peer = (ts.peers ?? []).find((p) => p.online) ?? (ts.peers ?? [])[0]
+      if (!peer) return fail('phone', 'tailnet 里只有这台电脑——手机还没装 Tailscale，或者没登录同一个账号')
+
+      // 真正去戳一下那台设备。ping 用的是 WireGuard 自己的探测包，
+      // 手机不响应 ICMP 也能测出来；它不回就是隧道没通。
+      try {
+        const out = execFileSync('tailscale', ['ping', '-c', '1', '--timeout', '4s', peer.ip], {
+          timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'],
+        }).toString()
+        const via = /via (\S+)/.exec(out)?.[1] ?? 'direct'
+        json(res, 200, { ok: true, detail: `${peer.name}（${peer.ip}）有回应，走 ${via}`, peer: peer.ip })
+      } catch {
+        // 探测包不回 ≠ 连不上：iOS 在后台挂起 Network Extension 时既不回 disco 包，
+        // 也不影响它的 Safari 正常访问。所以这条只报「没确认」，不判死刑——
+        // 上次就是因为这个把人劝去重启 Tailscale，其实网页本来就是开的。
+        json(res, 200, {
+          ok: false,
+          soft: true,
+          step: 'phone',
+          detail: `${peer.name}（${peer.ip}）没回探测包。手机锁屏/后台时 iOS 会挂起 Tailscale，这不代表连不上——直接用手机打开下面那个地址试试。`,
+        })
+      }
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/remote/mode') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as { mode?: string }
+      const mode = body.mode
+      if (mode !== 'off' && mode !== 'tailnet' && mode !== 'lan') {
+        json(res, 400, { error: '模式只能是 off / tailnet / lan' })
+        return
+      }
+      const next = mode as RemoteMode
+      // 先把回执写出去，再换监听：换监听要掐断所有连接（包括这条请求的），
+      // 顺序反了就是「点一下没反应，刷新才发现已经改了」。
+      json(res, 200, { mode: next })
+      setTimeout(() => { void applyRemoteMode(next) }, 80)
       return
     }
     if (req.method === 'POST' && url.pathname === '/api/remote/device') {
@@ -1877,16 +2003,47 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     }
 
     json(res, 404, { error: 'not found' })
+  }
+
+  let server: http.Server
+
+  const listenOnce = (): Promise<void> => new Promise<void>((resolve, reject) => {
+    const s = http.createServer(handleRequest)
+    s.once('error', reject)
+    s.listen(port, bindAddr, () => resolve())
+    server = s
   })
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(port, host, () => resolve())
-  })
+  await listenOnce()
+
+  /**
+   * 换绑定地址。
+   *
+   * 一个 socket 不能中途改自己绑在哪，所以必须关掉再听——但关之前要把现有连接
+   * 全部掐断，否则 `close()` 会一直等 keep-alive 超时，表现为「点了开关没反应」。
+   * 端口号不变，页面上不用改任何地址。
+   */
+  const applyRemoteMode = async (mode: RemoteMode): Promise<void> => {
+    remoteMode = mode
+    const cfg = readConfig()
+    cfg.remote = mode
+    writeConfig(cfg)
+    const next = mode === 'off' ? '127.0.0.1' : '0.0.0.0'
+    if (next === bindAddr) return
+    const old = server
+    await new Promise<void>((resolve) => {
+      old.closeAllConnections?.()
+      old.close(() => resolve())
+    })
+    bindAddr = next
+    await listenOnce()
+  }
 
   return {
-    url: `http://${host}:${port}`,
+    url: `http://${bindAddr === '127.0.0.1' ? '127.0.0.1' : lanAddresses()[0] ?? '127.0.0.1'}:${port}`,
     close: () => server.close(),
+    /** 给测试用：改完不用重启进程 */
+    setRemoteMode: (m: 'off' | 'tailnet' | 'lan') => applyRemoteMode(m),
   }
 }
 

@@ -526,6 +526,20 @@
   .surl code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
     font:11px/1.6 var(--mono);background:var(--input);border:1px solid var(--line);
     border-radius:6px;padding:6px 8px;color:var(--fg)}
+  /* 状态点：这几类名一直在用，但从来没定义过样式，所以「● 在线」和普通文字
+     一个颜色，扫一眼分不出哪步通了、哪步没通 */
+  .cstat{font-size:11px;color:var(--dim);white-space:nowrap}
+  .cstat.cok{color:var(--ok)}
+  .cstat.cno{color:var(--bad)}
+  .cstat.cwarn{color:var(--warn)}
+  .cstat.cdim{color:var(--dim)}
+  .ctlwrap{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+  /* 三档开关：手机上要能一眼看出当前是哪档，所以选中项实心 */
+  .segmode{display:flex;gap:2px;background:var(--input);border:1px solid var(--line);border-radius:8px;padding:2px}
+  .smode{background:transparent;border:0;color:var(--dim);border-radius:6px;padding:6px 10px;
+    font-size:11.5px;cursor:pointer;white-space:nowrap}
+  .smode:hover{color:var(--fg)}
+  .smode.on{background:var(--accent);color:#fff;font-weight:600}
   .sbtn{background:var(--hover);border:1px solid var(--line);color:var(--fg);border-radius:6px;
     padding:6px 10px;font-size:11.5px;cursor:pointer;white-space:nowrap}
   .sbtn:hover{border-color:var(--dim)}
@@ -534,12 +548,12 @@
   @media (max-width:820px){
     .surl{max-width:100%}
     .surl code{font-size:10.5px}
-    /* 手机上说明文字会把按钮挤成竖排，先藏说明，标题和按钮能一行放下。
-       注意说明是 `.rt i`（`.row .rt i{display:block}`），不是裸 `.row i`——
-       写错选择器等于什么都没改。 */
-    #setBody .row .rt i{display:none}
+    /* 窄屏：别把说明文字藏起来——这一页的作用就是说明每一步在干什么。
+       改成让控件换行到下一行，标题和说明保持整行宽度。 */
+    #setBody .row{flex-wrap:wrap;gap:8px}
+    #setBody .row .rt{flex:1 1 100%}
     #setBody .row .rt b{font-size:12px}
-    #setBody .row .rc{min-width:0}
+    #setBody .row .rc{min-width:0;margin-left:auto}
     .sbtn{padding:7px 10px;font-size:11px}
   }
   .btn:hover{border-color:var(--hoverline)}
@@ -1879,6 +1893,22 @@ function showPairResult(name, url, title){
   box.querySelector('#__done').onclick = () => mask.remove();
 }
 
+async function setRemoteMode(mode){
+  try {
+    const r = await fetch('/api/remote/mode', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    if (!r.ok) { setMsg('没切成：' + (await r.text()).slice(0, 80), true); return }
+  } catch (e) { setMsg('没切成：' + e, true); return }
+  setMsg(mode === 'off' ? '已关闭：只有这台电脑能打开' : '已开启，地址在下面');
+  // 服务端要关掉再重听，连接会断一下——等它起来再读，否则读到的是旧状态
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    try { await loadRemote(); renderSettings(); return } catch { /* 还没起来 */ }
+  }
+}
+
 async function revokeDevice(id, name){
   // 不用原生 confirm：iOS 的独立窗口（添加到主屏幕后）里它会静默失败，
   // 点了「撤销」什么都没发生——和之前 prompt 同一类问题。
@@ -1902,68 +1932,105 @@ function renderRemote(body){
     return;
   }
   const ts = R.tailscale || { state: 'absent' };
-  const tsText = ts.state === 'up'
-    ? '在线 · ' + (ts.ip || '') + (ts.host ? ' · ' + ts.host : '')
-    : ts.state === 'logged-out'
-      ? '装了但没登录：在电脑上跑 tailscale up，之后手机装 Tailscale 就能跨网络连'
-      : '没装。要跨网络用，装 Tailscale 比把端口开到公网安全得多';
-
-  const rows = [
-    srow('当前监听', R.loopback
-      ? '只听本机（127.0.0.1:' + R.port + '）。手机连不上——电脑上改用 uh serve --lan'
-      : '对整个局域网开着：' + (R.addresses || []).join(', ') + ' · 端口 ' + R.port,
-      el(R.loopback ? '<span class="cstat cno">●  仅本机</span>' : '<span class="cstat cok">●  局域网内可连</span>')),
-    srow('跨网络', tsText,
-      el(ts.state === 'up' ? '<span class="cstat cok">●  可用</span>' : '<span class="cstat cno">●  未就绪</span>')),
-  ];
-
-  // 口令和地址：手机上照着敲是不现实的，给一键复制。
-  // 一个地址都给不出来时，别说「不可用」——直接给能照抄的那条命令，
-  // 因为「Tailscale 在线、手机却连不上」的答案永远是「只听本机 127.0.0.1」。
+  const mode = R.mode || 'off';
   const urls = R.urls || [];
-  if (!urls.length) {
-    const cmd = ts.state === 'up'
-      ? 'tailscale serve --bg ' + R.port
-      : 'uh serve --lan --port ' + R.port;
-    const box = document.createElement('div');
-    box.className = 'surl';
-    box.innerHTML = '<code>' + esc(cmd) + '</code>';
+  const peers = ts.peers || [];
+  const phone = peers.find((p) => p.online) || peers[0];
+  const dot = (ok, text) => el('<span class="cstat ' + (ok ? 'cok' : 'cno') + '">●  ' + esc(text) + '</span>');
+
+  // 这一页就是一个引导：① 开端口 → ② 电脑装 Tailscale → ③ 手机同账号 →
+  // ④ 扫码打开 → ⑤ 测一下。每一步都当场能看到状态，不用去别的窗口猜。
+  const modes = [
+    ['off', '关闭', '只听本机，手机连不上。'],
+    ['tailnet', '仅 Tailscale', '跨网络可用；同一个 Wi-Fi 外的机器即使能连到端口也进不来。'],
+    ['lan', '局域网', '同一个 Wi-Fi 下就能连，最快；同网段的机器也能连（仍需口令）。'],
+  ];
+  const seg = document.createElement('div');
+  seg.className = 'segmode';
+  for (const [key, label] of modes) {
     const b = document.createElement('button');
-    b.className = 'sbtn';
-    b.textContent = '复制';
-    b.onclick = async () => {
-      try { await navigator.clipboard.writeText(cmd); setMsg('复制好了，在电脑上跑') }
-      catch { setMsg('复制不了，手动选吧', true) }
-    };
-    box.appendChild(b);
-    rows.push(srow('手机现在还连不上', ts.state === 'up'
-      ? 'Tailscale 已经在线，但服务只听本机。在电脑上跑下面这条：不开任何公网端口，只把你的 tailnet 转发进来。'
-      : '服务只听本机，手机进不来。在电脑上跑下面这条，然后手机连同一个 Wi-Fi。', box));
+    b.className = 'smode' + (mode === key ? ' on' : '');
+    b.textContent = label;
+    b.onclick = () => void setRemoteMode(key);
+    seg.appendChild(b);
   }
+
+  const steps = [];
+  steps.push(srow('① 打开远程访问（端口 ' + R.port + '）',
+    modes.find((m) => m[0] === mode)?.[2] || '', seg));
+  steps.push(srow('② 这台电脑的 Tailscale',
+    ts.state === 'up'
+      ? (ts.ip || '') + (ts.host ? ' · ' + ts.host : '')
+      : ts.state === 'logged-out'
+        ? '装了但没登录：在电脑上跑 tailscale up，登录一次就行'
+        : '没装。装它比把端口开到公网安全得多：curl -fsSL https://tailscale.com/install.sh | sh',
+    dot(ts.state === 'up', ts.state === 'up' ? '就绪' : '未就绪')));
+  steps.push(srow('③ 手机有没有进同一个网络',
+    phone
+      ? phone.name + ' · ' + phone.ip + ' · ' + (phone.os || '')
+      : '还没看到手机。在手机的 App Store 装 Tailscale，登录和你电脑同一个账号。',
+    dot(Boolean(phone && phone.online), phone ? (phone.online ? '在线' : '离线') : '未发现')));
+
+  // ④ 地址：手机照着敲不现实，所以给复制和扫码
   if (urls.length) {
-    const url = urls[0];
-    const full = url + '/?t=' + encodeURIComponent(R.token || '');
+    const full = urls[0] + '/?t=' + encodeURIComponent(R.token || '');
     const box = document.createElement('div');
     box.className = 'surl';
     box.innerHTML = '<code>' + esc(full) + '</code>';
-    const b = document.createElement('button');
-    b.className = 'sbtn';
-    b.textContent = '复制';
-    b.onclick = async () => {
+    const c = document.createElement('button');
+    c.className = 'sbtn';
+    c.textContent = '复制';
+    c.onclick = async () => {
       try { await navigator.clipboard.writeText(full); setMsg('复制好了，发到手机上打开') }
       catch { setMsg('复制不了，手动选吧', true) }
     };
-    box.appendChild(b);
-    const qb = document.createElement('button');
-    qb.className = 'sbtn';
-    qb.textContent = '二维码';
-    qb.onclick = () => showPairResult('这台电脑', full, '手机扫码打开');
-    box.appendChild(qb);
-    rows.push(srow('手机打开这个地址', '打开一次就记住，之后可以「添加到主屏幕」。'
-      + (urls.length > 1 ? '（还有其他入口：' + urls.slice(1).join('、') + '）' : ''), box));
+    box.appendChild(c);
+    const q = document.createElement('button');
+    q.className = 'sbtn';
+    q.textContent = '二维码';
+    q.onclick = () => showPairResult('这台电脑', full, '手机扫码打开');
+    box.appendChild(q);
+    steps.push(srow('④ 手机打开这个地址', '打开一次就记住，之后「添加到主屏幕」当 App 用。'
+      + (urls.length > 1 ? '（还有：' + urls.slice(1).join('、') + '）' : ''), box));
+  } else {
+    steps.push(srow('④ 手机打开这个地址',
+      mode === 'off'
+        ? '先把 ① 切到「仅 Tailscale」或「局域网」，地址会立刻出现在这里——不用重启。'
+        : 'Tailscale 还没就绪，先做完 ② / ③。',
+      dot(false, '未就绪')));
   }
 
-  body.appendChild(section('这台电脑', rows));
+  // ⑤ 一键自测：从这台机器依次检查 模式 → 端口 → Tailscale → 手机
+  const out = document.createElement('span');
+  out.className = 'cstat cdim';
+  out.textContent = '';
+  const t = document.createElement('button');
+  t.className = 'sbtn';
+  t.textContent = '测一下';
+  t.onclick = async () => {
+    t.disabled = true;
+    t.textContent = '测试中…';
+    out.className = 'cstat cdim';
+    out.textContent = '';
+    try {
+      const r = await fetch('/api/remote/check', { method: 'POST' });
+      const j = await r.json();
+      out.className = 'cstat ' + (j.ok ? 'cok' : (j.soft ? 'cwarn' : 'cno'));
+      out.textContent = (j.ok ? '● 通了：' : j.soft ? '● 未确认：' : '● ') + j.detail;
+    } catch (e) {
+      out.className = 'cstat cno';
+      out.textContent = '● 测不了：' + e;
+    }
+    t.disabled = false;
+    t.textContent = '测一下';
+  };
+  const tbox = document.createElement('div');
+  tbox.className = 'surl';
+  tbox.appendChild(out);
+  tbox.appendChild(t);
+  steps.push(srow('⑤ 测一下能不能通', '在这台机器上把整条链路点一遍，哪一段断了一眼就能看到。', tbox));
+
+  body.appendChild(section('这台电脑', steps));
 
   const devs = R.devices || [];
   const devRows = devs.length

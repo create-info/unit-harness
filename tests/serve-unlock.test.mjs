@@ -13,11 +13,22 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
+import os from 'node:os'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const CLI = join(process.cwd(), 'dist', 'uh.cjs')
+
+/** 站在手机那一侧：从本机连自己的局域网地址。127.0.0.1 是故意免口令的 */
+function phoneAddr() {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const n of list ?? []) {
+      if (n.family === 'IPv4' && !n.internal && !/^172\.(1[7-9]|2\d|3[01])\./.test(n.address)) return n.address
+    }
+  }
+  return ''
+}
 
 /** 真找一个空端口：写死 8100+random 会撞上别的测试、别的进程（这台机器上
  *  8105 就长期被另一个服务占着），一撞就是 12 秒超时，看起来像代码坏了 */
@@ -43,7 +54,12 @@ async function waitUp(port) {
   throw new Error('server did not come up on ' + port)
 }
 
-test('the lock page takes a password in a form, and remembers it as a cookie', async () => {
+test('the lock page takes a password in a form, and remembers it as a cookie', async (t) => {
+  const phone = phoneAddr()
+  if (!phone) {
+    t.skip('这台机器没有局域网地址，无法模拟手机连进来')
+    return
+  }
   const home = mkdtempSync(join(tmpdir(), 'uh-unlock-'))
   const port = await freePort()
   const child = spawn(process.execPath, [CLI, 'serve', '--port', String(port), '--lan'], {
@@ -56,7 +72,8 @@ test('the lock page takes a password in a form, and remembers it as a cookie', a
   try {
     await waitUp(port)
     const token = readFileSync(join(home, 'serve-token'), 'utf8').trim()
-    const base = `http://127.0.0.1:${port}`
+    // 从局域网地址访问 = 手机视角；本机 127.0.0.1 是故意免口令的
+    const base = `http://${phone}:${port}`
 
     // 1. 无口令时拿到的是「能输口令」的页面，不是一句叫你去 cat 文件
     const lock = await fetch(base + '/')

@@ -36,6 +36,14 @@ export interface UhConfig {
   budget?: { perRun?: number; perDay?: number }
   /** 钩子：事件名 → 命令 */
   hooks?: Record<string, string>
+  /**
+   * 手机能不能连进来，以及怎么连：
+   *   off     只听本机（默认，端口不对外）
+   *   tailnet 绑 0.0.0.0 但只认 Tailscale 的 100.64/10 地址
+   *   lan     局域网内都能连
+   * 存这里而不是启动参数，是因为它要能在设置页里当场改。
+   */
+  remote?: 'off' | 'tailnet' | 'lan'
   /** 电脑操控：这一层直接操作真实桌面，沙箱管不到，所以开关要显式 */
   computer?: {
     enabled?: boolean

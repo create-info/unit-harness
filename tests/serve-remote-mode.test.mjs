@@ -1,0 +1,119 @@
+/**
+ * 远程访问只有一档端口（7878），开关在设置页里改，改完就地换绑。
+ *
+ * 为什么值得钉住：以前「给手机用」要另起一个 --lan 进程占另一个端口，
+ * 于是会话和审批状态分家、用户要记两个地址。现在必须证明两件事：
+ *   1. 换绑之后端口号不变，桌面端 127.0.0.1 仍然不用输口令；
+ *   2. 关掉之后端口真的不再对外，不是只把界面上的字改了。
+ */
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import net from 'node:net'
+import os from 'node:os'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const CLI = join(process.cwd(), 'dist', 'uh.cjs')
+
+async function freePort() {
+  return new Promise((resolve, reject) => {
+    const s = net.createServer()
+    s.once('error', reject)
+    s.listen(0, '127.0.0.1', () => {
+      const port = s.address().port
+      s.close(() => resolve(port))
+    })
+  })
+}
+
+/** 手机上真能连的那块网卡地址；容器里可能一个都没有 */
+function lanAddr() {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const n of list ?? []) {
+      if (n.family === 'IPv4' && !n.internal && !/^172\.(1[7-9]|2\d|3[01])\./.test(n.address)) return n.address
+    }
+  }
+  return ''
+}
+
+async function waitUp(port) {
+  for (let i = 0; i < 80; i++) {
+    try {
+      if ((await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`)).ok) return
+    } catch { /* not yet */ }
+    await new Promise((r) => setTimeout(r, 150))
+  }
+  throw new Error('server did not come up on ' + port)
+}
+
+const code = async (url, init) => (await fetch(url, init)).status
+
+test('one port: switching remote access rebinds in place, and off really closes it', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'uh-mode-'))
+  const port = await freePort()
+  const child = spawn(process.execPath, [CLI, 'serve', '--port', String(port)], {
+    env: { ...process.env, UH_HOME: home, NO_COLOR: '1' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+
+  try {
+    await waitUp(port)
+    const base = `http://127.0.0.1:${port}`
+
+    // 1. 默认状态：只听本机，桌面端不需要口令
+    const st0 = await (await fetch(base + '/api/remote')).json()
+    assert.equal(st0.mode, 'off')
+    assert.equal(st0.loopback, true)
+    assert.deepEqual(st0.urls, [], 'off: 手机没有可用地址')
+
+    const lan = lanAddr()
+
+    // 2. 切到局域网：端口号不变，桌面端照样免口令
+    const set = await fetch(base + '/api/remote/mode', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'lan' }),
+    })
+    assert.equal(set.status, 200)
+    await new Promise((r) => setTimeout(r, 600)) // 服务端关掉再重听
+
+    const st1 = await (await fetch(base + '/api/remote')).json()
+    assert.equal(st1.mode, 'lan')
+    assert.equal(st1.port, port, '换绑不改端口')
+    assert.ok(st1.urls.length > 0, 'lan: 至少有一个手机能用的地址')
+    assert.equal(await code(base + '/api/plugins'), 200, '本机访问仍然免口令')
+
+    if (lan) {
+      // 3. 局域网来的请求要口令——开远程不能等于开大门
+      assert.equal(await code(`http://${lan}:${port}/api/plugins`), 401)
+      // 4. 仅 Tailscale：同一块网卡的请求被挡在门外（这台测试机没有 tailnet 地址）
+      await fetch(base + '/api/remote/mode', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: 'tailnet' }),
+      })
+      await new Promise((r) => setTimeout(r, 600))
+      assert.equal(await code(`http://${lan}:${port}/api/plugins`), 403, 'tailnet 模式只认 100.64/10')
+    }
+
+    // 5. 关掉之后端口真的不再对外
+    await fetch(base + '/api/remote/mode', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'off' }),
+    })
+    await new Promise((r) => setTimeout(r, 600))
+    if (lan) {
+      let refused = false
+      try { await fetch(`http://${lan}:${port}/api/plugins`) } catch { refused = true }
+      assert.ok(refused, 'off 之后从局域网连不上')
+    }
+    assert.equal(await code(base + '/api/plugins'), 200, '本机还能用')
+
+    // 6. 选择记在配置里，下次启动就按它来
+    const cfg = JSON.parse(readFileSync(join(home, 'config.json'), 'utf8'))
+    assert.equal(cfg.remote, 'off')
+  } finally {
+    child.kill('SIGKILL')
+    rmSync(home, { recursive: true, force: true })
+  }
+})

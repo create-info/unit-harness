@@ -13,10 +13,20 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import net from 'node:net'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const CLI = join(process.cwd(), 'dist', 'uh.cjs')
+
+/** 从本机连自己的局域网地址 = 站在手机那一侧；127.0.0.1 是被故意放行的 */
+function phoneAddr() {
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const n of list ?? []) {
+      if (n.family === 'IPv4' && !n.internal && !/^172\.(1[7-9]|2\d|3[01])\./.test(n.address)) return n.address
+    }
+  }
+  return ''
+}
 
 async function freePort() {
   return new Promise((resolve, reject) => {
@@ -40,7 +50,12 @@ async function waitUp(port) {
   throw new Error('server did not come up on ' + port)
 }
 
-test('the remote page lists, pairs and revokes devices without the CLI', async () => {
+test('the remote page lists, pairs and revokes devices without the CLI', async (t) => {
+  const phone = phoneAddr()
+  if (!phone) {
+    t.skip('这台机器没有局域网地址，无法模拟手机连进来')
+    return
+  }
   const home = mkdtempSync(join(tmpdir(), 'uh-remote-'))
   const port = await freePort()
   const child = spawn(process.execPath, [CLI, 'serve', '--port', String(port), '--lan'], {
@@ -51,7 +66,7 @@ test('the remote page lists, pairs and revokes devices without the CLI', async (
   try {
     await waitUp(port)
     const token = readFileSync(join(home, 'serve-token'), 'utf8').trim()
-    const base = `http://127.0.0.1:${port}`
+    const base = `http://${phone}:${port}`
     const auth = { cookie: `uh_t=${token}`, 'content-type': 'application/json' }
 
     // 1. 没口令进不来——这一页会显示口令
