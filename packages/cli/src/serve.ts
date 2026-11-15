@@ -1253,10 +1253,13 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
           const onDisk = !!ws && existsSync(pathMod.join(ws, want))
           const binary = /\.(pptx|docx|xlsx|pdf|png|jpe?g|gif|webp|zip|gz|mp4|mp3)$/i.test(want)
           json(res, 404, {
+            // 注意措辞：artifact/emitted 只能证明「它在这条会话运行期间出现在了工作区」，
+            // 不能证明是**谁**写的——同一个工作区里同时跑两条会话时，A 生成的课件会
+            // 记到 B 头上。所以这里说"这次运行期间出现"，不说"这条会话生成的"。
             error: emitted
               ? binary
-                ? `「${want}」是这条会话跑命令生成的产物（不是编辑器改的），二进制文件没有逐行对比——用右上角的 open 打开看。`
-                : `「${want}」是这条会话跑命令生成的（不是编辑器改的），所以没有逐行对比。`
+                ? `「${want}」是在这次运行期间出现在工作区里的（不是编辑器改的），二进制文件没有逐行对比——用右上角的 open 打开看。`
+                : `「${want}」是在这次运行期间出现在工作区里的（不是编辑器改的），所以没有逐行对比。`
               : onDisk
                 ? `「${want}」在磁盘上，但这条会话没有改过它——可能是别的会话或你手动改的，所以没有前后对比。`
                 : `「${want}」已经不在工作区里了，会话里也没有它的改动记录。`,
