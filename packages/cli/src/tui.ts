@@ -21,6 +21,7 @@ import {
   findProvider, listModels, uhHome, latestResumable, loadMcpServers, expandMentions,
 } from '@unit-harness/core'
 import type { ApprovalRequest, Message, ProviderDef } from '@unit-harness/core'
+import { pickList } from './picker.ts'
 
 const C = {
   reset: '\x1b[0m', bold: '\x1b[1m', dim: '\x1b[2m',
@@ -178,12 +179,30 @@ async function cmdModel(s: TuiState, arg: string): Promise<void> {
     console.log(yellow('  这家没有返回模型列表。') + dim('直接写：/model 模型名'))
     return
   }
-  models.slice(0, 30).forEach((m, i) => {
+  const short = models.slice(0, 30)
+  // 真终端里给一个能上下选、能打字筛的列表（Codex 的样子）；
+  // 管道里没有按键可读，退回「输出编号 + 读一行」。
+  s.rl.pause()
+  const chosen = await pickList(
+    short.map((m) => ({ label: m, value: m, ...(m === cur.model ? { hint: '当前' } : {}) })),
+    { current: cur.model, title: `${cur.provider} 的模型` },
+  )
+  s.rl.resume()
+  if (chosen) {
+    await cmdModel(s, chosen)
+    return
+  }
+  if (chosen === null && process.stdin.isTTY) {
+    console.log(dim('  没改。'))
+    return
+  }
+
+  short.forEach((m, i) => {
     const mark = m === cur.model ? green('  ← 当前') : ''
     console.log('  ' + dim(String(i + 1).padStart(2) + '.') + ' ' + m + mark)
   })
   const pick = await new Promise<string>((resolve) => s.rl.question(dim('  序号或名字（回车取消）> '), resolve))
-  const name = /^\d+$/.test(pick.trim()) ? models[Number(pick.trim()) - 1] : pick.trim()
+  const name = /^\d+$/.test(pick.trim()) ? short[Number(pick.trim()) - 1] ?? '' : pick.trim()
   if (!name) {
     console.log(dim('  没改。'))
     return
@@ -191,7 +210,7 @@ async function cmdModel(s: TuiState, arg: string): Promise<void> {
   await cmdModel(s, name)
 }
 
-function cmdConfig(s: TuiState, arg: string): void {
+async function cmdConfig(s: TuiState, arg: string): Promise<void> {
   const cur = readCurrent()
   const parts = arg.trim().split(/\s+/).filter(Boolean)
   if (parts.length === 0) {
@@ -208,7 +227,27 @@ function cmdConfig(s: TuiState, arg: string): void {
   const [k, v] = parts
   if (k === 'approval') {
     // 配置里只认 ask / auto / allow 三档（deny 是没接交互界面时的默认，不是用户选项）
-    if (!v || !['ask', 'auto', 'allow'].includes(v)) {
+    if (!v) {
+      // 不带参数就让人选：三档的区别是「什么时候会打断你」，
+      // 让用户记住三个单词再打出来，不如把差别写在旁边
+      s.rl.pause()
+      const picked = await pickList([
+        { label: 'ask', hint: '每条命令都问', value: 'ask' },
+        { label: 'auto', hint: '只问有破坏性的', value: 'auto' },
+        { label: 'allow', hint: '都不问（危险）', value: 'allow' },
+      ], { current: cur.approval, title: '审批方式' })
+      s.rl.resume()
+      if (picked) {
+        const cfg = readConfig()
+        cfg.approval = picked as 'ask' | 'auto' | 'allow'
+        writeConfig(cfg)
+        console.log('  ' + green('✓') + ' approval → ' + picked)
+      } else if (process.stdin.isTTY) {
+        console.log(dim('  没改。'))
+      }
+      return
+    }
+    if (!['ask', 'auto', 'allow'].includes(v)) {
       console.log(dim('  用法：/config approval ask|auto|allow'))
       return
     }
@@ -610,7 +649,7 @@ export async function runTui(): Promise<void> {
         case 'help': case 'h': case '?': printHelp(); break
         case 'quit': case 'exit': case 'q': s.rl.close(); return
         case 'model': await cmdModel(s, arg); break
-        case 'config': cmdConfig(s, arg); break
+        case 'config': await cmdConfig(s, arg); break
         case 'skills': cmdSkills(s.cwd); break
         case 'mcp':
           // `/mcp` 看列表；`/mcp 名字` 是引用，交给消息里处理，不当命令执行

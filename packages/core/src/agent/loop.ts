@@ -10,6 +10,7 @@ import type { CompletionResult, Message, ToolCall, ToolSpec } from '../llm/types
 import type { LlmGateway } from '../llm/gateway.ts'
 import type { ToolDefinition } from '../types.ts'
 import { parsePatch, planPatch } from './tools/apply-patch.ts'
+import { searchImages } from './image-search.ts'
 import { checkBudget } from './budget.ts'
 import { compactMessages, shouldCompact } from './compact.ts'
 import { prepareToolOutput } from './output.ts'
@@ -54,6 +55,8 @@ export interface AgentDeps {
   /** 跑某个挂点的 hook；返回被挡下的那些 */
   runHooks?: (event: HookEvent, ctx: { tool?: string; command?: string }) => Promise<HookOutcome[]>
   writeFile: (rel: string, content: string) => void
+  /** 写二进制（图片下载用）；同样是工作区相对路径 */
+  writeBytes: (rel: string, bytes: Uint8Array) => void
   deleteFile: (rel: string) => void
   ev: (
     kind:
@@ -256,6 +259,29 @@ const SPAWN_AGENT: ToolSpec = {
   },
 }
 
+
+const SEARCH_IMAGES: ToolSpec = {
+  type: 'function',
+  function: {
+    name: 'search_images',
+    description:
+      'Find real photos and illustrations online and save them into the workspace. ' +
+      'Use this whenever the task needs a picture — do NOT scrape image search engines, ' +
+      'they return HTML, watermarked thumbnails and no usable license. ' +
+      'Results come from Openverse (Creative Commons / public domain) and each file is saved ' +
+      'with its title, author, license and source page so attribution is possible.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What the picture should show, e.g. "fried noodles"' },
+        count: { type: 'integer', description: 'How many images to save, 1-8. Default 3.' },
+        dir: { type: 'string', description: 'Folder for the files, relative to the workspace. Default "images".' },
+      },
+      required: ['query'],
+    },
+  },
+}
+
 const READ_FILE: ToolSpec = {
   type: 'function',
   function: {
@@ -378,6 +404,7 @@ export async function runAgent(
     READ_FILE,
     LIST_DIR,
     GREP,
+    SEARCH_IMAGES,
     SPAWN_AGENT,
     ...(skills.some((s) => s.scripts.length) ? [RUN_SKILL_SCRIPT] : []),
     APPLY_PATCH,
@@ -406,7 +433,8 @@ export async function runAgent(
     // apply_patch / update_plan 在进程内执行，不经过 exec，因此这里自己补审计
     const needsOwnEvent =
       name === 'apply_patch' || name === 'update_plan' || name === 'use_skill' || name === 'run_skill_script' ||
-      name === 'read_file' || name === 'list_dir' || name === 'grep' || name === 'spawn_agent'
+      name === 'read_file' || name === 'list_dir' || name === 'grep' || name === 'spawn_agent' ||
+      name === 'search_images'
     let callEvId: string | null = null
     if (needsOwnEvent) {
       callEvId = deps.ev('tool/call', { tool: name, args_preview: String(call.function.arguments).slice(0, 200) })
@@ -492,6 +520,24 @@ export async function runAgent(
         if (out === null) { finish('error', { error: `bad path: ${String(args.path ?? '.')}` }); return `ERROR: bad path: ${String(args.path ?? '.')}` }
         finish('ok', { pattern, matches: out.count })
         return out.text
+      }
+
+
+      if (name === 'search_images') {
+        const q = String(args.query ?? '').trim()
+        if (!q) { finish('error', { error: 'missing query' }); return 'ERROR: search_images needs a `query`' }
+        const want = Math.max(1, Math.min(Number(args.count ?? 3), 8))
+        const dir = String(args.dir ?? 'images').replace(/^\.?\/+/, '').replace(/\/+$/, '')
+        if (!dir) { finish('error', { error: 'bad dir' }); return 'ERROR: search_images needs a folder name' }
+        try {
+          const found = await searchImages(q, want, deps, dir)
+          finish('ok', { query: q, saved: found.saved.length })
+          return found.text
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          finish('error', { error: msg.slice(0, 200) })
+          return `ERROR: image search failed: ${msg}`
+        }
       }
 
       if (name === 'apply_patch') {

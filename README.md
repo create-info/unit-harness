@@ -290,6 +290,14 @@ things that decide whether an agent finishes a real task:
   Before this the model had to shell out to `cat`: no line numbers to point at, and a
   big file would flood the context in one go. They run in-process, read-only, and every
   path goes through the same escape check as `apply_patch`.
+- **`search_images`** — when a task needs a picture, the honest path is a library,
+  not a scraped search page. Wikimedia Commons first (no key, ~1s, author and
+  licence in `extmetadata`), Openverse second; files land in `images/` with a
+  `CREDITS.md` naming the author, the licence and the source page. Downloads are
+  checked twice — content type *and* magic bytes — because image search frequently
+  answers with an HTML "403 blocked" page that would otherwise be saved as `.jpg`.
+  Without this tool the model does not say "I can't": it curls the image search
+  HTML and writes a regex parser, which is exactly what one run did.
 - **Sub-agents.** `spawn_agent` hands a self-contained subtask to an agent with its own
   context, working in the same sandbox, and gets a written summary back. Depth is capped
   at 2 **and** a run may start at most 8 of them — a depth limit alone does not bound
@@ -377,6 +385,9 @@ just what was allowed.
   as one line each, `@path` inlines a file into the message (a big one becomes a
   pointer rather than burning the context), `$skill` loads that skill's body, and
   `/model`, `/config`, `/skills`, `/files`, `/new`, `/resume`, `/quit` cover the rest.
+  `/model` and `/config approval` open a real picker (highlight, ↑↓, type to filter,
+  Enter, Esc) instead of printing a numbered list and asking you to type a number;
+  without a terminal they fall back to that list rather than waiting for keystrokes.
   ↑/↓ walk your history (kept in `$UH_HOME/history`). Ctrl+C interrupts the running
   turn and keeps the conversation; on an empty prompt it needs a second press to exit.
   Piped input works too (`printf '/help\n' | uh chat`), so it is scriptable.

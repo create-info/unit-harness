@@ -1332,6 +1332,14 @@ export class Harness {
             return { text: formatHits(hits, { pattern, max: opts.max, filesScanned: scanned }), count: hits.length }
           } catch { return null }
         },
+        writeBytes: (rel, bytes) => {
+          // 二进制走独立入口：writeFile 收字符串，图片过一遍 utf8 编码就废了
+          const abs = this.safeJoin(rel)
+          const before = readMaybe(abs)
+          fsSync.mkdirSync(nodePath.dirname(abs), { recursive: true })
+          fsSync.writeFileSync(abs, bytes)
+          this.recordEdit(rel, before, Buffer.from(bytes))
+        },
         writeFile: (rel, content) => {
           const abs = this.safeJoin(rel)
           const before = readMaybe(abs)
