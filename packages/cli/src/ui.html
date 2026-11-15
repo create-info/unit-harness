@@ -3335,6 +3335,24 @@ async function loadAccount(){
   paintAccount();
 }
 
+/**
+ * 会员状态只有这一处判断。
+ *
+ * 接口给的是 is_member / expired / days_left / member_until_text；原来底栏读的是
+ * active / member / expires_at —— 这三个字段接口从来没有返回过，所以「还剩 24 天」
+ * 的付费用户，在底栏被标成 free，点开又是一个正常会员，同一屏自相矛盾。
+ */
+function memberInfo(mem){
+  const m = mem || {};
+  const days = m.days_left === undefined || m.days_left === null ? null : Number(m.days_left);
+  const until = m.member_until_text || m.until_text || '';
+  const rawPlan = m.member_plan || m.plan || '';
+  const planLabel = ({ monthly: 'Monthly', yearly: 'Yearly', lifetime: 'Lifetime' })[rawPlan] || rawPlan || 'Member';
+  const expired = m.expired === true || (m.is_member === false && Boolean(m.member_until || m.until));
+  const active = !expired && (m.is_member === true || m.active === true) && !(Number.isFinite(days) && days <= 0);
+  return { active, expired, days: Number.isFinite(days) ? days : null, until, plan: rawPlan, planLabel };
+}
+
 function paintAccount(){
   const row = $('#accountRow');
   if (!ACCOUNT.signedIn){
@@ -3348,14 +3366,14 @@ function paintAccount(){
     return;
   }
   const u = ACCOUNT.user || {};
-  const name = u.nickname || u.name || 'signed in';
-  const initial = String(name).slice(0, 1).toUpperCase();
-  const mem = ACCOUNT.membership || {};
-  const isMember = mem.active === true || mem.member === true || Boolean(mem.expires_at && mem.active);
-  const label = isMember ? 'member' : 'free';
-  row.innerHTML = '<span class="av">' + esc(initial) + '</span>'
-    + '<span class="who"><b>' + esc(name) + '</b><i>' + esc(u.phone || ACCOUNT.email || '') + '</i></span>'
-    + '<span class="mem' + (isMember ? '' : ' free') + '">' + label + '</span>';
+  const m = memberInfo(ACCOUNT.membership);
+  // 底栏不显示 nickname：那是注册时自动生成的「用户1」，不是人的名字。
+  // 能认出「这是我」的只有手机号，所以让它当主行。
+  const primary = u.phone || ACCOUNT.email || 'UnitAI account';
+  // 头像位放会员标记，不放 nickname 的首字（那会是「用」）
+  row.innerHTML = '<span class="av">' + (m.active ? '★' : '·') + '</span>'
+    + '<span class="who"><b>' + esc(primary) + '</b><i>' + esc(m.active ? (m.planLabel + (m.until ? ' · until ' + m.until : '')) : (m.expired ? 'membership expired' : 'free')) + '</i></span>'
+    + '<span class="mem' + (m.active ? '' : ' free') + '">' + esc(m.active ? (m.days !== null ? m.days + 'd' : 'member') : 'free') + '</span>';
   row.onclick = openLogin;
 }
 
@@ -3376,20 +3394,18 @@ async function openLogin(){
     $('#lgTitle').textContent = 'UnitAI account';
     // 直接把接口返回的 JSON 打印出来，是「调试信息」，不是给人看的东西：
     // 一句话里塞 days_left / expired / expiring / plan 四份重复的时间。
-    const planName = ({ monthly: 'Monthly', yearly: 'Yearly', lifetime: 'Lifetime' })[mem.member_plan || mem.plan]
-      || mem.member_plan || mem.plan || '—';
-    const until = mem.member_until_text || mem.until_text || '';
-    const days = Number(mem.days_left);
+    const mi = memberInfo(mem);
     let state
-    if (mem.is_member !== true) state = '<span class="lvbad">not subscribed</span>'
-    else if (mem.expired) state = '<span class="lvbad">expired</span>'
+    if (mi.expired) state = '<span class="lvbad">expired</span>'
+    else if (!mi.active) state = '<span class="lvbad">not subscribed</span>'
     else {
-      state = '<span class="lvok">' + esc(planName) + '</span>'
-        + (until ? ' · until ' + esc(until) : '')
-        + (Number.isFinite(days) ? ' · <b>' + days + '</b> days left' : '')
+      state = '<span class="lvok">' + esc(mi.planLabel) + '</span>'
+        + (mi.until ? ' · until ' + esc(mi.until) : '')
+        + (mi.days !== null ? ' · <b>' + mi.days + '</b> days left' : '')
     }
+    // 不显示「账号 = 用户1」这一行：那是注册时自动生成的编号，不是人的名字，
+    // 摆出来只会让人以为我们拿错了账号。真正能证明「这是我」的只有手机号。
     $('#lgWho').innerHTML = '<div class="lgacct">'
-      + '<div class="lgrow"><span>account</span><b>' + esc(u.nickname || u.name || 'signed in') + '</b></div>'
       + (u.phone ? '<div class="lgrow"><span>phone</span><b>' + esc(u.phone) + '</b></div>' : '')
       + '<div class="lgrow"><span>plan</span><b>' + state + '</b></div>'
       + '</div>'
