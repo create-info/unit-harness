@@ -59,9 +59,23 @@ function parseFrontmatter(raw: string): { meta: Record<string, string>; body: st
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(raw)
   if (!m) return { meta: {}, body: raw.trim() }
   const meta: Record<string, string> = {}
-  for (const line of (m[1] as string).split('\n')) {
-    const kv = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line.trim())
-    if (kv) meta[kv[1] as string] = (kv[2] as string).replace(/^["']|["']$/g, '').trim()
+  const lines = (m[1] as string).split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const kv = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(lines[i] as string)
+    if (!kv) continue
+    const key = kv[1] as string
+    let val = (kv[2] as string).trim()
+    // YAML 块标量：`description: >` 或 `|`，正文在下面缩进的行里。
+    // 不合并的话 meta.description 就只是一个「>」，界面上整个技能的简介变成 ">"
+    if (val === '>' || val === '|' || val === '>-' || val === '|-') {
+      const block: string[] = []
+      while (i + 1 < lines.length && (/^\s+\S/.test(lines[i + 1] as string) || (lines[i + 1] as string).trim() === '')) {
+        i++
+        block.push((lines[i] as string).trim())
+      }
+      val = (val.startsWith('>') ? block.join(' ') : block.join('\n')).trim()
+    }
+    meta[key] = val.replace(/^["']|["']$/g, '').trim()
   }
   return { meta, body: raw.slice(m[0].length).trim() }
 }
