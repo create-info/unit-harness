@@ -7,6 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
+import { JUNK_DIRS, isJunkPath } from '../fs/junk.ts'
 
 export interface FileMeta {
   size: number
@@ -23,16 +24,9 @@ export type Snapshot = Record<string, FileMeta>
  * 快照里塞了两千个哈希文件名——它们变成两千条「交付物」刷满屏幕，跑完还要
  * 因为其中一些被清理而报「文件被移除了」。构建缓存的增减不是用户的工作成果。
  */
-const SKIP_DIRS = new Set([
-  'node_modules', '.git', '.uh', 'build', 'dist', '.cache', '__pycache__',
-  // Go：GOCACHE 可以被指到工程目录里
-  '.gocache', 'gocache', 'go-build', '.go-build',
-  // Python / JS 工具链的本地状态
-  '.venv', 'venv', '.tox', '.pytest_cache', '.mypy_cache', '.ruff_cache',
-  '.next', '.nuxt', '.turbo', '.parcel-cache', '.svelte-kit', 'coverage', '.nyc_output',
-  // 其它语言/构建系统
-  'target', '.gradle', '.cargo',
-])
+// 清单搬到 fs/junk.ts 了：这里少写 `.uvcache` 就够让一条会话烧掉三千步，
+// 所以它只能有一份，各处引用同一份。
+const SKIP_DIRS = JUNK_DIRS
 const MAX_FILES = 2000
 const MAX_HASH_BYTES = 8 * 1024 * 1024
 
@@ -135,6 +129,10 @@ export interface Artifact {
 export function collectArtifacts(root: string, changes: ChangeSet, after: Snapshot): Artifact[] {
   const out: Artifact[] = []
   for (const p of [...changes.added, ...changes.modified]) {
+    // 老快照是按旧清单拍的，里面还带着 `.uvcache`、`.venv` 这类目录。
+    // 只在拍快照那一层过滤，等于"新会话干净、老会话照旧"——用户点开的那条
+    // 恰恰是老会话。所以读出来的时候也按同一份清单滤一遍。
+    if (isJunkPath(p)) continue
     const meta = after[p]
     if (!meta) continue
     out.push({ path: p, sha256: meta.sha256, bytes: meta.size })

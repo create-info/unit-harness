@@ -21,6 +21,7 @@ import {
   getBinding, setBinding, claimMessage, bindingKey,
   readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig } from '@unit-harness/core'
 import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget, WatchManager } from '@unit-harness/core'
+import { JUNK_DIRS } from '@unit-harness/core'
 import type { IncomingMessage } from '@unit-harness/core'
 import {
   loadMcpServers, discoverSkills, skillRoots, globalMcpConfigPath, projectMcpConfigPath,
@@ -681,7 +682,8 @@ function underWorkspace(rel: string): string | null {
   return abs
 }
 
-const REF_SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.uh', '.cache', '__pycache__', '.venv', 'target'])
+// 和 core 共用同一份清单：这些目录不该出现在 @ 引用列表里
+const REF_SKIP = JUNK_DIRS
 
 /**
  * 工作区里有哪些文件可以被 @ 到。
@@ -1230,7 +1232,21 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         const hit = events.find((e) => e.kind === 'checkpoint/file'
           && (e.payload as { path?: string }).path === want
           && (!seq || e.seq === seq))
-        if (!hit) { json(res, 404, { error: 'no checkpoint for that file in this session' }); return }
+        if (!hit) {
+          // 说清是哪一种「打不开」，别让用户对着英文 404 猜：
+          //  1) 这个文件在磁盘上变了，但改动不是这次会话做的（别的会话/手动编辑/
+          //     工具自己的缓存），所以没有它的前后版本可对比；
+          //  2) 会话记了，但快照正文已被清理。
+          const ws = store.get(sessionId)?.workspace ?? ''
+          const onDisk = !!ws && existsSync(pathMod.join(ws, want))
+          json(res, 404, {
+            error: onDisk
+              ? `这次会话没有改过「${want}」——它是在会话之外被写入的（比如装依赖产生的缓存），所以没有可对比的前后版本。`
+              : `「${want}」已经不在工作区里了，会话里也没有它的改动记录。`,
+            outsideSession: onDisk,
+          })
+          return
+        }
         const edits = hydrateEdits([hit.payload as never], dir)
         const ed = edits[0]
         if (!ed) { json(res, 404, { error: 'could not hydrate that edit' }); return }

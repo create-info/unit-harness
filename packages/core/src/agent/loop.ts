@@ -423,6 +423,45 @@ export async function runAgent(
   let stuckSig = ''
   let stuckN = 0
   const STUCK_REPEATS = 5
+
+  /**
+   * 把一次工具调用压成「动作」，用来判重复。
+   *
+   * 参数里随手边情况变化的部分（URL、文件名、行号、offset）不属于动作本身：
+   * 「换一个站点接着抓」「换一个文件接着读」是同一件事在重复，不是新进展。
+   * 反过来，`npm test` 和 `npm build`、`python x.py` 和 `python y.py` 是不同动作，
+   * 主体不同就该区分开。
+   */
+  const actionKey = (raw: unknown): string => {
+    const s = String(raw ?? '')
+    let o: Record<string, unknown> = {}
+    try { o = JSON.parse(s) as Record<string, unknown> } catch { return s.slice(0, 80) }
+    const str = (k: string): string => (typeof o[k] === 'string' ? (o[k] as string) : '')
+
+    // exec：取 argv 里真正的命令主体（解释器 + 脚本名 / 命令名 + 子命令），丢掉参数
+    const argv = Array.isArray(o.argv) ? (o.argv as unknown[]).map(String) : null
+    if (argv && argv.length) {
+      // `sh -c "cd X && cmd ..."` 的真正动作是 cmd：先剥掉 cd/env 前缀，再取前三个词
+      const script = argv[0] === 'sh' || argv[0] === 'bash' ? argv.slice(2).join(' ') : ''
+      const core = script
+        .replace(/^\s*(cd\s+\S+\s*&&\s*)+/, '')
+        .replace(/^\s*(export\s+\S+=\S*\s*)+/, '')
+        .split(/\s*(?:&&|\||;)\s*/)[0]
+      const a = core ? core.split(/\s+/).slice(0, 3) : argv.slice(0, 3)
+      // 脚本路径只留文件名，换目录找同一份脚本算同一动作
+      return a.map((x) => x.split('/').pop() ?? x).join(' ')
+    }
+    // 文件类工具：只看工具名和目录层级，不看具体文件
+    const p = str('path') || str('file')
+    if (p) {
+      const seg = p.split(/[\\/]+/).filter(Boolean)
+      return seg.length > 1 ? seg.slice(0, 2).join('/') : (seg[0] ?? p)
+    }
+    // 抓网页：抓哪儿都是同一件事（换站点只是碰运气），统一成 fetch
+    if (str('url') || str('query')) return 'fetch'
+    for (const k of ['cmd', 'command']) if (str(k)) return str(k).split(/\s+/).slice(0, 2).join(' ')
+    return Object.keys(o).sort().join(',')
+  }
   let lastText = ''
   let plan: PlanStep[] = []
   let compactions = 0
@@ -823,7 +862,13 @@ export async function runAgent(
       const exit = /^exit=(-?\d+)\b/.exec(out)
       const failed = /^(ERROR|BLOCKED)\b/.test(out) || (exit !== null && Number(exit[1]) !== 0)
       if (!failed) { stuckSig = ''; stuckN = 0; continue }
-      const sig = c.function.name + ':' + String(c.function.arguments || '')
+      // 签名只取「工具名 + 命令主体」，不取整串参数。
+      //
+      // 原来的签名是整串参数，于是「一条命令换个 URL 接着试」永远不会被认成重复：
+      // 实测一条会话里连着 200 次 `python3 .../attribution_guard.py`（每次都成功），
+      // 以及几十次 curl 换域名找同一份资料——每一步签名都不同，次数统计一直是 1。
+      // 真正重复的是**同一个动作**，参数里的 URL/文件名只是它在换目标碰运气。
+      const sig = c.function.name + ':' + actionKey(c.function.arguments)
       if (sig === stuckSig) stuckN++
       else { stuckSig = sig; stuckN = 1 }
     }

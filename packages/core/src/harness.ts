@@ -14,6 +14,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { probeIsolation } from './sandbox/probe.ts'
+import { isJunkDirName } from './fs/junk.ts'
 import { EventStore } from './evidence/store.ts'
 import { LlmGateway } from './llm/gateway.ts'
 import { resolveProvider } from './llm/resolve.ts'
@@ -373,6 +374,13 @@ export class Harness {
       GOMODCACHE: nodePath.join(root, 'cache', 'go-mod'),
       CARGO_HOME: nodePath.join(root, 'cache', 'cargo'),
       GRADLE_USER_HOME: nodePath.join(root, 'cache', 'gradle'),
+      // uv 默认把缓存放在**当前目录**（`./.uvcache` 或 `$PWD/.cache/uv`）。
+      // ppt-master 在这个工作区里装了一次依赖，就把几千个 lxml 头文件写进了
+      // 工作区根目录——它们被算成「文件改动」，模型被喂进去，一条会话烧到
+      // 三千多步还在读 `libxslt/*.h`。缓存属于工具，不属于项目。
+      UV_CACHE_DIR: nodePath.join(root, 'cache', 'uv'),
+      // pip 的 wheel 构建缓存同样别落在项目里
+      PYTHONPYCACHEPREFIX: nodePath.join(root, 'cache', 'pycache'),
     }
     const out: Record<string, string> = {}
     for (const [k, v] of Object.entries(dirs)) {
@@ -1302,7 +1310,7 @@ export class Harness {
               try { st = fsSync.statSync(abs) } catch { return false }
               if (st.isDirectory()) {
                 const base = nodePath.basename(abs)
-                if (base === 'node_modules' || base === '.git' || base === '.uh' || base === 'dist') return false
+                if (isJunkDirName(base)) return false
                 for (const e of fsSync.readdirSync(abs)) {
                   if (walk(nodePath.join(abs, e))) return true
                 }
