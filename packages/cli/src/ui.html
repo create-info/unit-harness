@@ -521,6 +521,17 @@
   .rowline{display:flex;gap:8px}
   .rowline input{flex:1}
   .btn{background:var(--hover);border:1px solid var(--line);color:var(--fg);border-radius:7px;padding:8px 12px;font-size:12px;cursor:pointer;white-space:nowrap}
+  /* 远程访问页：一键复制的地址条 + 小按钮 */
+  .surl{display:flex;align-items:center;gap:8px;max-width:520px}
+  .surl code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font:11px/1.6 var(--mono);background:var(--input);border:1px solid var(--line);
+    border-radius:6px;padding:6px 8px;color:var(--fg)}
+  .sbtn{background:var(--hover);border:1px solid var(--line);color:var(--fg);border-radius:6px;
+    padding:6px 10px;font-size:11.5px;cursor:pointer;white-space:nowrap}
+  .sbtn:hover{border-color:var(--dim)}
+  .sbtn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+  .sbtn.danger:hover{border-color:var(--bad);color:var(--bad)}
+  @media (max-width:820px){ .surl{max-width:100%} .surl code{font-size:10.5px} }
   .btn:hover{border-color:var(--hoverline)}
   .btn.primary{background:var(--accent);color:#0b0e13;border:0;font-weight:600}
   .btn:disabled{opacity:.5;cursor:default}
@@ -640,6 +651,7 @@
       <div class="setitem" data-p="sandbox">沙箱</div>
       <div class="setgrp">集成</div>
       <div class="setitem" data-p="plugins">插件</div>
+      <div class="setitem" data-p="remote">远程访问</div>
       <div class="setitem" data-p="computer">电脑操控</div>
       <div class="setgrp">Data</div>
       <div class="setitem" data-p="storage">存储</div>
@@ -1478,6 +1490,7 @@ for (const it of document.querySelectorAll('.setitem')) {
     SETPAGE = it.dataset.p;
     if (SETPAGE === 'plugins') await loadPlugins();
     if (SETPAGE === 'computer') await loadComputer();
+    if (SETPAGE === 'remote') await loadRemote();
     renderSettings();
   });
 }
@@ -1732,6 +1745,7 @@ async function openSettings(page) {
   SETPAGE = page || SETPAGE;
   if (SETPAGE === 'plugins' && !PLUGINS) await loadPlugins();
   if (SETPAGE === 'computer' && !COMPUTER) await loadComputer();
+  if (SETPAGE === 'remote' && !REMOTE) await loadRemote();
   $('#setModal').classList.add('on');
   await loadSettings();
   await loadAccount();
@@ -1740,8 +1754,161 @@ async function openSettings(page) {
 
 function navHighlight() {
   for (const it of document.querySelectorAll('.setitem')) it.classList.toggle('cur', it.dataset.p === SETPAGE);
-  const title = { general: '常规', model: '模型', sandbox: '沙箱', storage: '存储', usage: '用量', about: '关于' };
+  const title = { general: '常规', model: '模型', sandbox: '沙箱', storage: '存储', usage: '用量', about: '关于', remote: '远程访问', computer: '电脑操控', plugins: '插件', appearance: '外观' };
   $('#setTitle').textContent = title[SETPAGE] || '设置';
+}
+
+/* 远程访问：手机上也要能看到「谁能连我、我该连哪个地址」，并且能撤销 */
+let REMOTE = null;
+async function loadRemote(){
+  try { REMOTE = await fetch('/api/remote').then((r) => r.json()) } catch { REMOTE = { error: true } }
+}
+
+/* 这页是它自己的窗口（PWA 全屏），原生 prompt() 在 iOS 独立模式下不可靠，
+   样式也和深色界面不搭。用输入框代替。 */
+function askName(defaultValue){
+  return new Promise((resolve) => {
+    const mask = document.createElement('div');
+    mask.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:24px';
+    const box = document.createElement('div');
+    box.className = 'card';
+    box.style.cssText = 'max-width:340px;width:100%;padding:16px';
+    box.innerHTML = '<b style="font-size:13px">给这台设备起个名字</b>'
+      + '<input id="__devname" spellcheck="false" style="width:100%;box-sizing:border-box;margin-top:10px;padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--input);color:var(--fg);font-size:15px">'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'
+      + '<button class="btn" id="__cancel">取消</button><button class="btn" id="__ok" style="background:var(--accent);border-color:var(--accent);color:#fff">确定</button></div>';
+    mask.appendChild(box);
+    document.body.appendChild(mask);
+    const inp = box.querySelector('#__devname');
+    inp.value = defaultValue;
+    inp.focus();
+    inp.select();
+    const done = (v) => { mask.remove(); resolve(v) };
+    box.querySelector('#__ok').onclick = () => done(inp.value);
+    box.querySelector('#__cancel').onclick = () => done('');
+    inp.onkeydown = (e) => {
+      if (e.key === 'Enter') done(inp.value);
+      if (e.key === 'Escape') done('');
+    };
+  });
+}
+
+/** 自己的确认框：原生的 confirm 在 PWA 独立窗口里不可靠 */
+function askYes(text){
+  return new Promise((resolve) => {
+    const mask = document.createElement('div');
+    mask.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:24px';
+    const box = document.createElement('div');
+    box.className = 'card';
+    box.style.cssText = 'max-width:340px;width:100%;padding:16px';
+    box.innerHTML = '<div style="font-size:13px;line-height:1.6;white-space:pre-wrap"></div>'
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">'
+      + '<button class="btn" id="__no">取消</button><button class="btn" id="__yes" style="background:var(--bad);border-color:var(--bad);color:#fff">确定</button></div>';
+    box.firstChild.textContent = text;
+    mask.appendChild(box);
+    document.body.appendChild(mask);
+    const done = (v) => { mask.remove(); resolve(v) };
+    box.querySelector('#__yes').onclick = () => done(true);
+    box.querySelector('#__no').onclick = () => done(false);
+    mask.onkeydown = (e) => { if (e.key === 'Escape') done(false) };
+  });
+}
+
+async function pairDevice(){
+  const name = (await askName('我的手机')) || '';
+  if (!name.trim()) return;
+  try {
+    const j = await fetch('/api/remote/device', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: name.trim() }),
+    }).then((r) => r.json());
+    if (j.error) { setMsg('没配上：' + j.error, true); return }
+    await loadRemote();
+    renderSettings();
+    setMsg('已配对「' + j.name + '」，在手机上打开配对地址即可');
+  } catch (e) { setMsg('没配上：' + e, true) }
+}
+
+async function revokeDevice(id, name){
+  // 不用原生 confirm：iOS 的独立窗口（添加到主屏幕后）里它会静默失败，
+  // 点了「撤销」什么都没发生——和之前 prompt 同一类问题。
+  if (!(await askYes('撤销「' + name + '」？\n这台设备下次访问要重新配对。'))) return;
+  try {
+    const r = await fetch('/api/remote/revoke', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+    if (!r.ok) { setMsg('没撤销成功', true); return }
+    await loadRemote();
+    renderSettings();
+    setMsg('已撤销「' + name + '」');
+  } catch (e) { setMsg('没撤销成功：' + e, true) }
+}
+
+function renderRemote(body){
+  const R = REMOTE || {};
+  if (R.error) {
+    body.appendChild(section('远程访问', [srow('读不到状态', '服务端没有回答 /api/remote。', '')]));
+    return;
+  }
+  const ts = R.tailscale || { state: 'absent' };
+  const tsText = ts.state === 'up'
+    ? '在线 · ' + (ts.ip || '')
+    : ts.state === 'logged-out'
+      ? '装了但没登录：在电脑上跑 tailscale up，之后手机装 Tailscale 就能跨网络连'
+      : '没装。要跨网络用，装 Tailscale 比把端口开到公网安全得多';
+
+  const rows = [
+    srow('当前监听', R.loopback
+      ? '只听本机（127.0.0.1:' + R.port + '）。手机连不上——电脑上改用 uh serve --lan'
+      : '对整个局域网开着：' + (R.addresses || []).join(', ') + ' · 端口 ' + R.port,
+      el(R.loopback ? '<span class="cstat cno">●  仅本机</span>' : '<span class="cstat cok">●  局域网内可连</span>')),
+    srow('跨网络', tsText,
+      el(ts.state === 'up' ? '<span class="cstat cok">●  可用</span>' : '<span class="cstat cno">●  未就绪</span>')),
+  ];
+
+  // 口令和地址：手机上照着敲是不现实的，给一键复制
+  if (!R.loopback && R.urls && R.urls.length) {
+    const url = R.urls[0];
+    const full = url + '/?t=' + encodeURIComponent(R.token || '');
+    const box = document.createElement('div');
+    box.className = 'surl';
+    box.innerHTML = '<code>' + esc(full) + '</code>';
+    const b = document.createElement('button');
+    b.className = 'sbtn';
+    b.textContent = '复制';
+    b.onclick = async () => {
+      try { await navigator.clipboard.writeText(full); setMsg('复制好了，发到手机上打开') }
+      catch { setMsg('复制不了，手动选吧', true) }
+    };
+    box.appendChild(b);
+    rows.push(srow('手机打开这个地址', '打开一次就记住，之后可以「添加到主屏幕」。', box));
+  }
+
+  body.appendChild(section('这台电脑', rows));
+
+  const devs = R.devices || [];
+  const devRows = devs.length
+    ? devs.map((d) => {
+      const wrap = document.createElement('span');
+      wrap.className = 'ctlwrap';
+      wrap.innerHTML = '<span class="cstat cok">●  ' + esc(d.lastSeen ? '最近用过 ' + relTime(d.lastSeen) : '还没用过') + '</span>';
+      const b = document.createElement('button');
+      b.className = 'sbtn danger';
+      b.textContent = '撤销';
+      b.onclick = () => void revokeDevice(d.id, d.name);
+      wrap.appendChild(b);
+      return srow(d.name, '配对于 ' + relTime(d.created) + ' · ' + d.id, wrap);
+    })
+    : [srow('还没有配对的设备', '配对过的手机/平板会列在这里，丢了就在这里撤销。', '')];
+
+  const add = document.createElement('button');
+  add.className = 'sbtn primary';
+  add.textContent = '配一台新设备';
+  add.onclick = () => void pairDevice();
+  devRows.push(srow('新增', '给要连进来的设备起个名字，然后在它的浏览器里打开配对地址。', add));
+
+  body.appendChild(section('已配对的设备', devRows));
 }
 
 function renderSettings() {
@@ -1751,6 +1918,10 @@ function renderSettings() {
   const S = SETTINGS || {};
   const SB = S.sandbox || {};
 
+  if (SETPAGE === 'remote') {
+    renderRemote(body);
+    return;
+  }
   if (SETPAGE === 'computer') {
     const C = COMPUTER || {};
     const shot = C.screenshots || {};

@@ -22,7 +22,7 @@ import {
   expandMentions,
 } from '@unit-harness/core'
 import { pluginDirs } from './plugin-dirs.ts'
-import { deviceForToken } from './pairing.ts'
+import { deviceForToken, loadDevices, createDevice, revokeDevice, pairUrl } from './pairing.ts'
 import type { ApprovalGate, ApprovalRequest, Message } from '@unit-harness/core'
 import UI from './ui.html'
 import { asrStatus, transcribe } from './asr.ts'
@@ -286,6 +286,39 @@ const watchManager = new WatchManager({
     } catch { /* 连接已断 */ }
   },
 })
+/**
+ * Tailscale 能不能用来远程（不在同一个 Wi-Fi 也连得上）。
+ *
+ * 三条状态分开报：没装 / 装了没登录 / 在线。只说「不可用」会让人以为是
+ * 网络问题，实际是差了 `tailscale up` 那一步。
+ */
+function tailscaleState(): { state: 'absent' | 'logged-out' | 'up'; ip?: string } {
+  try {
+    const out = execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim().split('\n')[0]
+    if (out) return { state: 'up', ip: out }
+  } catch { /* 落到下面继续判断 */ }
+  try {
+    execFileSync('tailscale', ['version'], { timeout: 3000, stdio: 'ignore' })
+    return { state: 'logged-out' }
+  } catch {
+    return { state: 'absent' }
+  }
+}
+
+/** 手机真正连得上的地址：跳过 docker/bridge 那几个（列出来只会让人多试几次） */
+function lanAddresses(): string[] {
+  const out: string[] = []
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const n of list ?? []) {
+      if (n.family === 'IPv4' && !n.internal && !/^172\.(1[7-9]|2\d|3[01])\./.test(n.address)) {
+        out.push(n.address)
+      }
+    }
+  }
+  return out
+}
+
 /** clientId → 这条 SSE 连接的写入口 */
 const fileSubs = new Map<string, Subscriber>()
 let nextWatchClient = 1
@@ -709,6 +742,44 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     if (req.method === 'GET' && url.pathname === '/sw.js') {
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' })
       res.end(SERVICE_WORKER)
+      return
+    }
+
+    // ---- 远程访问（配对设备）----
+    // 手机上要能看到「这台电脑现在能被谁连、连的是哪个地址」，还要能在这里
+    // 撤销。以前只能回电脑敲 uh devices / uh unpair——人不在电脑前面就办不到。
+    if (req.method === 'GET' && url.pathname === '/api/remote') {
+      const token = serveToken()
+      const addrs = lanAddresses()
+      json(res, 200, {
+        // 只听本机还是对整个局域网开着：这决定了手机现在连不连得上
+        loopback: host === '127.0.0.1' || host === 'localhost' || host === '::1',
+        port,
+        addresses: addrs,
+        // 口令只回给已经进门的人（这个接口本身在鉴权之后），不会出现在页面上
+        token,
+        urls: addrs.map((a) => `http://${a}:${port}`),
+        devices: loadDevices().map((d) => ({ id: d.id, name: d.name, created: d.created, lastSeen: d.lastSeen })),
+        // 能不开公网就不开：tailscale 装了但没登录时，这里明确告诉用户下一步
+        tailscale: tailscaleState(),
+      })
+      return
+    }
+    if (req.method === 'POST' && url.pathname === '/api/remote/device') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as { name?: string }
+      const name = String(body.name ?? '').trim().slice(0, 40) || '我的手机'
+      const made = createDevice(name)
+      const base = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+        ? `http://127.0.0.1:${port}`
+        : `http://${lanAddresses()[0] ?? '127.0.0.1'}:${port}`
+      json(res, 200, { id: made.device.id, name: made.device.name, token: made.token, url: pairUrl(base, made.token) })
+      return
+    }
+    if (req.method === 'POST' && url.pathname === '/api/remote/revoke') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as { id?: string }
+      const gone = revokeDevice(String(body.id ?? ''))
+      if (!gone) { json(res, 404, { error: '没有这台设备' }); return }
+      json(res, 200, { id: gone.id, name: gone.name })
       return
     }
 
