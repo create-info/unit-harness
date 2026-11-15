@@ -103,12 +103,17 @@
   aside h1{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin:14px 16px 6px;font-weight:600}
   /* 项目 = 工作区。会话挂在项目下面，和 Codex 的左栏一致 */
   .grp{margin-bottom:2px}
-  .grphead{display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:7px;cursor:pointer;font-size:12px;color:var(--dim)}
+  /* 右边留出「…」的位置：不留的话鼠标一上去，按钮就压在会话数量上 */
+  .grphead{display:flex;align-items:center;gap:6px;padding:6px 22px 6px 10px;border-radius:7px;
+    cursor:pointer;font-size:12px;color:var(--dim)}
   .grphead:hover{background:var(--hover);color:var(--fg)}
   .grphead.on{color:var(--fg)}
   .grphead .car{font-size:9px;width:9px;color:var(--soft)}
   .grphead .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-  .grphead .cnt{font-size:10px;color:var(--soft);font-family:var(--mono)}
+  /* 数量原来用 --soft（最浅的一档），在浅色主题下等于看不见。
+     现在给一点底色，既压得住又不抢项目的名字。 */
+  .grphead .cnt{font-size:10px;color:var(--dim);font-family:var(--mono);
+    background:var(--hover);border-radius:999px;padding:0 5px;min-width:16px;text-align:center}
   .grphead .dot{width:5px;height:5px;border-radius:50%;background:var(--ok);flex:0 0 5px}
   .grpsess{display:none;padding-left:6px}
   .grpsess.on{display:block}
@@ -161,6 +166,10 @@
   .mpitem .pm{font-family:var(--mono);font-size:10.5px;color:var(--dim)}
   .mpitem .set{color:var(--ok);font-size:10px}
   .icon{background:var(--hover);border:1px solid var(--line);color:var(--dim);border-radius:6px;width:24px;height:24px;cursor:pointer;font-size:12px;line-height:1;padding:0}
+  /* 关闭按钮：24px 的灰 ✕ 在插件页那种大片留白里几乎看不见，用户会以为
+     这一页没有出口。放大到 30px、默认就描边、悬停变亮。 */
+  .settop .icon{width:30px;height:30px;font-size:14px;display:flex;align-items:center;justify-content:center}
+  .settop .icon:hover{color:var(--fg);background:var(--hover);border-color:var(--dim)}
   .icon:hover{color:var(--fg);border-color:var(--hoverline)}
   #sessions{flex:1;overflow:auto;padding:0 8px 8px}
   .sess{padding:7px 10px;border-radius:8px;cursor:pointer;font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -168,22 +177,33 @@
   .sess.active{background:var(--hover);color:var(--fg)}
   /* 会话行右侧的「…」：默认藏起来，悬停/聚焦才出现；触屏上没有 hover，
      所以窄屏一律显示（不然手机上根本没法管理会话） */
-  .sess{position:relative}
-  .sess .smore{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:none;
-    border:0;background:var(--hover);color:var(--dim);border-radius:6px;
-    width:20px;height:20px;line-height:1;font-size:14px;cursor:pointer;padding:0}
-  .sess:hover .smore,.sess .smore:focus{display:block}
-  @media (hover:none){ .sess .smore{display:block} }
+  /* 「…」按钮的公共外观。
+     之前只写了 .sess .smore 这一条，项目头用的 .smore.pm 根本没被匹配到，
+     于是它按浏览器默认按钮渲染成一个带边框的白方块——又丑又不像能点。 */
+  .smore{border:0;background:transparent;color:var(--dim);border-radius:6px;
+    width:18px;height:18px;line-height:1;font-size:14px;cursor:pointer;padding:0;
+    display:none;align-items:center;justify-content:center}
+  .smore:hover{background:var(--hover);color:var(--fg)}
+  /* 右边给「…」留出位置，否则长标题会从按钮底下钻出来一截 */
+  .sess{position:relative;padding-right:24px}
+  .sess .smore{position:absolute;right:2px;top:50%;transform:translateY(-50%)}
+  .sess:hover .smore,.sess .smore:focus{display:flex}
+  @media (hover:none){ .sess .smore{display:flex} }
   .sess .pin{font-size:9px;opacity:.8}
   .grphead{position:relative}
-  .grphead .smore.pm{right:2px}
-  .grphead:hover .smore.pm{display:block}
-  .smenu{position:fixed;z-index:9998;min-width:132px;padding:4px;border-radius:10px;
-    background:var(--panel);border:1px solid var(--line);box-shadow:0 10px 30px rgba(0,0,0,.35)}
+  /* 跟会话行一个规矩：不悬停就不出现。之前这里没写 display:none，
+     于是每个项目名右侧都挂着一个「…」，把本来就不宽的名字挤掉半截。 */
+  .grphead .smore.pm{position:absolute;right:2px;top:50%;transform:translateY(-50%)}
+  .grphead:hover .smore.pm,.grphead .smore.pm:focus{display:flex}
+  @media (hover:none){ .grphead .smore.pm{display:flex} }
+  .smenu{position:fixed;z-index:9998;min-width:150px;padding:5px;border-radius:11px;
+    background:var(--panel);border:1px solid var(--line);box-shadow:0 12px 34px rgba(0,0,0,.28)}
   .smitem{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--fg);
-    font-size:12px;padding:7px 10px;border-radius:6px;cursor:pointer}
+    font-size:12px;padding:8px 10px;border-radius:7px;cursor:pointer}
   .smitem:hover{background:var(--hover)}
+  /* 危险项要跟普通项长得不一样：同一行灰字里混一个「删除」，点错只是时间问题 */
   .smitem.danger{color:var(--bad)}
+  .smitem.danger:hover{background:color-mix(in srgb, var(--bad) 14%, transparent)}
   /* 技能详情里的文件树：一行一个文件，点路径看内容，右侧删掉 */
   .prow.openable{cursor:pointer}
   .prow.openable:hover{background:var(--hover)}
