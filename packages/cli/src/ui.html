@@ -531,7 +531,17 @@
   .sbtn:hover{border-color:var(--dim)}
   .sbtn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
   .sbtn.danger:hover{border-color:var(--bad);color:var(--bad)}
-  @media (max-width:820px){ .surl{max-width:100%} .surl code{font-size:10.5px} }
+  @media (max-width:820px){
+    .surl{max-width:100%}
+    .surl code{font-size:10.5px}
+    /* 手机上说明文字会把按钮挤成竖排，先藏说明，标题和按钮能一行放下。
+       注意说明是 `.rt i`（`.row .rt i{display:block}`），不是裸 `.row i`——
+       写错选择器等于什么都没改。 */
+    #setBody .row .rt i{display:none}
+    #setBody .row .rt b{font-size:12px}
+    #setBody .row .rc{min-width:0}
+    .sbtn{padding:7px 10px;font-size:11px}
+  }
   .btn:hover{border-color:var(--hoverline)}
   .btn.primary{background:var(--accent);color:#0b0e13;border:0;font-weight:600}
   .btn:disabled{opacity:.5;cursor:default}
@@ -548,6 +558,9 @@
   .tsep::before,.tsep::after{content:'';height:1px;background:var(--line);flex:1}
 
   /* 选文件夹的弹窗（参考 Codex：点进去 / 面包屑退回 / 当前目录直接打开） */
+  /* 弹窗要压在手机抽屉(70)上面：手机上先开抽屉、再点设置，抽屉 z-index 比弹窗高，
+     弹窗开在抽屉下面，整页看起来像没反应。只在窄屏才加高，桌面端抽屉不是浮层。 */
+  @media (max-width:820px){ #projModal{z-index:80} #setModal{z-index:80} }
   #projModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55);z-index:24}
   #projModal.on{display:flex}
   .pmcard{width:620px;max-width:94vw;max-height:82vh;display:flex;flex-direction:column;
@@ -1472,7 +1485,12 @@ $('#task').addEventListener('focus', () => {
   });
 });
 
-$('#settingsBtn').addEventListener('click', () => openSettings('general'));
+$('#settingsBtn').addEventListener('click', () => {
+  // 手机上是抽屉里的按钮：点完把它收起来，否则弹窗压在抽屉上面，
+  // 用户第一眼还是左栏，以为没打开。
+  document.body.classList.remove('drawer');
+  openSettings('general');
+});
 $('#projBtn').addEventListener('click', () => openProjectModal());
 $('#pmClose').addEventListener('click', closeProjectModal);
 $('#pmCancel').addEventListener('click', closeProjectModal);
