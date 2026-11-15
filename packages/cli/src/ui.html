@@ -60,6 +60,8 @@
   .ptxt b{font-size:12.5px;font-weight:500;color:var(--fg)}
   .ptxt i{font-style:normal;font-size:11.5px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .ptag{flex:0 0 auto;font-size:10.5px;color:var(--dim);border:1px solid var(--line);border-radius:5px;padding:1px 6px;white-space:nowrap}
+  .prow .pnm{display:flex;align-items:center;gap:8px;min-width:0}
+  .prow .pnm b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .pempty{ padding:26px 14px;text-align:center;color:var(--dim);font-size:12px;line-height:1.8}
   /* 空面板不是标语：给出「放什么、放哪里、长什么样」 */
   .pguide{text-align:left;max-width:720px;margin:0 auto}
@@ -108,13 +110,19 @@
     cursor:pointer;font-size:12px;color:var(--dim)}
   .grphead:hover{background:var(--hover);color:var(--fg)}
   .grphead.on{color:var(--fg)}
-  .grphead .car{font-size:9px;width:9px;color:var(--soft)}
+  /* 前导槽位必须一样宽：当前项目前面是状态点、其它项目前面是箭头，
+     宽度不一致时项目名就会一列一列地错开（截图里 work 比 TEST 右移了 11px）。 */
+  .grphead .car{font-size:9px;flex:0 0 14px;width:14px;color:var(--soft);
+    display:flex;align-items:center;justify-content:center}
   .grphead .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
   /* 数量原来用 --soft（最浅的一档），在浅色主题下等于看不见。
      现在给一点底色，既压得住又不抢项目的名字。 */
+  /* 数字按右边缘对齐成一条竖线：居中的话 30 和 3 左边缘一高一低，一眼看着就是歪的 */
   .grphead .cnt{font-size:10px;color:var(--dim);font-family:var(--mono);
-    background:var(--hover);border-radius:999px;padding:0 5px;min-width:16px;text-align:center}
-  .grphead .dot{width:5px;height:5px;border-radius:50%;background:var(--ok);flex:0 0 5px}
+    min-width:18px;text-align:right;font-variant-numeric:tabular-nums}
+  .grphead .dot{flex:0 0 14px;width:14px;height:14px;background:transparent;
+    display:flex;align-items:center;justify-content:center}
+  .grphead .dot::before{content:'';width:5px;height:5px;border-radius:50%;background:var(--ok)}
   .grpsess{display:none;padding-left:6px}
   .grpsess.on{display:block}
   .modelbar{display:flex;align-items:center;gap:10px;margin-bottom:9px;font-size:11.5px}
@@ -216,6 +224,12 @@
   .skf .sks{color:var(--dim);font-size:10.5px}
   .skempty{padding:12px;color:var(--dim);font-size:11.5px}
   /* 添加弹框里的两块主路径：AI 生成 / 外部导入 */
+  /* 弹层标题栏：✕ 要一直在，内容再长也滚不走 */
+  .modhead{display:flex;align-items:center;gap:8px;position:sticky;top:0;z-index:3;
+    background:var(--panel);padding:0 0 8px;margin-bottom:6px}
+  .modhead .icon{width:28px;height:28px;font-size:13px;flex:0 0 28px;
+    display:flex;align-items:center;justify-content:center}
+  .modhead .ttl{font-size:14px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .skblock{border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;background:var(--input)}
   .skblock .skh{font-size:12.5px;font-weight:600;margin-bottom:3px}
   .skblock .skd{font-size:11px;color:var(--dim);line-height:1.55;margin-bottom:9px}
@@ -1039,8 +1053,10 @@ async function loadProjects(){
     head.className = 'grphead' + (isCur ? ' on' : '');
     const base = proj.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || proj.path;
     const name = proj.name || base;
-    head.innerHTML = '<span class="car">' + (isCur ? '▾' : '▸') + '</span>'
-      + (isCur ? '<span class="dot"></span>' : '')
+    // 只有一个前导槽：当前项目是 ○/✓ 那种状态点，其它项目是展开箭头。
+    // 之前两者并列（箭头 + 点），当前项目的名字就比别的项目右移 20px，
+    // 整列「一高一低」看着像没对齐。
+    head.innerHTML = (isCur ? '<span class="car dot"></span>' : '<span class="car">▸</span>')
       + '<span class="nm" title="' + esc(proj.path) + '">' + esc(name) + '</span>'
       + '<span class="cnt">' + (proj.items || []).length + '</span>';
     // 项目也要能管：改名、从列表移除。菜单挂在同一个「…」上，和会话一致
@@ -1057,8 +1073,11 @@ async function loadProjects(){
       if (!isCur) { switchProject(proj.path); return; }
       const sess = grp.querySelector('.grpsess');
       if (sess) sess.classList.toggle('on');
+      // 当前项目的槽是状态点，换内容会把它变成箭头；只对非当前项目换箭头
       const car = head.querySelector('.car');
-      if (car) car.textContent = sess && sess.classList.contains('on') ? '▾' : '▸';
+      if (car && !car.classList.contains('dot')) {
+        car.textContent = sess && sess.classList.contains('on') ? '▾' : '▸';
+      }
     };
     grp.appendChild(head);
 
@@ -1117,6 +1136,7 @@ function openProjMenu(ev, row, proj, shownName){
     b.onclick = (e) => { e.stopPropagation(); closeSessMenu(); fn() };
     m.appendChild(b);
   };
+  add('新建会话', () => newTaskInProject(proj.path));
   add('重命名', () => askText('项目名称', shownName || proj.path, (v) => renameProject(proj.path, v)));
   add('从列表移除', async () => {
     const yes = await askYes('把「' + (shownName || proj.path) + '」从左栏移除？\n只是不在列表里显示，磁盘上的文件一个都不动。');
@@ -1379,9 +1399,21 @@ function applySearch(){
     // 搜到东西就展开，否则结果藏在折叠的项目里
     if (q && hit){
       const wrap = grp.querySelector('.grpsess');
-      if (wrap) { wrap.classList.add('on'); const car = grp.querySelector('.car'); if (car) car.textContent = '▾'; }
+      if (wrap) {
+        wrap.classList.add('on');
+        const car = grp.querySelector('.car');
+        if (car && !car.classList.contains('dot')) car.textContent = '▾';
+      }
     }
   }
+}
+
+/** 在某个项目里开一个新会话：切过去 + 清空对话区（会话在你说第一句时才落盘） */
+async function newTaskInProject(path){
+  await fetch('/api/project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path }) });
+  await loadProjects();
+  startNewTask();
+  row('dim','new session in ' + path);
 }
 
 async function switchProject(path){
@@ -1914,20 +1946,40 @@ async function openSkill(name){
   const mask = el('<div style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;'
     + 'display:flex;align-items:center;justify-content:center;padding:16px"></div>');
   const box = el('<div class="card" style="max-width:720px;width:100%;padding:16px;max-height:90vh;overflow:auto"></div>');
+  // 标题栏常驻：paint() 每次都会重画内容，✕ 放在里面就会跟着消失；
+  // 之前这里只有 mask.onkeydown，而 div 拿不到焦点，Esc 从来没生效，
+  // 点开技能之后唯一的出口是刷新页面。
+  const top = el('<div class="modhead"></div>');
+  const ttl = el('<div class="ttl"></div>');
+  const xBtn = el('<button class="icon" title="关闭">✕</button>');
+  top.appendChild(ttl);
+  top.appendChild(xBtn);
+  const content = el('<div></div>');
+  box.appendChild(top);
+  box.appendChild(content);
   mask.appendChild(box);
   document.body.appendChild(mask);
-  mask.onkeydown = (e) => { if (e.key === 'Escape') mask.remove() };
+
+  const dismiss = () => {
+    document.removeEventListener('keydown', onKey, true);
+    mask.remove();
+  };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); dismiss() } };
+  document.addEventListener('keydown', onKey, true);
+  xBtn.onclick = dismiss;
+  mask.onclick = (e) => { if (e.target === mask) dismiss() };
 
   const load = async () => {
     const r = await fetch('/api/plugins/skill?name=' + encodeURIComponent(name));
     const j = await r.json().catch(() => ({}));
-    if (!r.ok) { box.innerHTML = '<div style="color:var(--bad);font-size:12px">' + esc(j.error || '读不到这个技能') + '</div>'; return null }
+    if (!r.ok) { content.innerHTML = '<div style="color:var(--bad);font-size:12px">' + esc(j.error || '读不到这个技能') + '</div>'; return null }
     detail = j;
     return j;
   };
 
   const paint = (d) => {
-    box.innerHTML = '';
+    content.innerHTML = '';
+    ttl.textContent = '技能 · ' + d.name;
     const head = el('<div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:6px"></div>');
     head.appendChild(el('<div style="flex:1;min-width:0">'
       + '<div style="font-size:14px;font-weight:600">' + esc(d.name) + '</div>'
@@ -1948,11 +2000,11 @@ async function openSkill(name){
       setMsg('已删除 skill「' + name + '」');
     };
     head.appendChild(delBtn);
-    box.appendChild(head);
+    content.appendChild(head);
 
     // 文件树：路径越长缩进越深不是重点，能一眼看出「有哪几个文件」才是
-    box.appendChild(el('<div class="skfiles"></div>'));
-    const list = box.querySelector('.skfiles');
+    content.appendChild(el('<div class="skfiles"></div>'));
+    const list = content.querySelector('.skfiles');
     for (const f of d.files){
       const row = el('<div class="skf"><span class="skp">' + esc(f.path) + '</span>'
         + '<span class="sks">' + (f.size > 1024 ? (f.size / 1024).toFixed(1) + 'K' : f.size + 'B') + '</span>'
@@ -1984,7 +2036,7 @@ async function openSkill(name){
     };
     newRow.appendChild(newPath);
     newRow.appendChild(addFile);
-    box.appendChild(newRow);
+    content.appendChild(newRow);
   };
 
   const refresh = async () => {
@@ -2002,7 +2054,8 @@ async function openSkill(name){
       if (!r.ok) { setMsg(j.error || '打不开这个文件', true); return }
       text = j.text;
     }
-    box.innerHTML = '';
+    content.innerHTML = '';
+    ttl.textContent = name + ' / ' + path;
     const bar = el('<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"></div>');
     bar.appendChild(el('<div style="flex:1;font:12px ui-monospace,monospace;word-break:break-all">' + esc(path) + '</div>'));
     const back = el('<button class="sbtn">返回</button>');
@@ -2010,13 +2063,13 @@ async function openSkill(name){
     const save = el('<button class="sbtn primary">保存</button>');
     bar.appendChild(back);
     bar.appendChild(save);
-    box.appendChild(bar);
+    content.appendChild(bar);
 
     const ta = el('<textarea spellcheck="false" style="width:100%;box-sizing:border-box;min-height:52vh;'
       + 'padding:10px;border-radius:8px;border:1px solid var(--line);background:var(--input);'
       + 'color:var(--fg);font:12px/1.55 ui-monospace,monospace"></textarea>');
     ta.value = text;
-    box.appendChild(ta);
+    content.appendChild(ta);
 
     save.onclick = async () => {
       save.disabled = true;
@@ -2040,6 +2093,105 @@ async function openSkill(name){
   await refresh();
 }
 
+
+/* ---- 添加 MCP ----------------------------------------------------------
+ * MCP 的配置就是一段 JSON，而且全网都用 Claude Desktop 那套 mcpServers，
+ * 所以最省事的用法是「把别人给你的那段贴进来」。也留了只填地址/命令的两条捷径。
+ * ---------------------------------------------------------------------- */
+function openAddMcp(){
+  const mask = el('<div style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;'
+    + 'display:flex;align-items:center;justify-content:center;padding:16px"></div>');
+  const box = el('<div class="card" style="max-width:560px;width:100%;padding:16px;max-height:88vh;overflow:auto"></div>');
+  const head = el('<div class="modhead"></div>');
+  head.appendChild(el('<div class="ttl">添加 MCP</div>'));
+  const xBtn = el('<button class="icon" title="关闭">✕</button>');
+  head.appendChild(xBtn);
+  box.appendChild(head);
+  box.appendChild(el('<div class="skd" style="font-size:11.5px;color:var(--dim);line-height:1.6;margin-bottom:10px">'
+    + '贴一段 <code>mcpServers</code> JSON，或者只给一个地址 / 命令。写进 <code>~/.uh/mcp.json</code>，'
+    + '装完点列表里的开关就能用。</div>'));
+
+  const ta = el('<textarea id="__mcjson" spellcheck="false" placeholder=\'{"mcpServers":{"linear":{"url":"https://mcp.linear.app/sse"}}}\' '
+    + 'style="width:100%;box-sizing:border-box;min-height:150px;padding:10px;border-radius:8px;'
+    + 'border:1px solid var(--line);background:var(--input);color:var(--fg);font:12px/1.5 ui-monospace,monospace"></textarea>');
+  box.appendChild(ta);
+  const row = el('<div style="display:flex;gap:8px;align-items:center;margin-top:10px"></div>');
+  const scope = el('<label style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--dim)">'
+    + '<input type="checkbox" id="__mcproj"> 只给当前项目</label>');
+  const go = el('<button class="sbtn primary">添加</button>');
+  row.appendChild(scope);
+  row.appendChild(el('<span style="flex:1"></span>'));
+  row.appendChild(go);
+  box.appendChild(row);
+  const msg = el('<div style="font-size:11.5px;color:var(--bad);min-height:16px;margin-top:6px"></div>');
+  box.appendChild(msg);
+
+  go.onclick = async () => {
+    const json = ta.value.trim();
+    if (!json) { msg.textContent = '先把配置贴进来'; return }
+    go.disabled = true;
+    go.textContent = '添加中…';
+    try {
+      const r = await fetch('/api/plugins/mcp', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ json, scope: $('#__mcproj')?.checked ? 'project' : 'user' }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { msg.textContent = j.error || ('失败：HTTP ' + r.status); return }
+      dismiss();
+      PLUGINS = null;
+      await loadPlugins();
+      PTAB = 'mcp';
+      renderSettings();
+      setMsg('已添加 MCP：' + (j.added || []).join('、'));
+    } finally {
+      go.disabled = false;
+      go.textContent = '添加';
+    }
+  };
+
+  const dismiss = () => {
+    document.removeEventListener('keydown', onKey, true);
+    mask.remove();
+  };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); dismiss() } };
+  document.addEventListener('keydown', onKey, true);
+  xBtn.onclick = dismiss;
+  mask.onclick = (e) => { if (e.target === mask) dismiss() };
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+  ta.focus();
+}
+
+/* ---- 钩子：它不是一个「装着的东西」，位置在 config.json 里，所以这里给说明而不是表单 */
+function openHookHelp(){
+  const mask = el('<div style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;'
+    + 'display:flex;align-items:center;justify-content:center;padding:16px"></div>');
+  const box = el('<div class="card" style="max-width:560px;width:100%;padding:16px"></div>');
+  const head = el('<div class="modhead"></div>');
+  head.appendChild(el('<div class="ttl">钩子怎么加</div>'));
+  const xBtn = el('<button class="icon" title="关闭">✕</button>');
+  head.appendChild(xBtn);
+  box.appendChild(head);
+  box.appendChild(el('<div style="font-size:11.5px;color:var(--dim);line-height:1.75">'
+    + '钩子写在 <code>~/.uh/config.json</code> 的 <code>hooks</code> 里，按事件触发命令：<br>'
+    + '<code>{"hooks":{"PreToolUse":[{"match":"run_command","run":"echo $UH_TOOL"}]}}</code><br><br>'
+    + '事件名与字段见 <code>docs/plugins.md</code>。写好后点列表右上角的「重新读取」。</div>'));
+  const close = el('<div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="sbtn">知道了</button></div>');
+  box.appendChild(close);
+  const dismiss = () => {
+    document.removeEventListener('keydown', onKey, true);
+    mask.remove();
+  };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); dismiss() } };
+  document.addEventListener('keydown', onKey, true);
+  xBtn.onclick = dismiss;
+  close.querySelector('button').onclick = dismiss;
+  mask.onclick = (e) => { if (e.target === mask) dismiss() };
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+}
+
 /* ---- 添加 skill：贴一段 / 给个链接 / 指个目录 ---------------------------
  * 三种来源，一个终点：<skills 根>/<name>/SKILL.md。装完磁盘上就多一个目录，
  * 所以插件列表和 / 补全都立刻能看到，不需要重启也不需要第二份注册表。
@@ -2052,7 +2204,13 @@ function openAddSkill(){
   const mask = el('<div style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;'
     + 'display:flex;align-items:center;justify-content:center;padding:16px"></div>');
   const box = el('<div class="card" style="max-width:560px;width:100%;padding:16px;max-height:88vh;overflow:auto"></div>');
-  box.appendChild(el('<div style="font-size:14px;font-weight:600;margin-bottom:4px">添加 Skill</div>'));
+  // 标题栏和设置面板一样带一个 ✕：只有底部一个「关闭」时，内容一长就得先滚到底，
+  // 而且盖住遮罩也关不掉，人只能按浏览器返回。
+  const head = el('<div class="modhead"></div>');
+  head.appendChild(el('<div class="ttl">添加 Skill</div>'));
+  const xBtn = el('<button class="icon" title="关闭">✕</button>');
+  head.appendChild(xBtn);
+  box.appendChild(head);
   box.appendChild(el('<div style="font-size:11.5px;color:var(--dim);line-height:1.6;margin-bottom:12px">'
     + '技能就是一个目录（<code>SKILL.md</code> + 可选的 <code>scripts/</code>）。装完立刻进插件列表和 <code>/</code> 补全。</div>'));
 
@@ -2166,14 +2324,20 @@ function openAddSkill(){
   cBox.appendChild(cBody);
   box.appendChild(cBox);
 
-  const close = el('<div style="display:flex;justify-content:flex-end;margin-top:12px">'
-    + '<button class="btn" id="__skclose">关闭</button></div>');
-  box.appendChild(close);
-  close.querySelector('#__skclose').onclick = () => mask.remove();
-
   mask.appendChild(box);
   document.body.appendChild(mask);
-  mask.onkeydown = (e) => { if (e.key === 'Escape') mask.remove() };
+
+  // 三条退路：右上角 ✕、点遮罩、Esc。
+  // 之前只挂了一个「关闭」按钮和一个 div 上的 onkeydown——div 拿不到焦点，
+  // 所以 Esc 从来没生效过。
+  const dismiss = () => {
+    document.removeEventListener('keydown', onKey, true);
+    mask.remove();
+  };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); dismiss() } };
+  document.addEventListener('keydown', onKey, true);
+  xBtn.onclick = dismiss;
+  mask.onclick = (e) => { if (e.target === mask) dismiss() };
 }
 
 async function loadPlugins() {
@@ -2658,11 +2822,21 @@ function renderSettings() {
     const search = el('<input class="psearch" id="pFind" placeholder="搜索插件" spellcheck="false">');
     search.value = PFIND;
     box.appendChild(search);
-    // 添加入口放在这里，而不是让用户去终端敲 uh skill new：
-    // 设置页里看得见全部插件，加装却要开另一个窗口，这一页就只完成了一半
-    const addBtn = el('<button class="sbtn primary" id="pAdd">添加 Skill</button>');
-    addBtn.onclick = () => openAddSkill();
-    box.appendChild(addBtn);
+    // 添加入口跟随当前分页：在「技能」下面才出现「添加 Skill」，
+    // 在「MCP」下面出现「添加 MCP」，钩子那页不该出现一个跟它无关的按钮。
+    // 之前不管在哪一页都只有一个「添加 Skill」，等于告诉人「MCP 加不了」。
+    const ADD = {
+      all: ['添加 Skill', () => openAddSkill()],
+      mcp: ['添加 MCP', () => openAddMcp()],
+      skills: ['添加 Skill', () => openAddSkill()],
+      hooks: ['钩子怎么加', () => openHookHelp()],
+    };
+    const def = ADD[PTAB];
+    if (def) {
+      const addBtn = el('<button class="sbtn primary" id="pAdd">' + def[0] + '</button>');
+      addBtn.onclick = def[1];
+      box.appendChild(addBtn);
+    }
     body.appendChild(box);
 
     const rows = [];
@@ -2715,9 +2889,11 @@ function renderSettings() {
     } else {
       const list = el('<div class="plist"></div>');
       for (const r of rows) {
+        // 标签（内置 / http / 钩子）紧跟在名字后面。原来它作为行的最后一个
+        // 弹性项被推到最右边，宽窗口里跟名字隔了半屏，像两个不相干的东西。
         const row = el('<div class="prow"><span class="picon">' + esc((r.name[0] || '?').toUpperCase()) + '</span>'
-          + '<span class="ptxt"><b>' + esc(r.name) + '</b><i>' + esc(r.desc) + '</i></span>'
-          + '<span class="ptag">' + esc(r.tag) + '</span></div>');
+          + '<span class="ptxt"><span class="pnm"><b>' + esc(r.name) + '</b>'
+          + '<span class="ptag">' + esc(r.tag) + '</span></span><i>' + esc(r.desc) + '</i></span></div>');
         // 技能是个目录，点进去能管里面的文件；MCP/钩子只是配置项，点了没意义
         if (r.skill) {
           row.classList.add('openable');

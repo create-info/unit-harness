@@ -52,6 +52,8 @@ export interface UhConfig {
    * 真删目录是另一个动作，不该由点一下菜单完成。
    */
   hiddenProjects?: string[]
+  /** 打开过的项目（工作区）。列表不能只从会话推导，否则空项目会凭空消失 */
+  projects?: string[]
   /** 电脑操控：这一层直接操作真实桌面，沙箱管不到，所以开关要显式 */
   computer?: {
     enabled?: boolean

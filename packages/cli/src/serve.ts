@@ -195,6 +195,16 @@ function readProjectNames(): Record<string, string> {
   try { return JSON.parse(fs6.readFileSync(projectNamesFile(), 'utf8')) as Record<string, string> } catch { return {} }
 }
 
+/** 记一笔「这个工作区打开过」：空项目也要留在左栏，否则它看起来像没打开成功 */
+function rememberProject(path: string): void {
+  const cfg = readConfig()
+  const list = cfg.projects ?? []
+  if (list.includes(path)) return
+  list.push(path)
+  // 只留最近 50 个：这里记的是「打开过的」，不是永久历史
+  writeConfig({ ...cfg, projects: list.slice(-50) })
+}
+
 function writeProjectName(path: string, name: string): void {
   const names = readProjectNames()
   if (name.trim()) names[path] = name.trim()
@@ -2025,6 +2035,13 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       }
       // 被「移除」的项目只是从列表里藏起来：磁盘还在，随时能重新加回来
       const hidden = new Set(readConfig().hiddenProjects ?? [])
+      // 自己打开过的项目也算一个项目，哪怕一句都还没说。
+      // 之前只从会话推导，于是「打开文件夹 → 左栏多了个项目 → 没说话就切走」
+      // 会让它当场消失；用户看到的是「我明明打开过，它不在列表里」。
+      for (const p of readConfig().projects ?? []) {
+        if (seen.has(p) || hidden.has(p)) continue
+        seen.set(p, { path: p, sessions: 0, lastUsed: '' })
+      }
       const list = [...seen.values()]
         .filter((p) => !hidden.has(p.path))
         .sort((a, b) => (a.lastUsed < b.lastUsed ? 1 : -1))
@@ -2070,7 +2087,87 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       }
       currentWorkspace = abs
       if (typeof body.name === 'string') writeProjectName(abs, body.name)
+      // 记住「打开过」，不是「说过话」。项目列表原本完全从会话推导，
+      // 于是打开一个还没说过话的目录，它会在切回来时凭空消失。
+      rememberProject(abs)
       json(res, 200, { current: currentWorkspace, name: readProjectNames()[abs] || '' })
+      return
+    }
+
+    // ---- 加装 MCP：写进 ~/.uh/mcp.json 的 mcpServers ----------------------
+    // 结构沿用 Claude Desktop 的，所以从别处抄来的 JSON 能整块贴进来。
+    // 之前 MCP 只能靠终端 `uh mcp add` 加，设置页里看得见却加不了。
+    if (req.method === 'POST' && url.pathname === '/api/plugins/mcp') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as {
+        name?: string
+        json?: string
+        url?: string
+        command?: string
+        scope?: 'user' | 'project'
+      }
+      const file = body.scope === 'project' ? projectMcpConfigPath(currentWorkspace) : globalMcpConfigPath()
+      let servers: Record<string, unknown> = {}
+      try {
+        const cur = JSON.parse(fs6.readFileSync(file, 'utf8')) as { mcpServers?: Record<string, unknown> }
+        servers = cur.mcpServers ?? {}
+      } catch { servers = {} }
+
+      // 贴一整块 Claude Desktop 风格配置，或者只给一个 URL / 命令
+      let incoming: Record<string, unknown> = {}
+      const rawJson = (body.json ?? '').trim()
+      if (rawJson) {
+        let parsed: { mcpServers?: Record<string, unknown> } & Record<string, unknown>
+        try { parsed = JSON.parse(rawJson) as typeof parsed } catch (err) {
+          json(res, 400, { error: 'JSON 不合法：' + (err instanceof Error ? err.message : '') }); return
+        }
+        if (parsed.mcpServers && typeof parsed.mcpServers === 'object') incoming = parsed.mcpServers
+        else if (Object.keys(parsed).length) incoming = { [String(body.name ?? '').trim() || 'mcp']: parsed }
+        else { json(res, 400, { error: '这一段里没有 mcpServers' }); return }
+      } else if ((body.url ?? '').trim()) {
+        const u = String(body.url).trim()
+        if (!/^https?:\/\//i.test(u)) { json(res, 400, { error: '地址要以 http(s):// 开头' }); return }
+        const nm = String(body.name ?? '').trim()
+        if (!nm) { json(res, 400, { error: '给这个服务起个名字（比如 linear）' }); return }
+        incoming = { [nm]: { url: u } }
+      } else if ((body.command ?? '').trim()) {
+        const nm = String(body.name ?? '').trim()
+        if (!nm) { json(res, 400, { error: '给这个服务起个名字' }); return }
+        const parts = String(body.command).trim().split(/\s+/)
+        incoming = { [nm]: { command: parts[0], args: parts.slice(1) } }
+      } else {
+        json(res, 400, { error: '贴一段 JSON，或者给一个 URL / 命令' }); return
+      }
+
+      const added: string[] = []
+      const skipped: string[] = []
+      for (const [k, v] of Object.entries(incoming)) {
+        const name = k.trim()
+        // 名字会进工具前缀，不能带空白；重复的直接跳过而不是覆盖——那份可能正在用
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/.test(name)) { skipped.push(name || '(空)'); continue }
+        if (servers[name]) { skipped.push(name); continue }
+        servers[name] = v
+        added.push(name)
+      }
+      if (!added.length) {
+        json(res, 409, { error: '没有新增：' + (skipped.join('、') || '没读到') + ' 已经存在或名字不合法' })
+        return
+      }
+      mkdirSync(pathMod.dirname(file), { recursive: true })
+      fs6.writeFileSync(file, JSON.stringify({ mcpServers: servers }, null, 2) + '\n', { mode: 0o600 })
+      json(res, 200, { ok: true, added, skipped, file })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/plugins/mcp/delete') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as { name?: string; scope?: 'user' | 'project' }
+      const nm = String(body.name ?? '').trim()
+      const file = body.scope === 'project' ? projectMcpConfigPath(currentWorkspace) : globalMcpConfigPath()
+      let servers: Record<string, unknown> = {}
+      try { servers = (JSON.parse(fs6.readFileSync(file, 'utf8')) as { mcpServers?: Record<string, unknown> }).mcpServers ?? {} } catch { servers = {} }
+      if (!servers[nm]) { json(res, 404, { error: '没有这个 MCP 服务' }); return }
+      delete servers[nm]
+      fs6.writeFileSync(file, JSON.stringify({ mcpServers: servers }, null, 2) + '\n', { mode: 0o600 })
+      json(res, 200, { ok: true })
       return
     }
 
