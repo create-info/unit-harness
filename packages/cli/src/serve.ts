@@ -755,6 +755,22 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       res.end(url.pathname === '/icon-192.png' ? ICON_192 : ICON_512)
       return
     }
+    // 配对二维码：让服务端用同一份 qrcode 库出 PNG，终端里 `uh pair` 打的那种码
+    // 和页面上扫的是同一个东西。前端不引 QR 库——那要多 30KB 且各端渲染不一致。
+    if (req.method === 'GET' && url.pathname === '/api/remote/qr') {
+      const text = String(url.searchParams.get('t') ?? '')
+      if (!text || text.length > 512) { json(res, 400, { error: 'bad text' }); return }
+      try {
+        const QR = (await import('qrcode')).default
+        const png = await QR.toBuffer(text, { type: 'png', margin: 1, width: 320 })
+        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' })
+        res.end(png)
+      } catch (e) {
+        json(res, 500, { error: String(e) })
+      }
+      return
+    }
+
     if (req.method === 'GET' && url.pathname === '/sw.js') {
       res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-cache' })
       res.end(SERVICE_WORKER)

@@ -88,7 +88,14 @@ test('the remote page lists, pairs and revokes devices without the CLI', async (
     const gone = await fetch(base + '/api/plugins', { headers: { cookie: `uh_t=${made.token}` } })
     assert.equal(gone.status, 401, 'a revoked device cannot get back in')
 
-    // 6. 撤一个不存在的要明确 404，不能假装成功
+    // 6. 配对二维码：服务端出 PNG（页面不引 QR 库），扫的就是上面那个地址
+    const qr = await fetch(base + '/api/remote/qr?t=' + encodeURIComponent(made.url), { headers: auth })
+    assert.equal(qr.status, 200)
+    assert.equal(qr.headers.get('content-type'), 'image/png')
+    const png = Buffer.from(await qr.arrayBuffer())
+    assert.equal(png.subarray(1, 4).toString(), 'PNG', 'a real PNG, not an empty body')
+
+    // 7. 撤一个不存在的要明确 404，不能假装成功
     const bad = await fetch(base + '/api/remote/revoke', {
       method: 'POST', headers: auth, body: JSON.stringify({ id: made.id }),
     })

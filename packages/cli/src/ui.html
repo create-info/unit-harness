@@ -1825,8 +1825,40 @@ async function pairDevice(){
     if (j.error) { setMsg('没配上：' + j.error, true); return }
     await loadRemote();
     renderSettings();
-    setMsg('已配对「' + j.name + '」，在手机上打开配对地址即可');
+    // 配对成功后最想知道的是「拿什么打开」。地址为空说明这台服务手机根本连不上
+    // （只听本机、也没走 tailscale serve）——这时候只说「已配对」等于把人晾在那。
+    if (j.url) showPairResult(j.name, j.url);
+    else setMsg('已配对「' + j.name + '」，但这台服务手机还连不上：先按上面的提示改监听方式', true);
   } catch (e) { setMsg('没配上：' + e, true) }
+}
+
+/** 配对结果：地址 + 二维码。手机上照着敲 40 位 URL 是不可能的，扫一下最省事 */
+function showPairResult(name, url){
+  const mask = document.createElement('div');
+  mask.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+  const box = document.createElement('div');
+  box.className = 'card';
+  box.style.cssText = 'max-width:380px;width:100%;padding:18px;text-align:center';
+  box.innerHTML = '<b style="font-size:14px">「' + esc(name) + '」配好了</b>'
+    + '<div style="font-size:12px;opacity:.75;margin-top:6px">手机相机扫一下，或者把下面的地址发过去</div>'
+    + '<div id="__qr" style="display:flex;justify-content:center;margin:14px 0"></div>'
+    + '<code style="display:block;font:10.5px/1.5 var(--mono);word-break:break-all;opacity:.85"></code>'
+    + '<div style="display:flex;gap:8px;justify-content:center;margin-top:14px">'
+    + '<button class="btn" id="__copy">复制地址</button><button class="btn" id="__done" style="background:var(--accent);border-color:var(--accent);color:#fff">关掉</button></div>';
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+  box.querySelector('code').textContent = url;
+  // 服务端出码：前端不用带 QR 库，扫出来的内容和终端 `uh pair` 完全一致
+  const img = document.createElement('img');
+  img.src = '/api/remote/qr?t=' + encodeURIComponent(url);
+  img.alt = '配对二维码';
+  img.style.cssText = 'width:200px;height:200px;image-rendering:pixelated;border-radius:8px;background:#fff;padding:8px';
+  box.querySelector('#__qr').appendChild(img);
+  box.querySelector('#__copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(url); setMsg('复制好了') }
+    catch { setMsg('复制不了，手动选吧', true) }
+  };
+  box.querySelector('#__done').onclick = () => mask.remove();
 }
 
 async function revokeDevice(id, name){
