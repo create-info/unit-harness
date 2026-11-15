@@ -51,7 +51,7 @@ const REQUIRED: Partial<Record<SessionKind, string[]>> = {
   'tool/result': ['tool', 'status', 'isolation'],
   'verification/asserted': ['assertion', 'result'],
   'hook/execution': ['hook_name', 'event', 'decision'],
-  'artifact/emitted': ['path', 'sha256'],
+  'artifact/emitted': ['path', 'sha256', 'source'],
   'plan/updated': ['steps'],
   'error': ['message'],
   'llm/request': ['model'],

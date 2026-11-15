@@ -211,6 +211,22 @@ export class Harness {
   private readonly services = new Map<string, unknown>()
   /** 这一轮写过的文件，等轮末封成一条 checkpoint/created */
   private pendingEdits: string[] = []
+  /**
+   * 本次 run 里被工具真正写过的相对路径——**不清空**，直到下次 runTask。
+   *
+   * 不能复用 pendingEdits：那个是"这一轮要封进 checkpoint 的"，sealCheckpoint
+   * 一调用就清空了，而产物归属要在这之后才算。用一个专门的账本，顺序就无关了。
+   * 归属只能靠它：快照只知道"目录里多了什么"，不知道是谁放的。
+   */
+  private writtenThisRun = new Set<string>()
+  /**
+   * 每条命令的执行窗口 [start, end]（毫秒）。
+   *
+   * 用来判断"这个文件是不是某条命令跑的时候出现的"。粒度是**单条命令**而不是
+   * 整次 run：整次 run 的二十分钟里，隔壁会话、你自己随手存的文件都会落进来，
+   * 那正是把别人的课件算到自己头上的原因。
+   */
+  private execWindows: Array<[number, number]> = []
   private readonly helper: LandlockHelper | null
   private readonly bwrap: { path: string } | null
   /** 本会话已批准的命令指纹（cwd + argv）。进程退出即失效，不落盘。 */
@@ -305,6 +321,7 @@ export class Harness {
     // 一堆散落的 checkpoint/file 让人只能靠 turn 号去猜"哪些是同一批"；
     // 有明确的 created，回滚和审计都有边界可依
     if (!this.pendingEdits.includes(edit.path)) this.pendingEdits.push(edit.path)
+    this.writtenThisRun.add(edit.path.replace(/^\.\//, ''))
   }
 
   /**
@@ -1059,6 +1076,9 @@ export class Harness {
           : useLandlock ? (`landlock-v${this.helper!.abi}` as IsolationLevel)
           : useSeatbelt ? 'seatbelt'
           : level
+        // 记下这条命令的时间窗口：产物归属要用它——脚本生成的文件拿不到补丁，
+        // 只能问"它是不是在某条命令执行期间出现的"。
+        this.execWindows.push([started, Date.now()])
         this.ev('tool/result', {
           tool: 'exec',
           status: code === 0 ? 'ok' : 'error',
@@ -1499,7 +1519,11 @@ export class Harness {
     if (before) {
       const after = snapshotDir(this.workspace)
       const changes = diffSnapshots(before, after)
-      artifacts.push(...collectArtifacts(this.workspace, changes, after))
+      // writtenThisRun 就是"这次 run 里我们自己写过的文件"——记账发生在真正落盘的
+      // 那一刻，不是事后猜的。不在里面的产物按 snapshot 记，界面不能认领。
+      artifacts.push(
+        ...collectArtifacts(this.workspace, changes, after, this.writtenThisRun, this.execWindows),
+      )
 
       // 删掉文件不是错误：它和「改了文件」是同一类事实，只是方向相反。
       // 以前这里发一条 `error`，于是一次完整成功的运行下面会挂着红字
@@ -1516,6 +1540,8 @@ export class Harness {
           sha256: art.sha256,
           bytes: art.bytes,
           kind: nodePath.extname(art.path).replace('.', '') || 'file',
+          // 谁写的：'tool' 才有资格进"这次产出"。读日志的人和界面都靠这个字段
+          source: art.source,
         })
 
         const deps = {
@@ -1531,6 +1557,9 @@ export class Harness {
           sha256: (rel: string) => sha256File(this.safeJoin(rel)),
         }
 
+        // 只验证"自己写出来的"东西。给一个别人写的文件挂上 ✓ 3/3，
+        // 就是在用勾号替不存在的归属背书——那比不显示更糟。
+        if (art.source === 'snapshot') continue
         for (const a of inferAssertions(art)) {
           const out = await runAssertion(a, deps)
           this.recordVerification(a as unknown as Record<string, unknown>, out.result, out.detail)

@@ -776,11 +776,17 @@ async function cmdDo(name?: string, rest: string[] = []): Promise<void> {
           console.log('  checking what is on disk anyway — the checks read real files, not the plan.')
         } else {
           console.log('')
-          console.log(`--- deliverables (${out.artifacts.length}) ---`)
-          for (const a of out.artifacts) {
+          // 同 main：只把「自己写的」算交付物；只是出现了的另列一行，不给勾
+          const own = out.artifacts.filter((a) => a.source !== 'snapshot')
+          const seen = out.artifacts.filter((a) => a.source === 'snapshot')
+          console.log(`--- deliverables (${own.length}) ---`)
+          for (const a of own) {
             const rel = out.verifications.filter((v) => v.path === a.path)
             const ok = rel.length > 0 && rel.every((v) => v.result === 'pass')
             console.log(`  ${ok ? '✓' : '·'} ${a.path}  ${a.bytes} B  ${ok ? `${rel.length}/${rel.length}` : ''}`)
+          }
+          if (seen.length > 0) {
+            console.log(`  (${seen.length} more appeared in the workspace, not written here)`)
           }
         }
       } catch (err) {
@@ -1240,14 +1246,23 @@ async function cmdRun(task?: string): Promise<void> {
     console.log(res.text || '(no text)')
     console.log('')
 
-    // 交付物与断言：屏幕上要说清「到底落了什么盘」，而不是让人自己猜
-    if (res.artifacts.length === 0) {
+    // 交付物与断言：屏幕上要说清「到底落了什么盘」，而不是让人自己猜。
+    //
+    // 分两张单子：自己写的，和「跑的时候工作区里多出来的」。
+    // 以前合成一张，于是隔壁会话、你自己手动存的文件都会被算成本次交付物——
+    // 那条只写了 _fetch.py 的复现因此报了 16 个。合并显示是错的，不是丑。
+    // 'exec' 也算自己的：那条命令是我们发起的，文件是它写出来的。
+    // 只有 'snapshot'（跑的时候出现过、但不在任何一条命令的窗口里）不认领。
+    const own = res.artifacts.filter((a) => a.source !== 'snapshot')
+    const seen = res.artifacts.filter((a) => a.source === 'snapshot')
+
+    if (own.length === 0) {
       console.log('--- deliverables ---')
       console.log('  (no files changed)')
     } else {
-      console.log(`--- deliverables (${res.artifacts.length}) ---`)
+      console.log(`--- deliverables (${own.length}) ---`)
       let anyFail = false
-      for (const a of res.artifacts) {
+      for (const a of own) {
         const vs = res.verifications.filter((v) => v.path === a.path)
         const passed = vs.filter((v) => v.result === 'pass').length
         const ok = passed === vs.length && vs.length > 0
@@ -1259,6 +1274,16 @@ async function cmdRun(task?: string): Promise<void> {
         }
       }
       if (anyFail) process.exitCode = 1
+    }
+
+    // 只报告存在、不认领归属：这些文件是哪来的（别的会话？你自己放的？）我们不知道，
+    // 所以不给勾号、不算进交付物数，但它确实在工作区里，用户该知道。
+    if (seen.length > 0) {
+      console.log('')
+      console.log(`--- also in the workspace (${seen.length}) ---`)
+      console.log('  appeared during this run, not written by this session:')
+      for (const a of seen.slice(0, 20)) console.log(`  · ${a.path}`)
+      if (seen.length > 20) console.log(`  … and ${seen.length - 20} more`)
     }
 
     console.log('')

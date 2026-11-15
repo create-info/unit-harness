@@ -5001,7 +5001,10 @@ function render(kind, p){
         updateRunHead();
       }
       break;
-    case 'checkpoint/file': closeStreams(); fileCard(p, p.seq || 0); break;
+    case 'checkpoint/file':
+      // 这里的每一条 = 这次会话亲手写的文件。产物归属靠它，不靠快照猜。
+      markWritten(p);
+      closeStreams(); fileCard(p, p.seq || 0); break;
     case 'approval/needs': void askApproval(p); break;
     case 'approval/requested': row('warn','⚠ approval needed: ' + esc(p.reason || '')); break;
     case 'approval/resolved': {
@@ -5108,6 +5111,8 @@ let ART_ROW = null;
 function resetArtifacts(){
   ARTIFACTS = [];
   ART_ROW = null;
+  // 归属是按会话算的：换了会话还留着上一条的写入记录，等于继续拿别人的账本
+  WRITTEN.clear();
 }
 
 /** 把同一帧里连续的产物更新压成一次 DOM 写入 */
@@ -5121,7 +5126,9 @@ function scheduleArtRow(){
 }
 
 function artRow(){
-  const n = ARTIFACTS.length;
+  // 只数自己写的。把"跑的时候工作区里多出来的"也算进 produced，就是在替不存在的
+  // 归属背书——那条只写了 _fetch.py 的复现正是这样报出 16 个的。
+  const n = ARTIFACTS.filter((a) => sourceOf(a) !== 'snapshot').length;
   if (!ART_ROW){
     ART_ROW = procRow('ok', '◆ produced ' + n + ' file' + (n === 1 ? '' : 's') + ' — listed at the bottom');
     return;
@@ -5130,8 +5137,46 @@ function artRow(){
   if (c) c.textContent = '◆ produced ' + n + ' file' + (n === 1 ? '' : 's') + ' — listed at the bottom';
 }
 
+/**
+ * 这一轮里**被工具真正写过**的路径。
+ *
+ * 来源是 checkpoint/file 事件：它发生在文件落盘的那一刻，是这个会话自己签的字。
+ * 老会话的日志里没有 artifact 的 source 字段，但这批事件一直在——用它补，
+ * 历史会话也能算准，不用猜。
+ */
+const WRITTEN = new Set();
+
+function markWritten(p){
+  const path = p && p.path;
+  if (!path) return;
+  if (p.deleted) { WRITTEN.delete(String(path)); return; }
+  WRITTEN.add(String(path).replace(/^\.\//, ''));
+}
+
+/**
+ * 产物归属。
+ *
+ *   tool     工具写的（写的时候就记了账）
+ *   exec     我们发起的某条命令写的（文件时间落在那条命令的运行窗口里）
+ *   snapshot 跑的时候出现了，但不在任何一条命令的窗口里——不认领
+ *
+ * 老会话没有 source 字段：用 checkpoint/file 补 tool，补不上的按 exec 算
+ * （那时还没有窗口概念，一刀切成 snapshot 会让历史会话的交付物全空）。
+ */
+function sourceOf(a){
+  const s = a && a.source;
+  if (s === 'tool' || s === 'exec' || s === 'snapshot') return s;
+  const path = String((a && a.path) || '').replace(/^\.\//, '');
+  return WRITTEN.has(path) ? 'tool' : 'exec';
+}
+
 function renderDeliverables(items, verifications, showAll){
   delivEl.innerHTML = '';
+  // 分两张单子：自己写的，和「跑的时候工作区里多出来的」。
+  // 合成一张的后果已经见过了：另一条会话做的课件算到了这次头上，还带着 ✓ 3/3。
+  const own = items.filter((a) => sourceOf(a) !== 'snapshot');
+  const seen = items.filter((a) => sourceOf(a) === 'snapshot');
+  items = own;
   // 先按路径建索引：每行只查一次，不再对 6000 条从头扫
   const byPath = new Map();
   for (const v of verifications){
@@ -5171,6 +5216,30 @@ function renderDeliverables(items, verifications, showAll){
     more.textContent = '+ ' + (items.length - SHOW) + ' more file' + (items.length - SHOW === 1 ? '' : 's');
     more.onclick = () => renderDeliverables(items, verifications, true);
     delivEl.appendChild(more);
+  }
+
+  // 不属于这次会话的东西也列出来——它在工作区里，用户该看见；
+  // 但不给勾号、不进计数：谁写的我们不知道，不知道就不说。
+  if (seen.length){
+    const head = document.createElement('div');
+    head.className = 'art';
+    head.innerHTML = '<span class="n dim">also in the workspace (' + seen.length + ') — not written by this session</span>';
+    delivEl.appendChild(head);
+    for (const a of seen.slice(0, showAll ? seen.length : 6)){
+      const d = document.createElement('div');
+      d.className = 'art';
+      d.innerHTML = '<span class="artcol"><span class="n dim">' + esc(a.path) + '</span>'
+        + '<span class="meta dim">' + a.bytes + ' B</span></span>';
+      d.onclick = () => { void openDiffPane(a.path) };
+      delivEl.appendChild(d);
+    }
+    if (seen.length > 6 && !showAll) delivEl.appendChild((() => {
+      const m = document.createElement('button');
+      m.className = 'art more';
+      m.textContent = '+ ' + (seen.length - 6) + ' more';
+      m.onclick = () => renderDeliverables(items.concat(seen), verifications, true);
+      return m;
+    })());
   }
 }
 

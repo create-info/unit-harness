@@ -119,14 +119,59 @@ export function diffSnapshots(before: Snapshot, after: Snapshot): ChangeSet {
   return { added: added.sort(), modified: modified.sort(), removed: removed.sort() }
 }
 
+/**
+ * 一个产物是怎么来的——这决定了我们敢不敢说"这是这次做的"。
+ *
+ *   tool     : 我们自己看见它被写进去的（write_file / apply_patch 走的都是同一条
+ *              记账路径），确凿。
+ *   snapshot : 只是"跑的时候它出现在了工作区里"。两条会话共用一个目录时，
+ *              隔壁那条写的东西也算在你头上——这不是归属，这是巧合。
+ *
+ * Codex 干脆不拍快照（`turn_diff_tracker.rs`：只累加自己打过的补丁）。我们做
+ * 课件这类产出是脚本写的、拿不到补丁，所以快照还得留着看，但**不能拿它当归属**。
+ */
+export type ArtifactSource = 'tool' | 'exec' | 'snapshot'
+
 export interface Artifact {
   path: string
   sha256: string
   bytes: number
+  source: ArtifactSource
 }
 
-/** 把变更转成交付物清单（删除不算交付物，但会记进 events） */
-export function collectArtifacts(root: string, changes: ChangeSet, after: Snapshot): Artifact[] {
+/**
+ * 把变更转成交付物清单（删除不算交付物，但会记进 events）。
+ *
+ * `attested` 是这一轮里被工具**真正写过**的相对路径集合。不在里面的，
+ * 按"只是出现了"记，界面上就不能算作这次会话的产出。
+ */
+export function collectArtifacts(
+  root: string,
+  changes: ChangeSet,
+  after: Snapshot,
+  attested?: ReadonlySet<string>,
+  execWindows?: ReadonlyArray<readonly [number, number]>,
+): Artifact[] {
+  // 路径写法在两边的来历不同（工具传的是 `a.txt`，快照可能是 `./a.txt`），
+  // 先统一成一种再比。不清洗就直接比，会把自己写的文件判成"只是出现了"。
+  const ours = attested ? new Set([...attested].map((x) => x.replace(/^\.\//, ''))) : null
+  /**
+   * 落在某条命令的执行窗口里 = 这条命令写的。
+   *
+   * 工具写的有账本（tool），其余只能靠时间：脚本生成 pptx/svg 这类拿不到补丁，
+   * 却正是办公场景的主要产出。用**单条命令**的窗口而不是整次 run 的区间——
+   * 窗口通常几秒，隔壁会话的文件几乎不可能正好落进来；而"整个 run 期间出现过"
+   * 是二十分钟，那才会把别人的东西算到自己头上。
+   *
+   * 这不是精确证明，是排除法：不在任何窗口里、也不是工具写的，就不能认领。
+   */
+  const inWindow = (t: number): boolean => {
+    if (!execWindows || !execWindows.length || !Number.isFinite(t)) return false
+    // 只给 100ms 余量（落盘、日志刷新）。放 1 秒就会把"命令刚跑完 0.4 秒后
+    // 别人写进来的文件"也算进来——那正是要排除的东西。
+    for (const [a, b] of execWindows) if (t >= a && t <= b + 100) return true
+    return false
+  }
   const out: Artifact[] = []
   for (const p of [...changes.added, ...changes.modified]) {
     // 老快照是按旧清单拍的，里面还带着 `.uvcache`、`.venv` 这类目录。
@@ -135,7 +180,16 @@ export function collectArtifacts(root: string, changes: ChangeSet, after: Snapsh
     if (isJunkPath(p)) continue
     const meta = after[p]
     if (!meta) continue
-    out.push({ path: p, sha256: meta.sha256, bytes: meta.size })
+    // 快照里的 key 带不带 `./` 取决于拍摄时的路径写法，比对前统一一下，
+    // 否则「明明是自己写的」会被判成 snapshot——宁可漏认，不可错认，
+    // 但让这种纯格式差异造成漏认同样是 bug。
+    const key = p.replace(/^\.\//, '')
+    out.push({
+      path: p,
+      sha256: meta.sha256,
+      bytes: meta.size,
+      source: ours?.has(key) ? 'tool' : (inWindow(meta.mtimeMs) ? 'exec' : 'snapshot'),
+    })
   }
   return out
 }
