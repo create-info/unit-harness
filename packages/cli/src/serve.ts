@@ -792,7 +792,11 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
   // 内置技能先落地，再开始接请求：否则第一次打开插件页会是空列表，
   // 而「create-skill」这种东西本来就是为了让人一上手就能用上
   try { syncBuiltinSkills() } catch { /* 装不进就不装，不能因此起不来 */ }
-  currentWorkspace = opts.workspace || process.env.UH_WORKSPACE || workspaceDir()
+  // 默认工作区：用户显式给的 > 环境变量 > **启动时所在的目录**。
+  // 最后这个以前是 $UH_HOME/work，于是你说"在当前目录启动"，它却去 ~/.uh/work 里
+  // 找文件——点 open 报 no such file，而文件就在你眼皮底下。
+  // `uh` 在仓库里起服务时，当前目录才是"项目"的意思。
+  currentWorkspace = opts.workspace || process.env.UH_WORKSPACE || process.cwd()
   // 只听 loopback 时不设防（本机就是你的）。一旦绑到别的地址，这个端口
   // 就能让局域网里任何人驱动一个有 shell 的 agent——必须带口令。
   const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
@@ -1340,6 +1344,45 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
     // 用量：把每个会话的 llm/response 加起来。模型名和 token 数只存在于事件里，
     // 所以这里必须读日志，不能问 provider —— 问 provider 只会给「当前余额」，
     // 而用户想知道的是「我这些天在它身上花了多少、花在哪个模型上」。
+    // ---- 直接取文件内容（图片预览、下载）-------------------------------
+    // 课件是 png/pdf/pptx：点开没有"改动对比"可看，但用户真正想要的是"看一眼"。
+    // 面板只给一句"用 open 打开看"等于把问题推回给用户。这里按会话的工作区
+    // 回原文，类型从扩展名推，只允许读工作区内、且大小有上限。
+    if (req.method === 'GET' && url.pathname === '/api/file') {
+      const sid = url.searchParams.get('session') ?? ''
+      const rel = url.searchParams.get('path') ?? ''
+      if (!rel) { json(res, 400, { error: 'path is required' }); return }
+      const store = new EventStore()
+      // 没有会话可依据时（从文件树直接点开），用服务端当前工作区；
+      // 而 currentWorkspace 的初始值可能就是"从 cwd 启动"的意思，见 serve():795
+      const root = (sid ? store.get(sid)?.workspace : '') || currentWorkspace || process.cwd()
+      const abs = pathMod.resolve(root, rel)
+      if (!(abs === root || abs.startsWith(root + pathMod.sep))) {
+        json(res, 403, { error: 'that path is outside this project' }); return
+      }
+      let buf: Buffer
+      try { buf = fsSync.readFileSync(abs) } catch { json(res, 404, { error: 'no such file' }); return }
+      // 50 MB：够放一段录屏，也不至于把内存吃穿
+      if (buf.length > 50 * 1024 * 1024) { json(res, 413, { error: 'file is too large to preview' }); return }
+      const ext = pathMod.extname(abs).toLowerCase()
+      const types: Record<string, string> = {
+        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+        '.webp': 'image/webp', '.svg': 'image/svg+xml', '.pdf': 'application/pdf',
+        '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8',
+        '.json': 'application/json; charset=utf-8', '.html': 'text/plain; charset=utf-8',
+      }
+      // 未知类型一律当二进制下载，绝不让浏览器把内容当 HTML 执行
+      const type = types[ext] ?? 'application/octet-stream'
+      res.writeHead(200, {
+        'content-type': type,
+        'content-length': String(buf.length),
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+      })
+      res.end(buf)
+      return
+    }
+
     // @ 的文件补全
     if (req.method === 'GET' && url.pathname === '/api/files') {
       const q = (url.searchParams.get('q') ?? '').toLowerCase()
@@ -2818,7 +2861,18 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       const which = String(body.editor ?? '')
       if (!rel) { json(res, 400, { error: 'path is required' }); return }
       const h = (sid ? running.get(sid) : undefined) ?? [...running.values()][0]
-      const root = h?.workspace ?? (opts.workspace ?? process.cwd())
+      // 工作区从哪来，按可信度排：
+      //   1) 正在跑的那次 run 的工作区；
+      //   2) 这条会话**当初**跑在哪个目录（磁盘上的 meta.json）；
+      //   3) 服务端当前工作区 / 进程 cwd。
+      //
+      // 以前只有 1 和 3。会话跑完就不再进了 running，于是它退到 cwd——而 cwd
+      // 是**启动服务时那个目录**（多半是代码仓库）。结果：课件明明在工作区里，
+      // 点 open 却说 "no such file"，因为服务端在另一个目录里找它。
+      const sessionWs = sid ? (new EventStore().get(sid)?.workspace ?? '') : ''
+      // 注意用 || 而不是 ??：currentWorkspace 是空串时（还没跑过任何一次）必须继续往下退，
+      // 否则 `--workspace` 和 cwd 这两个兜底永远轮不到
+      const root = h?.workspace || sessionWs || currentWorkspace || opts.workspace || process.cwd()
       const abs = pathMod.resolve(root, rel)
       // 逃出工作区的路径一律拒绝：这是边界，不是提示
       if (!(abs === root || abs.startsWith(root + pathMod.sep))) {
@@ -2826,13 +2880,31 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       }
       if (!fsSync.existsSync(abs)) { json(res, 404, { error: 'no such file' }); return }
       const editors = editorCandidates(which)
-      for (const e of editors) {
-        try {
-          spawn(e.cmd, e.args(abs), { detached: true, stdio: 'ignore' }).unref()
-          json(res, 200, { ok: true, editor: e.name, path: abs })
-          return
-        } catch { /* 换下一个 */ }
-      }
+      // detached + unref 之后，spawn 失败是**异步**的：命令不存在不会当场 throw，
+      // 而是稍后发一个 'error' 事件。以前那个 try/catch 永远抓不到东西——于是
+      // 没装 Goland 也照样返回 ok，用户点 open 之后什么都不会发生。
+      // 现在按 'spawn' / 'error' 事件串候选：真起来了才回 ok，起不来就换下一个。
+      const launched = await new Promise<{ name: string } | null>((resolve) => {
+        let i = 0
+        const next = (): void => {
+          if (i >= editors.length) { resolve(null); return }
+          const e = editors[i++]!
+          let child
+          try {
+            child = spawn(e.cmd, e.args(abs), { detached: true, stdio: 'ignore' })
+          } catch { next(); return }
+          let ok = false
+          // 命令不存在时 'error' 几乎是立刻到的；还活着才说明真起来了
+          child.once('error', () => { if (!ok) next() })
+          child.once('spawn', () => {
+            ok = true
+            child.unref()
+            resolve({ name: e.name })
+          })
+        }
+        next()
+      })
+      if (launched) { json(res, 200, { ok: true, editor: launched.name, path: abs }); return }
       json(res, 501, { error: 'no editor found', tried: editors.map((e) => e.name) })
       return
     }

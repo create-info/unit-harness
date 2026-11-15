@@ -594,6 +594,11 @@
   .dpbody .ln.del .c{color:#e2999c}
   .dpbody .ln.hunk .c{color:var(--dim)}
   .dpempty{padding:18px 16px;color:var(--dim);font:12.5px var(--sans,inherit)}
+  /* 产物预览：图铺满面板宽度、深色底上留一点边距；pdf 直接内嵌，免得多点一次 */
+  .dppreview{display:block;width:calc(100% - 24px);height:auto;margin:12px;border-radius:8px;
+             border:1px solid var(--line);background:#fff}
+  .dppdf{display:block;width:100%;height:calc(100% - 8px);border:0;background:#fff;margin:4px 0}
+  a.dpopen{display:inline-block;margin:0 16px 16px;padding:7px 12px;text-decoration:none}
   /* 跟在最新内容后面时藏起来；一旦用户往上翻才出现 */
   /* 位置由 JS 按 footer 的实际高度设置：输入框会随内容变高，写死 bottom 就会压在按钮下面 */
   #jump{position:absolute;right:22px;bottom:var(--jumpb,112px);display:none;z-index:40;
@@ -4336,7 +4341,13 @@ async function openDiffPane(path, seq){
     // 等着的时候用户可能点了别的文件：迟到的响应不许覆盖新的
     if (DP_PATH !== path) return;
     body.innerHTML = '';
-    if (r.error){ body.innerHTML = '<div class="dpempty">' + esc(r.error) + '</div>'; return; }
+    if (r.error){
+      // 生成出来的东西没有逐行对比，但"看一眼"是能做到的：
+      //   png/jpg → 直接贴图；pdf → 内嵌；其它二进制 → 给下载和 open。
+      // 只显示一句"没有可对比的前后版本"，等于把用户推回文件管理器。
+      if (r.generated || r.binary) { renderFilePreview(body, path, r); return; }
+      body.innerHTML = '<div class="dpempty">' + esc(r.error) + '</div>'; return;
+    }
     let add = 0, del = 0;
     for (const ln of diffLines(r.before || '', r.after || '')){
       body.appendChild(ln);
@@ -4348,6 +4359,46 @@ async function openDiffPane(path, seq){
   } catch (e) {
     if (DP_PATH === path) body.innerHTML = '<div class="dpempty">' + esc(String(e.message || e)) + '</div>';
   }
+}
+
+/**
+ * 二进制产物/图片的预览。
+ *
+ * 走 /api/file：服务端按这条会话的工作区读原文，前端只负责显示。
+ * 用了 <img> 而不是 fetch 再 blob：一张 14 页的课件截图加起来几十张，
+ * 交给浏览器自己懒加载和缓存，比在 JS 里排队取快得多。
+ */
+function renderFilePreview(body, path, meta){
+  const q = '/api/file?session=' + encodeURIComponent(CURRENT_SID) + '&path=' + encodeURIComponent(path);
+  const ext = (path.split('.').pop() || '').toLowerCase();
+  body.innerHTML = '';
+  const hint = document.createElement('div');
+  hint.className = 'dpempty';
+  hint.textContent = meta.error || '';
+  if (/^(png|jpe?g|gif|webp|svg)$/.test(ext)){
+    const img = document.createElement('img');
+    img.className = 'dppreview';
+    img.alt = path;
+    img.src = q;
+    img.onerror = () => { body.innerHTML = '<div class="dpempty">could not load ' + esc(path) + '</div>'; };
+    body.appendChild(img);
+    return;
+  }
+  if (ext === 'pdf'){
+    const f = document.createElement('iframe');
+    f.className = 'dppdf';
+    f.src = q;
+    body.appendChild(f);
+    return;
+  }
+  // 其它二进制（pptx/docx…）：给它下载，外加 open
+  const a = document.createElement('a');
+  a.className = 'dpopen';
+  a.href = q;
+  a.download = path.split('/').pop();
+  a.textContent = 'download ' + path.split('/').pop();
+  body.appendChild(hint);
+  body.appendChild(a);
 }
 
 function closeDiffPane(){
