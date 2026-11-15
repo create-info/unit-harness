@@ -28,6 +28,8 @@ import * as readline from 'node:readline'
 
 import { VERSION } from './version.ts'
 import { pluginDirs } from './plugin-dirs.ts'
+import { createDevice, loadDevices, revokeDevice, pairUrl } from './pairing.ts'
+import qrcode from 'qrcode-terminal'
 import { startServer, startServerOrRestart, openBrowser } from './serve.ts'
 import { startA2A } from './a2a.ts'
 import { startAcp } from './acp.ts'
@@ -219,6 +221,76 @@ async function cmdDoctor(): Promise<void> {
  * 装法完全不同，缺哪个、该怎么补、补完在哪验证，一句 "no device" 全都没说。
  * 所以这里逐平台报告，并把下一步的命令原样给出来。
  */
+/**
+ * `uh pair`——把一台手机和这台电脑绑起来。
+ *
+ * 在电脑上生成一把只属于这台手机的令牌，把 `http://<局域网IP>:<端口>/?t=<令牌>`
+ * 打成二维码。手机用相机扫一下：Safari 打开 → 服务端把令牌换成 cookie 并从
+ * 地址栏抹掉 → 「添加到主屏幕」得到一个能用的图标。手机上不用敲任何东西。
+ *
+ * 为什么不直接在网页里输口令：那串 25 位随机字符要在手机上手打，
+ * 打错的概率比配对成功的概率高。
+ */
+async function cmdPair(rest: string[]): Promise<void> {
+  const nameIdx = rest.indexOf('--name')
+  const name = nameIdx >= 0 ? (rest[nameIdx + 1] || 'device') : 'iPhone'
+  const portIdx = rest.indexOf('--port')
+  const port = portIdx >= 0 ? Number(rest[portIdx + 1]) || 7878 : 7878
+  const urlIdx = rest.indexOf('--url')
+  const ip = lanAddresses()[0]
+  const base = urlIdx >= 0
+    ? String(rest[urlIdx + 1] || '')
+    : (ip ? `http://${ip}:${port}` : `http://127.0.0.1:${port}`)
+
+  const { device, token } = createDevice(name)
+  const url = pairUrl(base, token)
+
+  console.log('')
+  console.log(`  配对的设备：${device.name}（${device.id}）`)
+  console.log('')
+  qrcode.generate(url, { small: true }, (q: string) => console.log(q))
+  console.log('  ' + url)
+  console.log('')
+  console.log('  手机：相机对着上面的码扫 → Safari 打开 → 分享 → 添加到主屏幕')
+  console.log('  前提：电脑上跑着 `uh serve --lan`，手机与电脑同一网络（或同一个 Tailscale）')
+  console.log('')
+  console.log('  撤销这台：uh unpair ' + device.id)
+  console.log('  看看都配了谁：uh devices')
+  console.log('')
+  if (!ip && urlIdx < 0) {
+    console.log(dim2('  没有找到局域网地址——用 --url http://<地址>:<端口> 指定'))
+  }
+}
+
+/** `uh devices`：谁配过、什么时候最后一次用 */
+function cmdDevices(): void {
+  const list = loadDevices()
+  if (!list.length) {
+    console.log('还没有配对过的设备。跑 `uh pair` 生成一个二维码。')
+    return
+  }
+  console.log('')
+  for (const d of list) {
+    const seen = d.lastSeen ? relAgo(d.lastSeen) : '从未连接'
+    console.log(`  ${d.name.padEnd(16)} ${d.id}   配对于 ${d.created.slice(0, 10)}   ${seen}`)
+  }
+  console.log('')
+  console.log(dim2('  撤销：uh unpair <id 或名字>'))
+  console.log('')
+}
+
+/** 「最后一次用」要说人话：ISO 时间在终端里没人愿意换算 */
+function relAgo(iso: string): string {
+  const ms = Date.now() - Date.parse(iso)
+  if (!Number.isFinite(ms) || ms < 0) return '刚刚'
+  const min = Math.floor(ms / 60000)
+  if (min < 1) return '刚刚'
+  if (min < 60) return `${min} 分钟前`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `${h} 小时前`
+  return `${Math.floor(h / 24)} 天前`
+}
+
 async function cmdPhone(sub: string | undefined, rest: string[]): Promise<void> {
   const probe = (cmd: string, args: string[]): Promise<string | null> =>
     new Promise((resolve) => {
@@ -1452,6 +1524,15 @@ async function main(): Promise<void> {
       await cmdDoctor(); return
     case 'skill':
       cmdSkill(argv[1], argv.slice(2)); return
+    case 'pair':
+      await cmdPair(argv.slice(1)); return
+    case 'devices':
+      cmdDevices(); return
+    case 'unpair': {
+      const gone = revokeDevice(String(argv[1] || ''))
+      console.log(gone ? `撤销了 ${gone.name}（${gone.id}）` : `没找到 ${argv[1] || '（没给名字）'}`)
+      return
+    }
     case 'phone':
       await cmdPhone(argv[1], argv.slice(2)); return
     case 'plugin':

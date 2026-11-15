@@ -187,6 +187,13 @@
   .rhead .sum .del{color:var(--bad)}
   .rbody{padding:0 0 4px}
   .run.fold .rbody{display:none}
+  /* 「只留结论」：把思考行和工具行都藏掉，文件卡片还在——那是结果本身 */
+  .run.hideproc .rbody .row{display:none}
+  .run .foldall{margin-left:auto;background:none;border:1px solid var(--line);color:var(--dim);
+    border-radius:6px;padding:1px 8px;font-size:10.5px;cursor:pointer}
+  .run .foldall:hover{color:var(--fg);border-color:var(--hoverline)}
+  /* 「能点开」的暗示：常显但很轻，不抢过程的注意力 */
+  .run .hint{color:var(--soft);font-size:10.5px;margin-left:10px}
   .run.fold .car{transform:rotate(-90deg)}
   .rbody .row{padding-left:10px}
   .think{border-left:2px solid #2f3a4a;padding:2px 0 2px 10px;margin:6px 0;color:var(--dim);font-size:11.5px;white-space:pre-wrap;line-height:1.6;max-height:260px;overflow:auto}
@@ -471,8 +478,11 @@
   #deliverables:empty{display:none}
   .art.more{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--hover);
     color:var(--accent);cursor:pointer;padding:6px 0;font:12.5px var(--mono)}
-  .art{display:flex;gap:10px;align-items:center;padding:4px 0;border-bottom:1px solid var(--hover)}
-  .art .n{flex:1;color:var(--fg)}
+  .art{display:flex;gap:10px;align-items:flex-start;padding:5px 0;border-bottom:1px solid var(--hover);cursor:pointer;min-width:0}
+  .art:hover{background:var(--hover)}
+  .art .artcol{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+  .art .n{color:var(--fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .art .meta{color:var(--dim);font:10.5px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .art .s{color:var(--dim)}
   .badge{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line)}
   .badge.g{color:var(--ok);border-color:var(--okbg)}
@@ -835,6 +845,8 @@ function row(cls, text){
   if (!Number.isFinite(sec) || sec < lastSec) sec = lastSec;
   lastSec = sec;
   const t = ('+' + sec.toFixed(1) + 's');
+  // 带 car 的行（工具调用、思考）可以点一下整组隐掉：
+  // 手机上 33 步的过程会把答案顶出屏幕好几屏，能收起来才看得见结论
   d.innerHTML = '<span class="t">' + t + '</span><span class="c ' + cls + '">' + text + '</span>';
   logEl.appendChild(d);
   followTail();   // 交给 follow-tail：用户往上翻时不要把他拽回来
@@ -2347,8 +2359,17 @@ function openRun(){
       el.className = 'run';
       const head = document.createElement('div');
       head.className = 'rhead';
-      head.innerHTML = '<span class="car">▾</span><span class="ttl">working…</span><span class="sum"></span>';
-      head.onclick = () => el.classList.toggle('fold');
+      head.innerHTML = '<span class="car">▾</span><span class="ttl">working…</span><span class="sum"></span>'
+        + '<button class="foldall" type="button" title="Hide the thinking and the tool calls, keep the result">hide process</button>';
+      head.onclick = (e) => {
+        if (e.target && e.target.classList && e.target.classList.contains('foldall')) {
+          e.stopPropagation();
+          el.classList.toggle('hideproc');
+          e.target.textContent = el.classList.contains('hideproc') ? 'show process' : 'hide process';
+          return;
+        }
+        el.classList.toggle('fold');
+      };
       const body = document.createElement('div');
       body.className = 'rbody';
       el.appendChild(head);
@@ -2364,8 +2385,18 @@ function openRun(){
   el.className = 'run';
   const head = document.createElement('div');
   head.className = 'rhead';
-  head.innerHTML = '<span class="car">▾</span><span class="ttl">working…</span><span class="sum"></span>';
-  head.onclick = () => el.classList.toggle('fold');
+  // 活的那张卡也要能收：跑着的时候过程照样可能已经很长
+  head.innerHTML = '<span class="car">▾</span><span class="ttl">working…</span><span class="sum"></span>'
+    + '<button class="foldall" type="button" title="Hide the thinking and the tool calls, keep the result">hide process</button>';
+  head.onclick = (e) => {
+    if (e.target && e.target.classList && e.target.classList.contains('foldall')) {
+      e.stopPropagation();
+      el.classList.toggle('hideproc');
+      e.target.textContent = el.classList.contains('hideproc') ? 'show process' : 'hide process';
+      return;
+    }
+    el.classList.toggle('fold');
+  };
   const body = document.createElement('div');
   body.className = 'rbody';
   el.appendChild(head);
@@ -2383,9 +2414,26 @@ function updateRunHead(){
   el.querySelector('.ttl').textContent =
     (steps ? steps + (steps === 1 ? ' step' : ' steps') : 'working…')
     + (files.size ? ' · ' + files.size + (files.size === 1 ? ' file' : ' files') : '');
-  el.querySelector('.sum').innerHTML = files.size
+  el.querySelector('.sum').innerHTML = (files.size
     ? '<span class="add">+' + added + '</span><span class="del">−' + removed + '</span>'
-    : '';
+    : '')
+    // 头一行得自己说「能点」，否则没人知道这 33 步可以收起来
+    + '<span class="hint">click to fold</span>';
+}
+
+/**
+ * 一轮跑完就把过程收成一行。
+ *
+ * Codex 的做法：过程和结论分开——过程是「它怎么做的」，结论是「结果怎么样」。
+ * 33 步全摊开时，答案被顶到屏幕外好几屏，人得先划半天才看到东西。
+ * 收起来之后卡片只剩一行 `33 steps · 4 files +60 −0`，点一下还全在。
+ * 只自动收这一种情况：一轮**正常结束**。中途停下或出错时，过程就是证据，
+ * 摊着别动。
+ */
+function foldFinishedRun(){
+  if (!runGrp) return;
+  const { el, steps } = runGrp;
+  if (steps >= 3) el.classList.add('fold');
 }
 
 /** 工具调用、文件卡片这些过程行进组；问答和结论留在组外 */
@@ -3225,6 +3273,8 @@ function render(kind, p){
     case 'done':
       // 跑完了左栏那个 running 点要消掉——列表只在启动时拉过一次
       loadProjects();
+      // 正常结束：把过程收成一行，让结论露出来
+      foldFinishedRun();
       row('dim','— done —');
       setRunning(false);
       break;
@@ -3284,10 +3334,15 @@ function renderDeliverables(items, verifications, showAll){
     const ok = vs.length > 0 && passed === vs.length;
     const d = document.createElement('div');
     d.className = 'art';
+    // 文件名一行、体积和哈希一行。以前全挤在一行里：窄窗口下这行会横向
+    // 溢出到对话栏外面（截图上那串 `419504 B sha256=2ee6a17f0…` 就是它），
+    // 哈希还被窗口边缘切掉一半——一行放不下的东西不该硬挤。
     d.innerHTML = '<span class="badge ' + (ok?'g':'r') + '">' + (ok?'✓':'✗') + ' ' + passed + '/' + vs.length + '</span>'
-      + '<span class="n">' + esc(a.path) + '</span>'
-      + '<span class="s">' + a.bytes + ' B</span>'
-      + '<span class="s">sha256=' + a.sha256.slice(0,12) + '</span>';
+      + '<span class="artcol"><span class="n">' + esc(a.path) + '</span>'
+      + '<span class="meta">' + a.bytes + ' B · sha256=' + a.sha256.slice(0,12) + '</span></span>';
+    d.title = a.path + '\n' + a.bytes + ' B\nsha256 ' + a.sha256;
+    // 点一下就在右侧并排看内容（和过程行同一套口子）
+    d.onclick = () => { void openDiffPane(a.path) };
     delivEl.appendChild(d);
     for (const v of vs.filter(x => x.result !== 'pass')){
       const f = document.createElement('div');

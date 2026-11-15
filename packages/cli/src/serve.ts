@@ -22,6 +22,7 @@ import {
   expandMentions,
 } from '@unit-harness/core'
 import { pluginDirs } from './plugin-dirs.ts'
+import { deviceForToken } from './pairing.ts'
 import type { ApprovalGate, ApprovalRequest, Message } from '@unit-harness/core'
 import UI from './ui.html'
 import { asrStatus, transcribe } from './asr.ts'
@@ -604,7 +605,10 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
         ?? String(req.headers['x-uh-token'] ?? '')
         ?? ''
       const cookie = /(?:^|; )uh_t=([^;]+)/.exec(String(req.headers.cookie ?? ''))?.[1] ?? ''
+      // 两种凭据都认：这把服务口令（全机一把），或者某台已配对设备的令牌
+      // （每台一把、可单台撤销）。`uh pair` 发的是后者。
       const ok = safeEqual(given, token) || safeEqual(cookie, token)
+        || Boolean(deviceForToken(given)) || Boolean(deviceForToken(cookie))
       if (!ok) {
         // 只放行「装成 app」需要的静态件，接口一个都不给
         const open = ['/manifest.webmanifest', '/icon-192.png', '/icon-512.png', '/sw.js', '/favicon.ico', '/favicon.png'].includes(url.pathname)
