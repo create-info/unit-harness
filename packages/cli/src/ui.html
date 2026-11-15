@@ -920,10 +920,10 @@ function relTime(stamp){
   const t = new Date(String(stamp).replace(' ', 'T'));
   if (Number.isNaN(t.getTime())) return String(stamp || '');
   const diff = (Date.now() - t.getTime()) / 1000;
-  if (diff < 60) return 'just now';
-  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-  if (diff < 86400 * 7) return Math.floor(diff / 86400) + 'd ago';
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+  if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+  if (diff < 86400 * 7) return Math.floor(diff / 86400) + ' 天前';
   const p = (n) => String(n).padStart(2, '0');
   return p(t.getMonth() + 1) + '-' + p(t.getDate());
 }
@@ -1853,7 +1853,7 @@ function renderRemote(body){
   }
   const ts = R.tailscale || { state: 'absent' };
   const tsText = ts.state === 'up'
-    ? '在线 · ' + (ts.ip || '')
+    ? '在线 · ' + (ts.ip || '') + (ts.host ? ' · ' + ts.host : '')
     : ts.state === 'logged-out'
       ? '装了但没登录：在电脑上跑 tailscale up，之后手机装 Tailscale 就能跨网络连'
       : '没装。要跨网络用，装 Tailscale 比把端口开到公网安全得多';
@@ -1867,9 +1867,31 @@ function renderRemote(body){
       el(ts.state === 'up' ? '<span class="cstat cok">●  可用</span>' : '<span class="cstat cno">●  未就绪</span>')),
   ];
 
-  // 口令和地址：手机上照着敲是不现实的，给一键复制
-  if (!R.loopback && R.urls && R.urls.length) {
-    const url = R.urls[0];
+  // 口令和地址：手机上照着敲是不现实的，给一键复制。
+  // 一个地址都给不出来时，别说「不可用」——直接给能照抄的那条命令，
+  // 因为「Tailscale 在线、手机却连不上」的答案永远是「只听本机 127.0.0.1」。
+  const urls = R.urls || [];
+  if (!urls.length) {
+    const cmd = ts.state === 'up'
+      ? 'tailscale serve --bg ' + R.port
+      : 'uh serve --lan --port ' + R.port;
+    const box = document.createElement('div');
+    box.className = 'surl';
+    box.innerHTML = '<code>' + esc(cmd) + '</code>';
+    const b = document.createElement('button');
+    b.className = 'sbtn';
+    b.textContent = '复制';
+    b.onclick = async () => {
+      try { await navigator.clipboard.writeText(cmd); setMsg('复制好了，在电脑上跑') }
+      catch { setMsg('复制不了，手动选吧', true) }
+    };
+    box.appendChild(b);
+    rows.push(srow('手机现在还连不上', ts.state === 'up'
+      ? 'Tailscale 已经在线，但服务只听本机。在电脑上跑下面这条：不开任何公网端口，只把你的 tailnet 转发进来。'
+      : '服务只听本机，手机进不来。在电脑上跑下面这条，然后手机连同一个 Wi-Fi。', box));
+  }
+  if (urls.length) {
+    const url = urls[0];
     const full = url + '/?t=' + encodeURIComponent(R.token || '');
     const box = document.createElement('div');
     box.className = 'surl';
@@ -1882,7 +1904,8 @@ function renderRemote(body){
       catch { setMsg('复制不了，手动选吧', true) }
     };
     box.appendChild(b);
-    rows.push(srow('手机打开这个地址', '打开一次就记住，之后可以「添加到主屏幕」。', box));
+    rows.push(srow('手机打开这个地址', '打开一次就记住，之后可以「添加到主屏幕」。'
+      + (urls.length > 1 ? '（还有其他入口：' + urls.slice(1).join('、') + '）' : ''), box));
   }
 
   body.appendChild(section('这台电脑', rows));

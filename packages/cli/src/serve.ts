@@ -292,18 +292,34 @@ const watchManager = new WatchManager({
  * 三条状态分开报：没装 / 装了没登录 / 在线。只说「不可用」会让人以为是
  * 网络问题，实际是差了 `tailscale up` 那一步。
  */
-function tailscaleState(): { state: 'absent' | 'logged-out' | 'up'; ip?: string } {
+function tailscaleState(): { state: 'absent' | 'logged-out' | 'up'; ip?: string; host?: string; serving?: boolean } {
+  let ip = ''
   try {
-    const out = execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })
-      .toString().trim().split('\n')[0]
-    if (out) return { state: 'up', ip: out }
+    ip = (execFileSync('tailscale', ['ip', '-4'], { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim().split('\n')[0]) ?? ''
   } catch { /* 落到下面继续判断 */ }
-  try {
-    execFileSync('tailscale', ['version'], { timeout: 3000, stdio: 'ignore' })
-    return { state: 'logged-out' }
-  } catch {
-    return { state: 'absent' }
+  if (!ip) {
+    try {
+      execFileSync('tailscale', ['version'], { timeout: 3000, stdio: 'ignore' })
+      return { state: 'logged-out' }
+    } catch {
+      return { state: 'absent' }
+    }
   }
+  // MagicDNS 名字：`tailscale serve` 之后手机打开的是 https://<名字>.<tailnet>.ts.net
+  let host = ''
+  let serving = false
+  try {
+    const j = JSON.parse(execFileSync('tailscale', ['status', '--json'], { timeout: 4000, stdio: ['ignore', 'pipe', 'ignore'] }).toString())
+    host = String(j?.Self?.DNSName ?? '').replace(/\.$/, '')
+  } catch { /* 名字拿不到就只报 IP */ }
+  try {
+    // `tailscale serve status` 在有转发时输出非空；空输出=没在转发
+    const out = execFileSync('tailscale', ['serve', 'status'], { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim()
+    serving = out.length > 0 && !/no serve config/i.test(out)
+  } catch { /* 老版本没有这个子命令 */ }
+  return { state: 'up', ip, host, serving }
 }
 
 /** 手机真正连得上的地址：跳过 docker/bridge 那几个（列出来只会让人多试几次） */
@@ -751,17 +767,29 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
     if (req.method === 'GET' && url.pathname === '/api/remote') {
       const token = serveToken()
       const addrs = lanAddresses()
+      const ts = tailscaleState()
+      const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+      // 手机真能打开的地址。只听本机时，只有 tailscale serve 转发进来才有门——
+      // 这时候列 IP 是骗人的：手机连 100.x:7878 会被拒绝。
+      // 去重：Tailscale IP 本身就是一块网卡地址，会同时出现在 addrs 和 ts.ip 里，
+      // 不去重的话同一个地址在页面上列两遍。
+      const urls = loopback
+        ? (ts.state === 'up' && ts.serving && ts.host ? [`https://${ts.host}`] : [])
+        : [...new Set([
+          ...addrs.map((a) => `http://${a}:${port}`),
+          ...(ts.state === 'up' && ts.ip ? [`http://${ts.ip}:${port}`] : []),
+        ])]
       json(res, 200, {
         // 只听本机还是对整个局域网开着：这决定了手机现在连不连得上
-        loopback: host === '127.0.0.1' || host === 'localhost' || host === '::1',
+        loopback,
         port,
         addresses: addrs,
         // 口令只回给已经进门的人（这个接口本身在鉴权之后），不会出现在页面上
         token,
-        urls: addrs.map((a) => `http://${a}:${port}`),
+        urls,
         devices: loadDevices().map((d) => ({ id: d.id, name: d.name, created: d.created, lastSeen: d.lastSeen })),
         // 能不开公网就不开：tailscale 装了但没登录时，这里明确告诉用户下一步
-        tailscale: tailscaleState(),
+        tailscale: ts,
       })
       return
     }
@@ -769,10 +797,19 @@ export async function startServer(opts: ServeOptions = {}): Promise<{ url: strin
       const body = JSON.parse(await readBody(req).catch(() => '{}')) as { name?: string }
       const name = String(body.name ?? '').trim().slice(0, 40) || '我的手机'
       const made = createDevice(name)
-      const base = host === '127.0.0.1' || host === 'localhost' || host === '::1'
-        ? `http://127.0.0.1:${port}`
-        : `http://${lanAddresses()[0] ?? '127.0.0.1'}:${port}`
-      json(res, 200, { id: made.device.id, name: made.device.name, token: made.token, url: pairUrl(base, made.token) })
+      const lb = host === '127.0.0.1' || host === 'localhost' || host === '::1'
+      const t = tailscaleState()
+      // 配对地址要手机真能打开：本机监听 + tailscale serve 时用 https 域名，
+      // 否则退回局域网 IP。都给不出来就回空串，界面提示用户先改监听方式。
+      const base = !lb
+        ? `http://${lanAddresses()[0] ?? '127.0.0.1'}:${port}`
+        : (t.state === 'up' && t.serving && t.host ? `https://${t.host}` : '')
+      json(res, 200, {
+        id: made.device.id,
+        name: made.device.name,
+        token: made.token,
+        url: base ? pairUrl(base, made.token) : '',
+      })
       return
     }
     if (req.method === 'POST' && url.pathname === '/api/remote/revoke') {
