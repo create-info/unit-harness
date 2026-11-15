@@ -16,6 +16,17 @@ export interface ProviderConfigEntry {
   model?: string
   /** 覆盖注册表里的 baseUrl（自建网关、代理） */
   baseUrl?: string
+  /**
+   * 上下文窗口（tokens）。这是**模型的属性**，不是程序的常量——
+   * 本地 27B 开 128k、DeepSeek 也是 128k、Claude 200k，各不相同。
+   *
+   * 值从哪来：List 模型时服务端报的 loaded_context_length / context_length
+   * 会存进来；用户也可以在设置页手填覆盖。都没有才回落到默认值
+   * （32k），并且界面会标明「这是猜的」。
+   */
+  contextWindow?: number
+  /** 服务端报的最大窗口（LM Studio 的 max_context_length），仅作展示与兜底 */
+  maxContextWindow?: number
 }
 
 export interface UhConfig {

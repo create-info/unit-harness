@@ -1,4 +1,6 @@
 export * from './types.ts'
+export { resolveContextWindow, compactThreshold, windowFromModelEntry, DEFAULT_CONTEXT_WINDOW, COMPACT_AT_RATIO } from './llm/window.ts'
+export type { ReportedWindow } from './llm/window.ts'
 export { Harness } from './harness.ts'
 export type { HarnessOptions, LoadedPlugin, LogLevel } from './harness.ts'
 export { probeIsolation, describeIsolation } from './sandbox/probe.ts'

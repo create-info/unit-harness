@@ -19,7 +19,8 @@ import {
   listCheckpoints, editsAfterSeq, undoToCheckpoint, lastRestoreSeq,
   buildAdapters, readChannels, writeChannels, missingFields,
   getBinding, setBinding, claimMessage, bindingKey,
-  readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig } from '@unit-harness/core'
+  readConfig, resolveProvider, resolveContextWindow, setProviderEntry, uhHome, windowFromModelEntry,
+  workspaceDir, writeConfig } from '@unit-harness/core'
 import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget, WatchManager } from '@unit-harness/core'
 import { JUNK_DIRS } from '@unit-harness/core'
 import type { IncomingMessage } from '@unit-harness/core'
@@ -2174,7 +2175,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
      */
     if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/models') {
       const fromForm = req.method === 'POST'
-        ? JSON.parse(await readBody(req).catch(() => '{}')) as { provider?: string; baseUrl?: string; apiKey?: string }
+        ? JSON.parse(await readBody(req).catch(() => '{}')) as { provider?: string; baseUrl?: string; apiKey?: string; model?: string }
         : {}
       const id = fromForm.provider ?? url.searchParams.get('provider') ?? ''
       const def = findProvider(id)
@@ -2206,12 +2207,57 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
           json(res, 200, { models: [], error: `HTTP ${res2.status} ${detail}`.trim(), status: res2.status })
           return
         }
-        const data = (await res2.json()) as { data?: Array<{ id?: string }>; models?: Array<{ name?: string }> }
-        const models = (data.data ?? data.models ?? [])
-          .map((m) => (m as { id?: string; name?: string }).id ?? (m as { name?: string }).name ?? '')
-          .filter(Boolean)
-          .sort()
-        json(res, 200, { models })
+        const data = (await res2.json()) as { data?: Array<Record<string, unknown>>; models?: Array<Record<string, unknown>> }
+        // 顺手把窗口带出来：LM Studio 报 max_context_length/loaded_context_length，
+        // OpenRouter 报 context_length。前端不必再猜，预算也就有真实依据。
+        const list = (data.data ?? data.models ?? [])
+          .map((m) => {
+            const id = String((m as { id?: unknown; name?: unknown }).id ?? (m as { name?: unknown }).name ?? '')
+            return { id, ...windowFromModelEntry(m) }
+          })
+          .filter((m) => m.id)
+          .sort((a, b) => a.id.localeCompare(b.id))
+
+        // 主流的 /v1/models 只给名字，不给窗口。本地服务另开了一个接口专门说这件事：
+        //   LM Studio  /api/v0/models  → max_context_length / loaded_context_length
+        //   Ollama     /api/tags       → 不含窗口，跳过
+        // 值得多打这一次请求：窗口决定了什么时候压缩，猜错的代价是模型反复丢上下文。
+        if (list.length && list.every((m) => m.max === undefined && m.loaded === undefined)) {
+          const root = base.replace(/\/v1$/, '')
+          const alt = root + (id === 'lmstudio' ? '/api/v0/models' : '/api/tags')
+          try {
+            const ctl2 = new AbortController()
+            const t2 = setTimeout(() => ctl2.abort(), 5000)
+            const r3 = await fetch(alt, { signal: ctl2.signal })
+            clearTimeout(t2)
+            if (r3.ok) {
+              const d3 = (await r3.json()) as { data?: Array<Record<string, unknown>>; models?: Array<Record<string, unknown>> }
+              for (const m of d3.data ?? d3.models ?? []) {
+                const mid = String(m.id ?? m.name ?? '')
+                const w = windowFromModelEntry(m)
+                const hit = list.find((x) => x.id === mid)
+                if (hit && (w.max || w.loaded)) { hit.max = w.max; hit.loaded = w.loaded }
+              }
+            }
+          } catch { /* 老版本没有这个接口，就当不知道 */ }
+        }
+
+        // 存一份到配置：下一个 turn 不必再问一次服务端窗口多大。
+        // 只存当前选中的那个模型——存整张表会让配置跟着模型库里几百个模型一起长。
+        try {
+          const cfg2 = readConfig()
+          const cur = cfg2.providers[id] ?? {}
+          const pickId = cur.model ?? fromForm.model
+          const hit = pickId ? list.find((m) => m.id === pickId) : list.find((m) => m.loaded ?? m.max)
+          if (hit) {
+            cur.contextWindow = hit.loaded ?? hit.max
+            if (hit.max) cur.maxContextWindow = hit.max
+            cfg2.providers[id] = cur
+            writeConfig(cfg2)
+          }
+        } catch { /* 缓存写失败不影响列表 */ }
+
+        json(res, 200, { models: list.map((m) => m.id), windows: list })
       } catch (err) {
         json(res, 200, { models: [], error: err instanceof Error ? err.message : 'fetch failed' })
       }

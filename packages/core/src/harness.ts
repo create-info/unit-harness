@@ -18,6 +18,8 @@ import { isJunkDirName } from './fs/junk.ts'
 import { EventStore } from './evidence/store.ts'
 import { LlmGateway } from './llm/gateway.ts'
 import { resolveProvider } from './llm/resolve.ts'
+import { resolveContextWindow } from './llm/window.ts'
+import { readConfig } from './llm/config.ts'
 import { normalizeBudget, type BudgetConfig } from './agent/budget.ts'
 import { runAgent } from './agent/loop.ts'
 import type { AgentDeps } from './agent/loop.ts'
@@ -166,7 +168,7 @@ export interface RunTaskOptions {
   verify?: boolean
   /** 是否给模型 update_plan 工具（默认 true） */
   plan?: boolean
-  /** 上下文窗口预算（默认 32000；到 70% 自动压缩，0 关闭） */
+  /** 上下文窗口预算。缺省按模型解析（见 llm/window.ts），不写死；到 70% 自动压缩，0 关闭 */
   maxContextTokens?: number
   /** 是否启动 MCP server（默认 true） */
   mcp?: boolean
@@ -1116,6 +1118,16 @@ export class Harness {
       ...(o.apiKey ? { apiKey: o.apiKey } : {}),
     })
 
+    // 这次跑用多大的窗口：按模型解析，别用全局常量
+    const contextWindowFor = (providerId: string, model: string): number => {
+      const entry = readConfig().providers[providerId] ?? {}
+      return resolveContextWindow({
+        model,
+        explicit: entry.contextWindow,
+        reported: entry.maxContextWindow ? { id: model, max: entry.maxContextWindow } : undefined,
+      }).tokens
+    }
+
     const gateway = new LlmGateway({
       primary: provider,
       emit: (kind, payload, parentId) => this.ev(kind, payload, 'agent', parentId ?? null)?.id ?? null,
@@ -1390,7 +1402,15 @@ export class Harness {
           onText: (d: string) => { this.opts.onText?.(d) },
           onReasoning: (d: string) => { this.opts.onReasoning?.(d) },
         } : {}),
-        maxContextTokens: o.maxContextTokens ?? Number(process.env.UH_MAX_CONTEXT ?? 32000),
+        // 上下文预算按**模型**算，不写死。
+        // 顺序：显式参数 > UH_MAX_CONTEXT > 配置里这个 provider 的 contextWindow
+        //      > 内置表按模型名 > 默认 32k。
+        // 为什么必须这样：同一个进程接本地 27B（128k）和接 Claude（200k），
+        // 预算就该是两个数。写死 32000 会把 128k 的模型按 32k 反复压缩，
+        // 刚读到的内容被摘要掉、模型回去重读，step 和 token 一起涨。
+        maxContextTokens: o.maxContextTokens
+          ?? (Number(process.env.UH_MAX_CONTEXT) > 0 ? Number(process.env.UH_MAX_CONTEXT) : undefined)
+          ?? contextWindowFor(provider.def.id, provider.model),
         ev: (kind, payload) => this.ev(kind, payload, 'agent')?.id ?? null,
         log: (m) => this.log('info', m),
     }
