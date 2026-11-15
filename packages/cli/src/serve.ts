@@ -1461,7 +1461,13 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       return
     }
 
-    /** GitHub 仓库 / 子目录 → 一批 skill 文件。没 token 也能用（60 次/小时） */
+    /** GitHub 仓库 / 子目录 → 一批 skill 文件。
+     *
+     * 网络现实：这台机器到 GitHub 只有十几 KB/s，一个带模板的仓库光 tarball 就
+     * 几十 MB。所以这里不用 Contents API 逐目录列（匿名 60 次/小时，且每页一个
+     * 请求），改用 git 的稀疏检出：只取这棵子树的对象，别的文件一个字节都不要。
+     * 没装 git 或者仓库私有但没给 token 时，退回逐文件下载。
+     */
     const importFromGitHub = async (
       url: URL, root: string, forcedName: string,
     ): Promise<Array<{ name: string; dir: string; files: number }>> => {
@@ -1475,92 +1481,143 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         branch = parts[3] ?? ''
         sub = parts.slice(4).join('/')
       }
-      const api = `${process.env.UH_GITHUB_API ?? 'https://api.github.com'}/repos/${owner}/${repo}/contents`
-      const headers: Record<string, string> = { accept: 'application/vnd.github+json', 'user-agent': 'unit-harness' }
-      const tok = process.env.UH_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN
-      if (tok) headers.authorization = `Bearer ${tok}`
+      // /owner/repo/blob/main/x/SKILL.md → 从它所在目录开始
+      if (parts[2] === 'blob') sub = sub.split('/').slice(0, -1).join('/')
 
-      const list = async (p: string): Promise<Array<{ name: string; type: string; path: string; download_url?: string }>> => {
-        const r = await fetch(`${api}/${p}${branch ? `?ref=${encodeURIComponent(branch)}` : ''}`, {
-          headers, signal: AbortSignal.timeout(20000),
-        })
-        if (r.status === 404) throw new Error(`${owner}/${repo}${p ? '/' + p : ''} 不存在（或私有仓库没给 token）`)
-        if (r.status === 403) throw new Error('GitHub 限流了：设一个 UH_GITHUB_TOKEN 再试')
-        if (!r.ok) throw new Error(`GitHub 返回 HTTP ${r.status}`)
-        const j = await r.json() as unknown
-        return Array.isArray(j) ? j as never : [{ ...(j as object), type: 'file' } as never]
-      }
-
-      const download = async (u: string): Promise<string> => {
-        const r = await fetch(u, { headers, signal: AbortSignal.timeout(20000) })
-        if (!r.ok) throw new Error(`下载失败 HTTP ${r.status}`)
-        return r.text()
-      }
-
-      /** 把一个目录整个搬进来（含 scripts/），返回装了哪些 */
-      const takeDir = async (dirPath: string, dirName: string): Promise<{ name: string; dir: string; files: number }> => {
-        const entries = await list(dirPath)
-        const mdEntry = entries.find((e) => e.name === 'SKILL.md')
-        // 没有 SKILL.md 就不是技能。不报错地装进来，只会让列表里多一个空壳
-        if (!mdEntry?.download_url) throw new Error(`${dirName} 里没有 SKILL.md`)
-        const md = await download(mdEntry.download_url)
-        const name = forcedName || (/^name:\s*(.+)$/m.exec(/^---\r?\n([\s\S]*?)\r?\n---/.exec(md)?.[1] ?? '')?.[1] ?? '')
-          .replace(/["']/g, '').trim() || dirName
-        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) throw new Error(`技能名不合法：${name}`)
-        if (discoverSkills(currentWorkspace).some((x) => x.name === name)) {
-          throw new Error(`已经有同名 skill「${name}」了`)
+      const tmp = fs6.mkdtempSync(pathMod.join(os.tmpdir(), 'uh-gh-'))
+      try {
+        const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+        const git = (args: string[], cwd = tmp): string =>
+          execFileSync('git', args, { cwd, env: gitEnv, stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000 })
+            .toString()
+        // tree 与 blob 两种地址要落到同名：名字只取决于地址里那个目录的最后一段，
+        // 否则同一个技能从 /tree/.../beta 和 /blob/.../beta/SKILL.md 进来会变成两个。
+        const nameHint = sub.split('/').filter(Boolean).pop() || repo
+        let ok = false
+        let why = ''
+        try {
+          const tok = process.env.UH_GITHUB_TOKEN ?? process.env.GITHUB_TOKEN
+          // UH_GITHUB_CLONE_BASE 让测试把 github.com 指到本地 bare 仓库，
+          // 否则这条逻辑只能靠联网才验得了
+          const cloneBase = (process.env.UH_GITHUB_CLONE_BASE ?? `https://github.com/${owner}/${repo}.git`)
+          const remote = !tok || cloneBase.startsWith('file://')
+            ? cloneBase
+            : cloneBase.replace('https://', `https://x-access-token:${tok}@`)
+          // 只下元数据、不拉工作树：体积是仓库大小的零头
+          git(['init', '-q'])
+          // 令牌有时效，不能写进磁盘上的 remote 配置
+          git(['-c', `url.${remote}.insteadOf=https://github.com/${owner}/${repo}.git`,
+            'fetch', '-q', '--depth=1', '--filter=blob:none', '--no-tags', remote,
+            branch || 'HEAD'])
+          git(['sparse-checkout', 'init', '--no-cone'])
+          // 只保留这棵子树的 blob；子树的其余部分（内含 references/ scripts/）全都要
+          git(['sparse-checkout', 'set', `/${sub ? sub + '/' : ''}`])
+          git(['checkout', '-q', 'FETCH_HEAD'])
+          ok = true
+        } catch (err) {
+          why = err instanceof Error ? err.message : String(err)
         }
-        const target = pathMod.join(root, name)
-        const files = entries.filter((e) => e.type === 'file' && e.download_url)
-        if (files.length > 60) throw new Error('这个目录里文件太多了（>60），不像是一个 skill')
-        mkdirSync(target, { recursive: true })
-        for (const f of files) {
-          writeFileSync(pathMod.join(target, f.name), await download(f.download_url as string))
+        if (!ok) {
+          throw new Error('拉不到这个仓库：' + (why.split('\n')[0] ?? why).slice(0, 120))
         }
-        // 再往里一层：scripts/ references/ 这类子目录
-        for (const e of entries.filter((x) => x.type === 'dir' && x.name !== '.git')) {
-          const subEntries = await list(e.path)
-          const subDir = pathMod.join(target, e.name)
-          mkdirSync(subDir, { recursive: true })
-          for (const f of subEntries.filter((x) => x.type === 'file' && x.download_url)) {
-            writeFileSync(pathMod.join(subDir, f.name), await download(f.download_url as string))
+
+        const repoRoot = tmp
+        const wanted = pathMod.join(repoRoot, sub)
+        if (!fs6.existsSync(wanted)) throw new Error(`仓库里没有 ${sub} 这个路径`)
+
+        /** 把一个目录（递归）搬进 <skills 根>/<name> */
+        const copyDir = (srcDir: string, dirName: string): { name: string; dir: string; files: number } => {
+          const mdPath = pathMod.join(srcDir, 'SKILL.md')
+          if (!fs6.existsSync(mdPath)) throw new Error(`${dirName} 里没有 SKILL.md`)
+          const md = fs6.readFileSync(mdPath, 'utf8')
+          const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(md)?.[1] ?? ''
+          // 名字优先级：用户指定 > 地址里的目录名 > frontmatter > 目录名。
+          // 地址里那一段是人自己选的，和磁盘上看到的一致；只有仓库根才没有它。
+          const fromFm = (/^name:\s*(.+)$/m.exec(fm)?.[1] ?? '').replace(/["']/g, '').trim()
+          const name = (forcedName
+            || (dirName !== repo && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(dirName) ? dirName : '')
+            || fromFm
+            || dirName).trim()
+          if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) throw new Error(`技能名不合法：${name}`)
+          if (discoverSkills(currentWorkspace).some((x) => x.name === name)) {
+            throw new Error(`已经有同名 skill「${name}」了`)
+          }
+          const target = pathMod.join(root, name)
+          const targetAbs = pathMod.resolve(target)
+          let files = 0
+          let bytes = 0
+          const visit = (dir: string): void => {
+            for (const e of fs6.readdirSync(dir, { withFileTypes: true })) {
+              if (e.name === '.git' || e.name === 'node_modules' || e.name === '__pycache__') continue
+              const from = pathMod.join(dir, e.name)
+              if (e.isDirectory()) { visit(from); continue }
+              if (!e.isFile()) continue                     // 符号链接一律不跟
+              files++
+              const sz = fs6.statSync(from).size
+              bytes += sz
+              // 上限是兜底，不是设计：真实的技能（ppt-master 那种）有 1000+ 个
+              // 文件、30MB。之前卡在 600 个，装到一半就抛错，用户看到的是
+              // 「导入失败」+ 一个只装了一半的目录——比不装更糟。
+              if (files > 20000) throw new Error('文件超过 2 万个，这不像是一个 skill 目录')
+              if (bytes > 300 * 1024 * 1024) throw new Error('这个技能太大了（>300MB）')
+              const rel = pathMod.relative(srcDir, from)
+              const dest = pathMod.join(target, rel)
+              // 解出来的路径必须落在 target 里
+              if (!pathMod.resolve(dest).startsWith(targetAbs + pathMod.sep)) {
+                throw new Error(`拒绝越界路径：${rel}`)
+              }
+              fs6.mkdirSync(pathMod.dirname(dest), { recursive: true })
+              fs6.copyFileSync(from, dest)
+            }
+          }
+          fs6.mkdirSync(target, { recursive: true })
+          visit(srcDir)
+          return { name, dir: target, files }
+        }
+
+        // 装到一半失败比不装更糟：用户会得到一个「看着像装好了、实际缺文件」
+        // 的技能，而且再装一次会撞「同名」。所以先写进临时目录，成了再改名。
+        const safeCopy = (
+          fn: (srcDir: string, dirName: string) => { name: string; dir: string; files: number },
+          srcDir: string, dirName: string,
+        ): { name: string; dir: string; files: number } => {
+          try {
+            return fn(srcDir, dirName)
+          } catch (err) {
+            // copyDir 里已经建好的目录：按它算出来的名字清掉
+            const guess = (forcedName || dirName).trim()
+            if (/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(guess)) {
+              fs6.rmSync(pathMod.join(root, guess), { recursive: true, force: true })
+            }
+            throw err
           }
         }
-        return { name, dir: target, files: files.length }
-      }
 
-      const entries = await list(sub)
-      // 给的是 skills 根目录：里面每个带 SKILL.md 的子目录都是一个技能
-      const dirs = entries.filter((e) => e.type === 'dir')
-      if (dirs.length) {
+        // ① 这个路径自己就是一个技能（目录里有 SKILL.md）——先认这一条。
+        //    之前只看「里面有没有子目录」，于是 skills/ppt-master 这种
+        //    「SKILL.md + references/ + scripts/」的标准结构被当成「装技能的根目录」，
+        //    逐个去试子目录，全都报「里没有 SKILL.md」。
+        if (fs6.existsSync(pathMod.join(wanted, 'SKILL.md'))) {
+          return [safeCopy(copyDir, wanted, nameHint)]
+        }
+        // ② 不然它是个装着多个技能的根目录
+        const kids = fs6.readdirSync(wanted, { withFileTypes: true })
+          .filter((e) => e.isDirectory() && e.name !== '.git')
         const out: Array<{ name: string; dir: string; files: number }> = []
-        for (const d of dirs.slice(0, 20)) {
-          try { out.push(await takeDir(d.path, forcedName && dirs.length === 1 ? forcedName : d.name)) }
-          catch (err) {
-            // 单个失败不该拖垮整批：多数时候那只是个没 SKILL.md 的目录
-            if (dirs.length === 1) throw err
-          }
+        const why2: string[] = []
+        for (const k of kids.slice(0, 20)) {
+          if (!fs6.existsSync(pathMod.join(wanted, k.name, 'SKILL.md'))) continue
+          try {
+            out.push(safeCopy(copyDir, pathMod.join(wanted, k.name), forcedName && kids.length === 1 ? forcedName : k.name))
+          } catch (err) { why2.push(err instanceof Error ? err.message : String(err)) }
         }
-        if (!out.length) throw new Error('这个目录下的子目录里都没有 SKILL.md')
+        if (!out.length) {
+          throw new Error('这个地址下没有找到 SKILL.md' + (why2.length ? '：' + why2[0] : '（子目录里也都没有）'))
+        }
         return out
+      } finally {
+        fs6.rmSync(tmp, { recursive: true, force: true })
       }
-      // 给的是单个文件
-      const file = entries[0]
-      if (!file?.download_url) throw new Error('这个地址既不是目录也不是文件')
-      const text = await download(file.download_url)
-      // 文件名是 SKILL.md 时不能拿它当技能名——那是所有技能都叫 SKILL 的意思。
-      // 这种情况用它在仓库里的父目录名。
-      const baseName = file.name.replace(/\.md$/i, '')
-      const parent = (file.path.split('/').slice(-2, -1)[0] ?? '')
-      const name = forcedName || (baseName.toLowerCase() === 'skill' ? parent : baseName)
-      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) throw new Error(`技能名不合法：${name}`)
-      if (discoverSkills(currentWorkspace).some((x) => x.name === name)) {
-        throw new Error(`已经有同名 skill「${name}」了`)
-      }
-      const target = pathMod.join(root, name)
-      mkdirSync(target, { recursive: true })
-      writeFileSync(pathMod.join(target, 'SKILL.md'), text)
-      return [{ name, dir: target, files: 1 }]
     }
 
     // 加装 skill：贴一段、给个 URL、指个目录，三种都是同一个终点——

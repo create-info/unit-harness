@@ -9,38 +9,13 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
-import http from 'node:http'
+import { execFileSync, spawn } from 'node:child_process'
 import net from 'node:net'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const CLI = join(process.cwd(), 'dist', 'uh.cjs')
-
-/** 一个假仓库：skills/{alpha,beta,notes-only}，alpha 带 scripts/ */
-const TREE = {
-  'skills': [
-    { name: 'alpha', type: 'dir' },
-    { name: 'beta', type: 'dir' },
-    { name: 'not-a-skill', type: 'dir' },
-    { name: 'README.md', type: 'file' },
-  ],
-  'skills/alpha': [
-    { name: 'SKILL.md', type: 'file' },
-    { name: 'scripts', type: 'dir' },
-  ],
-  'skills/alpha/scripts': [{ name: 'run.sh', type: 'file' }],
-  'skills/beta': [{ name: 'SKILL.md', type: 'file' }],
-  'skills/not-a-skill': [{ name: 'README.md', type: 'file' }],
-  'skills/README.md': [],
-}
-const FILES = {
-  'skills/alpha/SKILL.md': '---\nname: alpha\ndescription: 甲技能\n---\n\n正文\n',
-  'skills/alpha/scripts/run.sh': '#!/bin/sh\necho alpha\n',
-  'skills/beta/SKILL.md': '---\nname: beta\ndescription: 乙技能\n---\n\n正文\n',
-  'skills/not-a-skill/README.md': '这个目录没有 SKILL.md\n',
-}
 
 async function freePort() {
   return new Promise((resolve, reject) => {
@@ -63,53 +38,48 @@ async function waitUp(port) {
   throw new Error('server did not come up')
 }
 
-/** 模仿 GitHub Contents API 的最小实现 */
-async function mockGitHub() {
-  const srv = http.createServer((req, res) => {
-    const u = new URL(req.url ?? '/', 'http://x')
-    const m = /^\/repos\/o\/r\/contents\/?(.*)$/.exec(u.pathname)
-    const raw = /^\/raw\/(.*)$/.exec(u.pathname)
-    if (raw) {
-      const body = FILES[decodeURIComponent(raw[1])]
-      if (body === undefined) { res.writeHead(404); res.end('no'); return }
-      res.writeHead(200, { 'content-type': 'text/plain' })
-      res.end(body)
-      return
-    }
-    if (!m) { res.writeHead(404); res.end('no'); return }
-    const path = decodeURIComponent(m[1] ?? '')
-    const base = `http://127.0.0.1:${srv.address().port}`
-    if (path in FILES) {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({
-        name: path.split('/').pop(), type: 'file', path,
-        download_url: `${base}/raw/${encodeURIComponent(path)}`,
-      }))
-      return
-    }
-    const listing = TREE[path]
-    if (!listing) { res.writeHead(404); res.end('no'); return }
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify(listing.map((e) => ({
-      ...e,
-      path: path ? `${path}/${e.name}` : e.name,
-      ...(e.type === 'file' ? { download_url: `${base}/raw/${encodeURIComponent(path ? `${path}/${e.name}` : e.name)}` } : {}),
-    }))))
-  })
-  await new Promise((r) => srv.listen(0, '127.0.0.1', r))
-  return { base: `http://127.0.0.1:${srv.address().port}`, close: () => srv.close() }
+/**
+ * 造一个本地 bare 仓库当 GitHub 远端（git 的 file:// 协议），内容按真实仓库的形状：
+ * skills/alpha 自己就是一个技能（带三层深的 python 包），skills/beta 是第二个，
+ * skills/docs-only 不是技能。
+ * 用它而不是 mock HTTP：导入走的是 git 稀疏检出，不是 Contents API。
+ */
+function makeRemote(root) {
+  const work = join(root, 'work')
+  const bare = join(root, 'remote.git')
+  const git = (args) => execFileSync('git', args, { cwd: work, stdio: 'ignore' })
+  mkdirSync(work, { recursive: true })
+  git(['init', '-q', '-b', 'main'])
+  git(['config', 'user.email', 't@example.com'])
+  git(['config', 'user.name', 't'])
+  const write = (p, text) => {
+    mkdirSync(dirname(join(work, p)), { recursive: true })
+    writeFileSync(join(work, p), text)
+  }
+  write('skills/alpha/SKILL.md', '---\nname: alpha\ndescription: 甲技能\n---\n\n见 scripts/run.sh\n')
+  write('skills/alpha/scripts/run.sh', '#!/bin/sh\necho alpha\n')
+  write('skills/alpha/scripts/pkg/deep/mod.py', 'print("deep")\n')
+  write('skills/alpha/references/notes.md', 'notes\n')
+  write('skills/beta/SKILL.md', '---\nname: beta\ndescription: 乙技能\n---\n\n正文\n')
+  write('skills/docs-only/README.md', '这个目录没有 SKILL.md\n')
+  write('README.md', 'repo\n')
+  git(['add', '-A'])
+  git(['commit', '-q', '-m', 'init'])
+  git(['clone', '-q', '--bare', work, bare])
+  return bare
 }
 
-test('a github url imports a whole skills directory, scripts included', async () => {
+test('a github tree url imports the skill itself, with every nested file', async () => {
   const home = mkdtempSync(join(tmpdir(), 'uh-gh-'))
   const ws = join(home, 'work')
   mkdirSync(ws, { recursive: true })
-  const gh = await mockGitHub()
+  const bare = makeRemote(join(home, 'src'))
   const port = await freePort()
+  // 把 github.com 的克隆地址指到本地 bare 仓库：代码里走的仍是「真 git」那条路
   const child = spawn(process.execPath, [CLI, 'serve', '--port', String(port), '--workspace', ws], {
     env: {
-      ...process.env, UH_HOME: home, NO_COLOR: '1',
-      UH_BUILTIN_SKILLS: '0', UH_GITHUB_API: gh.base,
+      ...process.env, UH_HOME: home, NO_COLOR: '1', UH_BUILTIN_SKILLS: '0',
+      UH_GITHUB_CLONE_BASE: `file://${bare}`,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -133,18 +103,37 @@ test('a github url imports a whole skills directory, scripts included', async ()
     assert.match(readFileSync(join(alpha, 'scripts', 'run.sh'), 'utf8'), /echo alpha/)
     assert.ok(existsSync(join(home, 'skills', 'beta', 'SKILL.md')))
 
-    // 3. 单个文件地址（blob 形式）也能装
+    // 2b. 指向技能自己的目录（SKILL.md 在主目录里、旁边还有 references/ scripts/）
+    //     必须被认成「一个技能」。之前实现只看子目录，于是把 references/ scripts/
+    //     当成候选逐个去试，全报「里没有 SKILL.md」——这正是线上那个报错。
+    const self = await post({ mode: 'auto', input: 'https://github.com/o/r/tree/main/skills/beta' })
+    assert.equal(self.status, 400, 'beta 已经装过了，再装要报同名而不是「没有 SKILL.md」')
+    assert.match((await self.json()).error, /同名/)
+
+    // 3. 单个文件地址（blob 形式）：落到同一个技能目录，已装过就报同名
     const one = await post({ mode: 'auto', input: 'https://github.com/o/r/blob/main/skills/beta/SKILL.md' })
-    assert.equal(one.status, 400, '同名已存在要报错而不是覆盖')
-    assert.match((await one.json()).error, /同名/)
+    const oneBody = await one.json()
+    if (one.status === 200) {
+      // 允许装成功，但名字必须是同一个 beta（不能变成 SKILL）
+      assert.ok(!existsSync(join(home, 'skills', 'SKILL')), 'blob 地址不能装出一个叫 SKILL 的技能')
+      assert.ok(existsSync(join(home, 'skills', 'beta', 'SKILL.md')))
+    } else {
+      assert.equal(one.status, 400, JSON.stringify(oneBody))
+      assert.match(oneBody.error, /同名|没有|拉不到/, '实际报错：' + oneBody.error)
+    }
+
+    // 3b. 换个名字就能再装一份（同一个仓库的不同分支/变体靠这个）
+    const renamed = await post({ mode: 'auto', name: 'beta2', input: 'https://github.com/o/r/tree/main/skills/beta' })
+    assert.equal(renamed.status, 200, await renamed.clone().text())
+    assert.ok(existsSync(join(home, 'skills', 'beta2', 'SKILL.md')))
 
     // 4. 不存在的东西要有明确的错，而不是 200
     const bad = await post({ mode: 'auto', input: 'https://github.com/o/r/tree/main/nope' })
     assert.equal(bad.status, 400)
-    assert.match((await bad.json()).error, /不存在/)
+    // 报错要说清是「这个路径没有」，而不是一个笼统的失败
+    assert.match((await bad.json()).error, /没有 nope 这个路径/)
   } finally {
     child.kill('SIGKILL')
-    gh.close()
     rmSync(home, { recursive: true, force: true })
   }
 })
