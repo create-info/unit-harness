@@ -48,8 +48,9 @@ import { addRule, loadRules, matchesRule, suggestPrefix, type ApprovalRule } fro
 import type { ApprovalDecision, ApprovalGate, ApprovalPolicy, ApprovalRequest } from './approval/gate.ts'
 import { uhHome } from './paths.ts'
 import type { Message, ImageInput } from './llm/types.ts'
-import { discoverSkills, renderSkillIndex } from './skill/registry.ts'
+import { discoverSkills, renderSkillIndex, skillRoots } from './skill/registry.ts'
 import { sliceLines, formatEntry, formatHits, looksBinary } from './agent/tools/fs.ts'
+import type { ReadResult } from './agent/tools/fs.ts'
 import { loadHosts } from './remote/hosts.ts'
 import { runRemote } from './remote/ssh.ts'
 import { classify } from './remote/risk.ts'
@@ -1257,13 +1258,8 @@ export class Harness {
             return null
           }
         },
-        readSlice: (rel, offset, limit) => {
-          try {
-            const buf = fsSync.readFileSync(this.safeJoin(rel))
-            if (looksBinary(buf)) return null
-            return sliceLines(buf.toString('utf8'), offset, limit)
-          } catch { return null }
-        },
+        // 工作区之外只额外放行技能目录：读技能正文/脚本要用（见 readSliceAnywhere）
+        readSlice: (rel, offset, limit) => this.readSliceAnywhereFull(rel, offset, limit),
         listTree: (rel, depth) => {
           try {
             const root = this.safeJoin(rel)
@@ -1496,6 +1492,53 @@ export class Harness {
       throw new Error(`E_PATH_ESCAPE: ${rel}`)
     }
     return abs
+  }
+
+  /**
+   * 技能目录内的一次读取。
+   *
+   * 技能是装在 ~/.uh/skills/<name>/ 的，而工作区通常不是那里，所以普通
+   * read_file 走到 safeJoin 就被 E_PATH_ESCAPE 拒了——上层再把它变成一句
+   * 「no such file in workspace」。用户看到的是文件明明存在却被说没有。
+   * 这里只放行「在某个技能根目录里面」的绝对路径，别的一概不动。
+   */
+  /**
+   * read_file / 模型的路径解析：先工作区，再技能目录。
+   * 公开是为了能被直接验证——路径判据出错时，症状是「文件明明存在却说没有」，
+   * 这种 bug 只有单点测试才抓得住。
+   */
+  readSliceAnywhereFull(rel: string, offset: number, limit: number): ReadResult | null {
+    let file: string
+    try {
+      file = this.safeJoin(rel)
+    } catch {
+      const inSkill = this.readInSkillDir(rel)
+      if (!inSkill) return null
+      file = inSkill
+    }
+    try {
+      const buf = fsSync.readFileSync(file)
+      if (looksBinary(buf)) return null
+      return sliceLines(buf.toString('utf8'), offset, limit)
+    } catch { return null }
+  }
+
+  readSliceAnywhere(rel: string, offset: number, limit: number): string | null {
+    return this.readSliceAnywhereFull(rel, offset, limit)?.text ?? null
+  }
+
+  private readInSkillDir(rel: string): string | null {
+    if (!nodePath.isAbsolute(rel)) return null
+    const abs = nodePath.resolve(rel)
+    const roots = skillRoots(this.workspace).map((r) => nodePath.resolve(r.dir))
+    for (const root of roots) {
+      if (abs === root || !abs.startsWith(root + nodePath.sep)) continue
+      try {
+        if (!fsSync.statSync(abs).isFile()) return null
+        return abs
+      } catch { return null }
+    }
+    return null
   }
 
   /**
