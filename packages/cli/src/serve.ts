@@ -1023,6 +1023,49 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       return
     }
 
+    // 会话管理：改名 / 置顶 / 删除。三件事都作用在磁盘上，不是「这次打开时记着」，
+    // 否则刷新一下列表就回到原样。
+    if (req.method === 'POST' && url.pathname === '/api/session/rename') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as { id?: string; label?: string }
+      if (!body.id) { json(res, 400, { error: 'id required' }); return }
+      const store = new EventStore()
+      const meta = store.rename(body.id, body.label ?? '')
+      if (!meta) { json(res, 404, { error: 'no such session' }); return }
+      json(res, 200, { ok: true, id: meta.id, label: meta.label ?? '' })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/session/pin') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as { id?: string; pinned?: boolean }
+      if (!body.id) { json(res, 400, { error: 'id required' }); return }
+      const cfg = readConfig()
+      const set = new Set(cfg.pinnedSessions ?? [])
+      if (body.pinned === false) set.delete(body.id)
+      else set.add(body.id)
+      cfg.pinnedSessions = [...set]
+      writeConfig(cfg)
+      json(res, 200, { ok: true, pinned: cfg.pinnedSessions })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/session/delete') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as { id?: string }
+      if (!body.id) { json(res, 400, { error: 'id required' }); return }
+      // 正在跑的会话不能删：它还在往那个目录里追加事件，删完就是一堆 ENOENT
+      if (running.has(body.id)) { json(res, 409, { error: '这条会话正在跑，先停掉再删' }); return }
+      const store = new EventStore()
+      const ok = store.remove(body.id)
+      if (ok) {
+        const cfg = readConfig()
+        if ((cfg.pinnedSessions ?? []).includes(body.id)) {
+          cfg.pinnedSessions = (cfg.pinnedSessions ?? []).filter((x) => x !== body.id)
+          writeConfig(cfg)
+        }
+      }
+      json(res, ok ? 200 : 404, ok ? { ok: true } : { error: 'no such session' })
+      return
+    }
+
     // ---- 文件改动的前后对比 ------------------------------------------------
     // 事件里存的是引用（大正文外置到 blobs），所以 diff 在服务端算，前端只看结果
     if (req.method === 'GET' && url.pathname === '/api/diff') {
@@ -1604,14 +1647,19 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
 
       // 每个项目挂自己的会话：左栏要画「项目 → 会话」两级，一个请求拿全
       const names = readProjectNames()
+      const pinned = new Set(readConfig().pinnedSessions ?? [])
       const withItems = list.map((p) => ({
         ...p,
         name: names[p.path] || '',
-        items: collectSessions(p.path).slice(0, 30).map((s) => ({
-          id: s.id, label: s.label, created: s.created, events: s.events,
-          // 左栏要画「这个还在跑」。事件数是静态的，跑着的会话和跑完的长得一样
-          running: running.has(s.id),
-        })),
+        items: collectSessions(p.path).slice(0, 30)
+          .map((s) => ({
+            id: s.id, label: s.label, created: s.created, events: s.events,
+            // 左栏要画「这个还在跑」。事件数是静态的，跑着的会话和跑完的长得一样
+            running: running.has(s.id),
+            pinned: pinned.has(s.id),
+          }))
+          // 置顶的排前面，其余保持「新的在上」。sort 是稳定的，所以同组内顺序不变。
+          .sort((a, b) => Number(b.pinned) - Number(a.pinned)),
       }))
       json(res, 200, { current: currentWorkspace, projects: withItems })
       return

@@ -44,6 +44,8 @@ export interface UhConfig {
    * 存这里而不是启动参数，是因为它要能在设置页里当场改。
    */
   remote?: 'off' | 'tailnet' | 'lan'
+  /** 置顶的会话 id：左栏把它们放在最上面，跟 Codex 一样 */
+  pinnedSessions?: string[]
   /** 电脑操控：这一层直接操作真实桌面，沙箱管不到，所以开关要显式 */
   computer?: {
     enabled?: boolean

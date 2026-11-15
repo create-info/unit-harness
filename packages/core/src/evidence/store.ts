@@ -228,6 +228,39 @@ export class EventStore {
   }
 
   /**
+   * 改标题。
+   *
+   * 标题只存在 meta.json 的 label 里（创建时拿第一句话当默认值），所以改名就是
+   * 把 label 写回去——不碰 events.jsonl，历史和 seq 都不受影响。
+   */
+  rename(id: string, label: string): SessionMeta | null {
+    const meta = this.get(id)
+    if (!meta) return null
+    const clean = label.trim().slice(0, 120)
+    const next: SessionMeta = { ...meta, updated_at: now(), ...(clean ? { label: clean } : {}) }
+    if (!clean) delete next.label
+    this.writeMeta(next)
+    return next
+  }
+
+  /**
+   * 删会话：只删它自己的目录。
+   *
+   * 路径必须落在 store 根目录下面一层才动手——参数来自 HTTP，写错一个 `../`
+   * 就能把家目录删掉，这种错误不值得用「应该不会发生」来兜。
+   */
+  remove(id: string): boolean {
+    const dir = this.locate(id)
+    if (!dir) return false
+    const root = path.resolve(this.root)
+    const target = path.resolve(dir)
+    if (!target.startsWith(root + path.sep)) return false
+    fs.rmSync(target, { recursive: true, force: true })
+    this.metas.delete(id)
+    return true
+  }
+
+  /**
    * 列会话，新的在前。`limit` 给了就按日期倒序边扫边停——
    * 这正是分层的意义：要 20 条就不必读一年的量。
    */

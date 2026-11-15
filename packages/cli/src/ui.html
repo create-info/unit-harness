@@ -166,6 +166,21 @@
   .sess{padding:7px 10px;border-radius:8px;cursor:pointer;font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .sess:hover{background:var(--hover);color:var(--fg)}
   .sess.active{background:var(--hover);color:var(--fg)}
+  /* 会话行右侧的「…」：默认藏起来，悬停/聚焦才出现；触屏上没有 hover，
+     所以窄屏一律显示（不然手机上根本没法管理会话） */
+  .sess{position:relative}
+  .sess .smore{position:absolute;right:4px;top:50%;transform:translateY(-50%);display:none;
+    border:0;background:var(--hover);color:var(--dim);border-radius:6px;
+    width:20px;height:20px;line-height:1;font-size:14px;cursor:pointer;padding:0}
+  .sess:hover .smore,.sess .smore:focus{display:block}
+  @media (hover:none){ .sess .smore{display:block} }
+  .sess .pin{font-size:9px;opacity:.8}
+  .smenu{position:fixed;z-index:9998;min-width:132px;padding:4px;border-radius:10px;
+    background:var(--panel);border:1px solid var(--line);box-shadow:0 10px 30px rgba(0,0,0,.35)}
+  .smitem{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--fg);
+    font-size:12px;padding:7px 10px;border-radius:6px;cursor:pointer}
+  .smitem:hover{background:var(--hover)}
+  .smitem.danger{color:var(--bad)}
   .sess b{display:block;color:var(--fg);font-weight:500;font-size:12px}
   .side-foot{border:0;border-top:1px solid var(--line);background:transparent;color:var(--dim);text-align:left;padding:11px 18px;cursor:pointer;font-size:12px}
   .side-foot:hover{color:var(--fg);background:var(--hover)}
@@ -1007,11 +1022,23 @@ async function loadProjects(){
       // 左栏第二行是「多久以前」而不是绝对时间。
       // Codex 的列表也是这个道理：扫一眼是为了找「刚才那条」，
       // `2026-11-14 16:01:23` 得自己算，`3 小时前` 不用。
-      d.innerHTML = '<b>' + live + esc(s.label || s.id) + '</b>'
+      // 置顶的会话前面加个钉：列表滚起来之后，唯一还能一眼认出的就是它。
+      const pin = s.pinned ? '<span class="pin">📌</span> ' : '';
+      d.innerHTML = '<b>' + live + pin + esc(s.label || s.id) + '</b>'
         + (s.running ? '<span class="live"><span class="rdot"></span>running</span> · ' : '')
-        + esc(relTime(s.created)) + ' · ' + s.events + ' events'
-      d.title = s.label + '\n' + s.created + ' · ' + s.events + ' events'
-      d.onclick = () => openSession(s.id);
+        + esc(relTime(s.created)) + ' · ' + s.events + ' events';
+      d.title = (s.label || s.id) + '\n' + s.created + ' · ' + s.events + ' events';
+      d.onclick = (e) => { if (!e.target.closest('.smore')) openSession(s.id) };
+
+      // Codex 的列表也是这样：鼠标停在一条上，右边冒出「…」，点开才看见
+      // 重命名/置顶/删除。常驻三个按钮会把每条会话挤成两行。
+      const more = document.createElement('button');
+      more.className = 'smore';
+      more.type = 'button';
+      more.title = '管理这条会话';
+      more.textContent = '…';
+      more.onclick = (e) => { e.stopPropagation(); openSessMenu(e, d, s) };
+      d.appendChild(more);
       wrap.appendChild(d);
     }
     if (!(proj.items || []).length){
@@ -1023,6 +1050,74 @@ async function loadProjects(){
     grp.appendChild(wrap);
     box.appendChild(grp);
   }
+}
+
+/* ---- 会话的「…」菜单 ----------------------------------------------------
+ * 重命名 / 置顶 / 删除。跟 Codex 一样挂在条目右侧，点空白处关掉。
+ * 删除是唯一不可逆的动作，所以走页内确认框（原生 confirm 在 iOS 独立窗口
+ * 里经常直接被吞掉，点了没反应比删错了还难查）。
+ * ---------------------------------------------------------------------- */
+let SESSMENU = null;
+function closeSessMenu(){
+  if (SESSMENU){ SESSMENU.remove(); SESSMENU = null }
+  document.removeEventListener('click', closeSessMenu, true);
+}
+function openSessMenu(ev, row, s){
+  closeSessMenu();
+  const m = document.createElement('div');
+  m.className = 'smenu';
+  const add = (label, fn, danger) => {
+    const b = document.createElement('button');
+    b.className = 'smitem' + (danger ? ' danger' : '');
+    b.textContent = label;
+    b.onclick = (e) => { e.stopPropagation(); closeSessMenu(); fn() };
+    m.appendChild(b);
+  };
+  add('重命名', () => askText('重命名会话', s.label || s.id, (v) => renameSession(s.id, v)));
+  add(s.pinned ? '取消置顶' : '置顶', () => pinSession(s.id, !s.pinned));
+  add('删除', async () => {
+    const yes = await askYes('删除「' + (s.label || s.id) + '」？这条会话的事件日志会一起删掉，不能恢复。');
+    if (yes) deleteSession(s.id);
+  }, true);
+  document.body.appendChild(m);
+  const r = row.getBoundingClientRect();
+  const mw = 132;
+  m.style.left = Math.max(8, Math.min(r.right - mw, innerWidth - mw - 8)) + 'px';
+  m.style.top = Math.min(r.bottom + 4, innerHeight - 140) + 'px';
+  SESSMENU = m;
+  // 捕获阶段：点菜单里面不算「点空白」，由菜单自己的 onclick 处理
+  setTimeout(() => document.addEventListener('click', (e) => {
+    if (!e.target.closest('.smenu')) closeSessMenu();
+  }, true), 0);
+}
+
+async function renameSession(id, label){
+  const r = await fetch('/api/session/rename', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, label }),
+  });
+  if (!r.ok) { setMsg('改名失败：' + (await r.text()).slice(0, 80), true); return }
+  if ($('#sid') && $('#sid').textContent === id) $('#sid').textContent = label || id;
+  await loadProjects();
+}
+async function pinSession(id, pinned){
+  const r = await fetch('/api/session/pin', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, pinned }),
+  });
+  if (!r.ok) { setMsg('置顶失败：' + (await r.text()).slice(0, 80), true); return }
+  await loadProjects();
+}
+async function deleteSession(id){
+  const r = await fetch('/api/session/delete', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+  if (!r.ok) { setMsg('删除失败：' + (await r.text()).slice(0, 80), true); return }
+  setMsg('已删除');
+  if (location.hash === '#' + id) { location.hash = ''; }
+  await loadProjects();
+  if ($('#sid') && $('#sid').textContent === id) $('#log').innerHTML = '';
 }
 
 /* ---- 手机上的左栏抽屉 --------------------------------------------------
@@ -1832,6 +1927,35 @@ function askName(defaultValue){
       if (e.key === 'Escape') done('');
     };
   });
+}
+
+/** 页内输入框。原生 prompt 在 iOS 独立窗口里静默失效，不能用来改名 */
+function askText(title, value, cb){
+  const mask = document.createElement('div');
+  mask.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:24px';
+  const box = document.createElement('div');
+  box.className = 'card';
+  box.style.cssText = 'max-width:380px;width:100%;padding:16px';
+  box.innerHTML = '<div class="asktitle" style="font-size:13px;margin-bottom:10px"></div>'
+    + '<input id="__txt" style="width:100%;box-sizing:border-box;padding:10px 12px;border-radius:8px;'
+    + 'border:1px solid var(--line);background:var(--input);color:var(--fg);font-size:13px">'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">'
+    + '<button class="btn" id="__no">取消</button>'
+    + '<button class="btn" id="__ok" style="background:var(--accent);border-color:var(--accent);color:#fff">保存</button></div>';
+  box.querySelector('.asktitle').textContent = title;
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+  const input = box.querySelector('#__txt');
+  input.value = value || '';
+  input.focus();
+  input.select();
+  const done = (v) => { mask.remove(); if (v !== null) cb(v) };
+  box.querySelector('#__ok').onclick = () => done(input.value);
+  box.querySelector('#__no').onclick = () => done(null);
+  mask.onkeydown = (e) => {
+    if (e.key === 'Escape') done(null);
+    if (e.key === 'Enter') done(input.value);
+  };
 }
 
 /** 自己的确认框：原生的 confirm 在 PWA 独立窗口里不可靠 */
