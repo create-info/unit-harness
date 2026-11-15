@@ -109,9 +109,21 @@ test('one port: switching remote access rebinds in place, and off really closes 
     }
     assert.equal(await code(base + '/api/plugins'), 200, '本机还能用')
 
-    // 6. 选择记在配置里，下次启动就按它来
+    // 6. 走域名转发（tailscale serve）时，请求看起来来自 127.0.0.1，但不能当本机放行。
+    //    否则 https://xxx.ts.net 就成了整个 tailnet 免口令的入口。
+    await fetch(base + '/api/remote/mode', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mode: 'tailnet' }),
+    })
+    await new Promise((r) => setTimeout(r, 600))
+    const proxied = (xff) => fetch(base + '/api/info', { headers: { 'x-forwarded-for': xff } })
+    assert.equal((await proxied('100.127.187.70')).status, 401, '经转发的请求必须带口令')
+    assert.equal((await proxied('192.168.1.50')).status, 403, '转发头说是局域网来的，tailnet 模式仍然拒绝')
+    assert.equal(await code(base + '/api/info'), 200, '直连本机不受影响')
+
+    // 7. 选择记在配置里，下次启动就按它来（当前停在 tailnet）
     const cfg = JSON.parse(readFileSync(join(home, 'config.json'), 'utf8'))
-    assert.equal(cfg.remote, 'off')
+    assert.equal(cfg.remote, 'tailnet')
   } finally {
     child.kill('SIGKILL')
     rmSync(home, { recursive: true, force: true })

@@ -753,11 +753,21 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
     // 「能不能不输口令」取决于对端是谁，不是端口绑在哪：
     // 开了远程访问之后端口绑到 0.0.0.0，桌面上用 127.0.0.1 打开不该突然要口令。
     const peer = normalizeAddr(req.socket.remoteAddress)
-    const peerLocal = peer === '127.0.0.1' || peer === '::1'
+    // 转发进来的请求对端也写 127.0.0.1（tailscale serve / 反向代理都这样），
+    // 但它来自 tailnet，不是坐在电脑前的人——只看地址就等于把门敞开。
+    //
+    // 只有「本机代理」写的 X-Forwarded-For 才当证据：局域网里的机器完全可以
+    // 自己伪造一个 100.x 头来骗过 tailnet 判断，所以对端一旦不是回环就整条忽略。
+    const fromProxy = (peer === '127.0.0.1' || peer === '::1')
+      && Boolean(req.headers['x-forwarded-for'] || req.headers.forwarded)
+    const origin = fromProxy
+      ? normalizeAddr(String(req.headers['x-forwarded-for'] ?? '').split(',')[0]?.trim() ?? '')
+      : peer
+    const peerLocal = (peer === '127.0.0.1' || peer === '::1') && !fromProxy
 
     // 「仅 Tailscale」：端口对局域网开着，但只认 100.64/10 来的包。
     // 光靠绑定地址做不到这一点——tailscale0 和 eth0 都在同一个 socket 上。
-    if (remoteMode === 'tailnet' && !peerLocal && !isTailnetAddr(peer)) {
+    if (remoteMode === 'tailnet' && !peerLocal && !isTailnetAddr(origin)) {
       res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('这台机器只接受 Tailscale 网络内的连接')
       return
@@ -857,8 +867,11 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       //   off     一个都没有（端口根本没对外）
       //   tailnet 只有 100.x 那条（局域网机器连得上也进不来）
       //   lan     局域网各地址 + 100.x（去重：Tailscale IP 本身就是一块网卡）
+      const viaProxy = String(req.headers['x-forwarded-proto'] ?? '') === 'https' || Boolean(req.headers['x-forwarded-for'])
       const urls = remoteMode === 'off'
         ? (ts.state === 'up' && ts.serving && ts.host ? [`https://${ts.host}`] : [])
+        : viaProxy && ts.host
+          ? [`https://${ts.host}`]
         : [...new Set([
           ...(remoteMode === 'lan' ? addrs.filter((a) => !isTailnetAddr(a)).map((a) => `http://${a}:${port}`) : []),
           ...(ts.state === 'up' && ts.ip ? [`http://${ts.ip}:${port}`] : []),
