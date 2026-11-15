@@ -4970,7 +4970,10 @@ function render(kind, p){
       // 一次跑出两千个文件时，逐个刷进过程流就是一堵哈希墙——对话被顶到屏幕外，
       // 想往回翻还得滚很久。收进一个计数行，具体文件交给收尾的交付物面板。
       ARTIFACTS.push(p);
-      if (ARTIFACTS.length === 1 || ARTIFACTS.length % 25 === 0) artRow();
+      // 每来一个就更新，但用 rAF 合并同一帧里的多次——一次跑出两千个文件时
+      // 仍然是"一帧一次"，不会卡。以前是只在 1 和 25 的倍数时更新，于是
+      // 16 个产物屏幕上写着"produced 1 file"，下面却列了 16 行。
+      scheduleArtRow();
       break;
     case 'turn/end':
       sweepEmptyGroups();
@@ -5054,6 +5057,16 @@ let ART_ROW = null;
 function resetArtifacts(){
   ARTIFACTS = [];
   ART_ROW = null;
+}
+
+/** 把同一帧里连续的产物更新压成一次 DOM 写入 */
+let ART_ROW_PENDING = false;
+function scheduleArtRow(){
+  if (ART_ROW_PENDING) return;
+  ART_ROW_PENDING = true;
+  const run = () => { ART_ROW_PENDING = false; artRow(); };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+  else setTimeout(run, 16);
 }
 
 function artRow(){
