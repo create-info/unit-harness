@@ -85,3 +85,33 @@ test('an empty answer does not produce html', () => {
   assert.equal(md(''), '')
   assert.equal(md(null), '')
 })
+
+test('a GFM table becomes a real table, not a wall of pipes', () => {
+  const out = md('**在线**\n\n| 工具 | 可用性 | 短板 |\n|---|:--:|---:|\n| **即梦** | 国内直连 | 免费额度有限 |\n| Ideogram | 需海外网络 | 人物写实度一般 |')
+  assert.ok(!out.includes('|---'), 'the separator row must not reach the screen:\n' + out)
+  assert.match(out, /class="mdtwrap"/, 'tables scroll sideways on narrow screens')
+  assert.match(out, /<table class="mdt">/)
+  assert.equal((out.match(/<th[ >]/g) || []).length, 3, 'three header cells (not <thead>)')
+  assert.equal((out.match(/<tr>/g) || []).length, 3, 'header row + two body rows')
+  assert.match(out, /<b>即梦<\/b>/, 'inline markdown inside cells still works')
+  assert.match(out, /text-align:center/, 'alignment from the separator is honoured')
+  assert.match(out, /text-align:right/)
+})
+
+test('a table with an escaped or missing edge pipe still lines up', () => {
+  const out = md('工具 | 说明\n--- | ---\nA | 第一条')
+  assert.match(out, /<th>工具<\/th>/, out)
+  assert.equal((out.match(/<td/g) || []).length, 2)
+})
+
+test('pipes without a separator row are just text', () => {
+  const out = md('a | b | c')
+  assert.ok(!out.includes('<table'), 'a lone line with pipes is not a table')
+  assert.match(out, /a \| b \| c/)
+})
+
+test('cell content is escaped like any other text', () => {
+  const out = md('| x | y |\n|---|---|\n| <img src=x onerror=alert(1)> | ok |')
+  assert.ok(!out.includes('<img'), out)
+  assert.match(out, /&lt;img/)
+})
