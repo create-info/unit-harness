@@ -1336,6 +1336,25 @@ export class Harness {
             return { text: formatHits(hits, { pattern, max: opts.max, filesScanned: scanned }), count: hits.length }
           } catch { return null }
         },
+        // 看图：给模型真正看像素的通路。挡三件事——路径逃逸（safeJoin）、
+        // 非图片（按扩展名 + 魔数判断，不靠调用方传的 mediaType）、太大的图
+        // （base64 进上下文很贵，4MB 原图 ≈ 5.3MB base64）。
+        readImage: (rel) => {
+          try {
+            const abs = this.safeJoin(rel)
+            const ext = nodePath.extname(abs).toLowerCase()
+            const mediaType = ext === '.png' ? 'image/png'
+              : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+                : ext === '.webp' ? 'image/webp'
+                  : ext === '.gif' ? 'image/gif' : ''
+            if (!mediaType) return null
+            const st = fsSync.statSync(abs)
+            if (!st.isFile() || st.size > 4 * 1024 * 1024) return null
+            return { mediaType, data: fsSync.readFileSync(abs).toString('base64') }
+          } catch {
+            return null
+          }
+        },
         writeBytes: (rel, bytes) => {
           // 二进制走独立入口：writeFile 收字符串，图片过一遍 utf8 编码就废了
           const abs = this.safeJoin(rel)

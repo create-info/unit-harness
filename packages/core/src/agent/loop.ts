@@ -50,6 +50,11 @@ export interface AgentDeps {
   listTree: (rel: string, depth: number) => string | null
   /** 内容检索；路径非法返回 null */
   grep: (rel: string, pattern: string, opts: { glob?: string | undefined; max: number }) => { text: string; count: number } | null
+  /**
+   * 读一张图作为多模态附件。给不了就是 null（不支持的格式/读不到/太大）。
+   * 工具结果本身只是一行文字——像素要另外挂到消息上，见 execOne 的返回值。
+   */
+  readImage?: (rel: string) => { mediaType: string; data: string } | null
   /** 起一个子 agent 干活，返回它的最终文本（不给就是禁用了子 agent） */
   spawnSubAgent?: (task: string, opts: { maxSteps?: number }) => Promise<string>
   /** 跑某个挂点的 hook；返回被挡下的那些 */
@@ -317,6 +322,44 @@ const LIST_DIR: ToolSpec = {
   },
 }
 
+const VIEW_IMAGE: ToolSpec = {
+  type: 'function',
+  function: {
+    name: 'view_image',
+    description:
+      'Look at an image file from the workspace (screenshot, chart, photo, scanned page). The picture ' +
+      'is shown to you as an attachment after the call returns — you do not get pixels from reading ' +
+      'the bytes. Use this instead of guessing what a file looks like from its name or size.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Image path relative to the workspace root' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+}
+
+/**
+ * 问「还能用多少上下文」。
+ *
+ * 加这个不是为了好玩：一条 3000 步的会话里，模型反复去猜自己是不是快满了，
+ * 于是提前压缩、提前收尾——而它猜不出。这个问题只有 harness 知道答案
+ * （每次 LLM 响应都带 prompt_tokens），所以直接让它问。
+ */
+const GET_CONTEXT_REMAINING: ToolSpec = {
+  type: 'function',
+  function: {
+    name: 'get_context_remaining',
+    description:
+      'How much context is left before the harness compacts the conversation. Returns the token ' +
+      'budget, what the last request used, and how many tokens remain. Ask this instead of guessing ' +
+      'whether to wrap up.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+  },
+}
+
 const GREP: ToolSpec = {
   type: 'function',
   function: {
@@ -399,11 +442,15 @@ export async function runAgent(
   }
 
   const skills = deps.skills ?? []
+  // 上下文预算：工具表里「有没有 get_context_remaining」取决于它，所以先算
+  const budget = deps.maxContextTokens ?? 0
   const tools: ToolSpec[] = [
     RUN_COMMAND,
     READ_FILE,
     LIST_DIR,
     GREP,
+    ...(deps.readImage ? [VIEW_IMAGE] : []),
+    ...(budget > 0 ? [GET_CONTEXT_REMAINING] : []),
     SEARCH_IMAGES,
     SPAWN_AGENT,
     ...(skills.some((s) => s.scripts.length) ? [RUN_SKILL_SCRIPT] : []),
@@ -463,17 +510,22 @@ export async function runAgent(
     return Object.keys(o).sort().join(',')
   }
   let lastText = ''
+  /** 最近一次 LLM 请求的 prompt_tokens（get_context_remaining 用） */
+  let lastPromptTokens = 0
   let plan: PlanStep[] = []
   let compactions = 0
-  const budget = deps.maxContextTokens ?? 0
 
-  const execOne = async (call: ToolCall): Promise<string> => {
+  // 工具结果的两种形态：几乎都是纯文本；view_image 还要把像素挂到消息上。
+  // 用对象而不是往字符串里塞 base64 —— 后者会进事件日志，一条会话能涨到几十 MB。
+  type ToolOutcome = string | { text: string; image?: { path: string; mediaType: string; data: string } }
+
+  const execOne = async (call: ToolCall): Promise<ToolOutcome> => {
     const name = call.function.name
     // apply_patch / update_plan 在进程内执行，不经过 exec，因此这里自己补审计
     const needsOwnEvent =
       name === 'apply_patch' || name === 'update_plan' || name === 'use_skill' || name === 'run_skill_script' ||
       name === 'read_file' || name === 'list_dir' || name === 'grep' || name === 'spawn_agent' ||
-      name === 'search_images'
+      name === 'search_images' || name === 'view_image' || name === 'get_context_remaining'
     let callEvId: string | null = null
     if (needsOwnEvent) {
       // args 是完整参数（页面点开看「它拿什么去调」），args_preview 留给
@@ -568,6 +620,39 @@ export async function runAgent(
         return out.text
       }
 
+
+      if (name === 'get_context_remaining') {
+        // 用「上一次真实请求的 prompt_tokens」，不是自己估算——估算是另一套数字，
+        // 而模型要的是"还差多少会触发压缩"的确切答案。
+        const used = lastPromptTokens
+        const compactAt = Math.floor(budget * 0.7)
+        const left = Math.max(0, compactAt - used)
+        finish('ok', { used, budget, compact_at: compactAt, left })
+        return [
+          `context budget: ${budget} tokens`,
+          `last request used: ${used} tokens`,
+          `compaction triggers at: ${compactAt} tokens (70%)`,
+          `remaining before compaction: ${left} tokens`,
+          'Keep going unless you are close to done; the harness compacts automatically.',
+        ].join('\n')
+      }
+
+      if (name === 'view_image') {
+        const rel = String(args.path ?? '')
+        if (!rel) { finish('error', { error: 'missing path' }); return 'ERROR: view_image needs a `path`' }
+        if (!deps.readImage) { finish('error', { error: 'not available' }); return 'ERROR: viewing images is not available in this run' }
+        const img = deps.readImage(rel)
+        if (!img) {
+          finish('error', { error: `cannot read image: ${rel}` })
+          return `ERROR: cannot read "${rel}" as an image. Supported: png, jpg, webp, gif. ` +
+            'If it is a PDF or a slide file, convert or render it first.'
+        }
+        finish('ok', { path: rel, mediaType: img.mediaType, bytes: Math.floor(img.data.length * 0.75) })
+        return {
+          text: `image attached: ${rel} (${img.mediaType}) — describe what you see in it.`,
+          image: { path: rel, mediaType: img.mediaType, data: img.data },
+        }
+      }
 
       if (name === 'search_images') {
         const q = String(args.query ?? '').trim()
@@ -722,6 +807,7 @@ export async function runAgent(
       throw err
     }
 
+    lastPromptTokens = res.usage.prompt_tokens
     usage.prompt += res.usage.prompt_tokens
     usage.completion += res.usage.completion_tokens
     usage.total += res.usage.total_tokens
@@ -793,7 +879,11 @@ export async function runAgent(
     // 只有"还要继续干"的时候才值得压缩：最后一步之后再压缩纯属浪费一次调用
     if (budget > 0 && shouldCompact(res.usage.prompt_tokens, budget)) {
       const before = messages.length
-      const c = await compactMessages(deps.gateway, messages, { keepRecent: 6 })
+      // keepRecent 6 太短：一条会话里 15–25 条消息才是「刚刚在做的事」，
+      // 只留 6 条意味着每压一次就丢掉刚读到的文件内容，模型立刻回去重读——
+      // 压缩省下的 token 又原样花回去，而且 step 数还在涨。
+      // 24 条 + 0.7 阈值：压得少一点、但每次活得长一点。
+      const c = await compactMessages(deps.gateway, messages, { keepRecent: 24 })
       if (c.dropped > 0) {
         messages.length = 0
         messages.push(...c.messages)
@@ -813,24 +903,27 @@ export async function runAgent(
     messages.push({ role: 'assistant', content: res.content, tool_calls: res.toolCalls })
 
     // 互不依赖的并行跑；apply_patch 改文件，必须按顺序
-    const outcomes = new Array<string>(res.toolCalls.length).fill('')
+    const outcomes = new Array<ToolOutcome>(res.toolCalls.length).fill('')
     const patches = res.toolCalls.map((c, i) => ({ c, i })).filter((x) => x.c.function.name === 'apply_patch')
     const others = res.toolCalls.map((c, i) => ({ c, i })).filter((x) => x.c.function.name !== 'apply_patch')
 
     // 跑完补一条 tool/output：页面点开结果那行就能看到工具真正返回了什么。
     // 只进事件日志、不进模型消息流（messages 里已经有一条 tool 消息了），
     // 所以多这一条不会让模型多读一遍。
-    const runOne = async (c: ToolCall): Promise<string> => {
+    const runOne = async (c: ToolCall): Promise<ToolOutcome> => {
       const out = await execOne(c)
       // 事件里的工具名不一定等于模型看到的工具名：run_command 在审计里叫
       // `exec`（它跑的是沙箱 exec）。两条都用同一个 key，界面才能把返回
       // 挂到对应的那一行上；挂不上就只剩一个「参数」，看不到结果。
       const key = c.function.name === 'run_command' ? 'exec' : c.function.name
+      // 只有文字进日志。图片的 base64 落盘就是一条会话几十 MB，
+      // 而且页面上也读不出来——留个路径就够了。
+      const text = typeof out === 'string' ? out : out.text
       deps.ev('tool/output', {
         tool: key,
         name: c.function.name,
-        output: String(out ?? '').slice(0, 8000),
-        truncated: String(out ?? '').length > 8000,
+        output: String(text ?? '').slice(0, 8000),
+        truncated: String(text ?? '').length > 8000,
       })
       return out
     }
@@ -843,7 +936,19 @@ export async function runAgent(
     for (const { c, i } of patches) outcomes[i] = await runOne(c)
 
     for (let i = 0; i < res.toolCalls.length; i++) {
-      messages.push({ role: 'tool', tool_call_id: (res.toolCalls[i] as ToolCall).id, content: clip(outcomes[i] as string) })
+      const o: ToolOutcome = outcomes[i] ?? ''
+      const text = typeof o === 'string' ? o : o.text
+      messages.push({ role: 'tool', tool_call_id: (res.toolCalls[i] as ToolCall).id, content: clip(text) })
+      // tool 消息在 OpenAI 协议里只能是字符串，塞不进图片。所以看图的结果
+      // 另起一条 user 消息带图——模型看到的顺序是「工具说图在这里」→「图」。
+      const img = typeof o === 'string' ? undefined : o.image
+      if (img) {
+        messages.push({
+          role: 'user',
+          content: `[view_image] ${img.path}`,
+          images: [{ path: img.path, mediaType: img.mediaType, data: img.data }],
+        })
+      }
     }
 
     deps.ev('step/end', { step_index: steps, status: 'ok', kind: 'tools', tool_count: res.toolCalls.length })

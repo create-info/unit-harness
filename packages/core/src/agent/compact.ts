@@ -87,7 +87,15 @@ export async function compactMessages(
   messages: Message[],
   opts: CompactionOptions = {},
 ): Promise<CompactionResult> {
-  const keep = opts.keepRecent ?? 6
+  // 保留多少条「最近」消息，不能写成一个绝对数字。
+  // 写死 6：一条正常会话压完只剩最后三次工具往返，模型立刻回去重读文件。
+  // 写死 24：短会话（比如只跑 8 步的任务）永远凑不够 24 条，压缩一次也不触发，
+  // 到顶照样炸。所以取「想要的数量」和「总数的一半」中小的那个——
+  // 任何长度下都留得下最近的工作，也都真的能压。
+  const want = opts.keepRecent ?? 24
+  // 上限是「一半」，但至少要让切开的那一半里有点东西：一条 assistant+tool 往返
+  // 占两条消息，所以 keep 最多取 len-2。否则短会话算出来切点=0，压了个寂寞。
+  const keep = Math.max(2, Math.min(want, Math.max(2, messages.length - 2)))
   const system = messages.filter((m) => m.role === 'system')
   const body = messages.filter((m) => m.role !== 'system')
 
