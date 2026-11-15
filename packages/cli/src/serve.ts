@@ -867,11 +867,15 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       //   off     一个都没有（端口根本没对外）
       //   tailnet 只有 100.x 那条（局域网机器连得上也进不来）
       //   lan     局域网各地址 + 100.x（去重：Tailscale IP 本身就是一块网卡）
-      const viaProxy = String(req.headers['x-forwarded-proto'] ?? '') === 'https' || Boolean(req.headers['x-forwarded-for'])
-      const urls = remoteMode === 'off'
-        ? (ts.state === 'up' && ts.serving && ts.host ? [`https://${ts.host}`] : [])
-        : viaProxy && ts.host
-          ? [`https://${ts.host}`]
+      // 有域名转发在跑时，域名永远是「手机该用的那个地址」——哪怕这个页面是本机
+      // 打开的（对端 127.0.0.1，看不到转发头），哪怕模式是 tailnet。
+      // 之前这里只在「off」或「请求自己被转发过」时才给域名，于是从电脑上看设置页
+      // 显示的还是 100.x:7878 裸地址，跟实际在用的方案对不上。
+      const serveUp = ts.state === 'up' && Boolean(ts.serving) && Boolean(ts.host)
+      const urls = serveUp
+        ? [`https://${ts.host}`]
+        : remoteMode === 'off'
+          ? []
         : [...new Set([
           ...(remoteMode === 'lan' ? addrs.filter((a) => !isTailnetAddr(a)).map((a) => `http://${a}:${port}`) : []),
           ...(ts.state === 'up' && ts.ip ? [`http://${ts.ip}:${port}`] : []),
