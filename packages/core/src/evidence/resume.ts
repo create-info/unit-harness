@@ -12,6 +12,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { uhHome } from '../paths.ts'
 import { EventStore } from './store.ts'
+import { replayRollout } from './rollout.ts'
 import type { Message, ImageInput } from '../llm/types.ts'
 
 export interface ResumeState {
@@ -77,14 +78,49 @@ export function readState(sessionId: string): ResumeState | null {
   return dir ? readStateAt(dir, sessionId) : null
 }
 
-/** 最近一个可续跑的会话 */
+/**
+ * 续跑该用哪份历史。
+ *
+ * 优先 rollout：它是边跑边追加的，被打断的那一轮也留得下已经发生的事。
+ * state.json 只是整轮结束时的快照——一轮没有"结束"（被 Stop、被 --force、
+ * 浏览器关了），它就是上一轮的旧样子，拿它续跑等于让模型忘掉刚做的事。
+ *
+ * 老会话没有 rollout，退回 state.json；两样都没有就返回 null（新开一轮）。
+ */
+export function resumeMessages(sessionId: string): Message[] | null {
+  const dir = new EventStore().sessionDir(sessionId)
+  if (!dir) return null
+  const rolled = replayRollout(dir)
+  if (rolled && rolled.length) return hydrateImages(rolled)
+  const st = readStateAt(dir, sessionId)
+  return st && st.messages.length ? st.messages : null
+}
+
+/**
+ * 最近一个可续跑的会话。
+ *
+ * 判据是"有没有历史"，不是"有没有 state.json"。被打断的会话恰恰没有 state.json
+ * ——它没有"整轮结束"——但它的 rollout 里全是刚才做过的事，那正是最该被续上的
+ * 一条。以前这里只看 state.json，于是 `--continue` 会跳过刚被打断的那一轮，
+ * 接上更早的、已经做完的会话：用户以为在接着刚才，其实跳回了几步之前。
+ */
 export function latestResumable(): ResumeState | null {
   const store = new EventStore()
   for (const meta of store.list({ limit: 50 })) {
     const dir = store.sessionDir(meta.id)
     if (!dir) continue
     const st = readStateAt(dir, meta.id)
-    if (st && st.messages.length > 0) return st
+    const rolled = replayRollout(dir)
+    const hasRollout = Boolean(rolled && rolled.length)
+    if (!hasRollout && !(st && st.messages.length > 0)) continue
+    // state.json 在就用它补齐 plan / stoppedBy；消息以 rollout 为准
+    return {
+      sessionId: meta.id,
+      updatedAt: st?.updatedAt ?? new Date(meta.updated_at).toISOString(),
+      stoppedBy: st?.stoppedBy ?? 'unknown',
+      plan: st?.plan ?? [],
+      messages: (hasRollout ? rolled! : st!.messages),
+    }
   }
   return null
 }

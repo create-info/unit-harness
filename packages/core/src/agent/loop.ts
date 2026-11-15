@@ -235,8 +235,32 @@ function toToolSpecs(tools: ReadonlyArray<ToolDefinition>): ToolSpec[] {
 
 const MAX_RESULT_CHARS = 8000
 
+/**
+ * 工具输出超长：留头 + 留尾，中间挖掉，上面标一行"原本有多少"。
+ *
+ * 以前只留开头。问题是命令的结论几乎都在末尾：测试的通过/失败行、构建的最后
+ * 一条 error、grep 命中的最后几处。砍掉尾巴等于让模型看不见结果是什么，只能
+ * 重跑一遍更窄的命令——省下的 token 又花回去。
+ *
+ * 这也是 Codex 的做法（truncate_middle_chars：预算对半分，中间插一条
+ * `…N chars truncated…`），另外在正文前给一行原始规模，模型能据此决定
+ * 要不要换更精确的命令，而不是在一片被砍断的输出里猜。
+ */
 function clip(s: string): string {
-  return s.length <= MAX_RESULT_CHARS ? s : `${s.slice(0, MAX_RESULT_CHARS)}\n… [truncated ${s.length - MAX_RESULT_CHARS} chars]`
+  if (s.length <= MAX_RESULT_CHARS) return s
+  const marker = (n: number) => `\n… ${n} chars truncated …\n`
+  // 标记本身要占位，先从预算里扣掉，否则拼出来的结果又会超。
+  // 128 = 头行(约90) + 中间标记(约30)，留一点余量，实测 8k 上限不会越界
+  const budget = MAX_RESULT_CHARS - 128
+  const half = Math.floor(budget / 2)
+  const removed = s.length - half * 2
+  const lines = s.split('\n').length
+  return (
+    `[output truncated: ${s.length} chars / ${lines} lines total, ${removed} dropped from the middle]\n` +
+    s.slice(0, half) +
+    marker(removed) +
+    s.slice(-half)
+  )
 }
 
 const SPAWN_AGENT: ToolSpec = {
@@ -405,6 +429,17 @@ export async function runAgent(
     images?: ImageInput[]
     /** 成本预算（token）：到线就停，stoppedBy 记为 'budget' */
     budget?: { perRun?: number; perDay?: number; dayUsed?: number }
+    /** 压缩发生了：replacement 是压缩后的完整对话（摘要 + 最近若干条） */
+    onCompacted?: (replacement: Message[]) => void
+    /**
+     * 消息进对话的瞬间回调一次。
+     *
+     * 这是续跑的唯一依据。以前靠"整轮结束时写一份 state.json"，问题是：
+     * 一轮被打断（--force、Ctrl-C、浏览器关了）就一个字都没落盘，续跑时模型
+     * 手里只有上一次的旧快照，于是它说"我不知道之前做到哪了"——它确实不知道。
+     * Codex 用 append-only 的 rollout 记这个过程，我们也照做：边跑边追加。
+     */
+    onMessage?: (m: Message) => void
   },
 ): Promise<RunResult> {
   // 这条会话里的第几轮：多轮对话必须递增，单轮默认仍是 1
@@ -429,12 +464,22 @@ export async function runAgent(
   })
 
   const messages: Message[] = []
+  /**
+   * 往对话里加一条消息，同时把它追加进 rollout。
+   *
+   * 所有"模型该记住的东西"都必须走这里。漏一处，续跑时模型就少一段记忆——
+   * 而且是静默地少，它不会报错，只会用更少的上下文重新猜你要干什么。
+   */
+  const record = (m: Message): void => {
+    messages.push(m)
+    if (m.role !== 'system') opts.onMessage?.(m)
+  }
   if (deps.system) messages.push({ role: 'system', content: deps.system })
   // 续跑：保留历史（去掉旧 system，换成当前这次的环境/工具描述），再接新指令
   const carried = (opts.initialMessages ?? []).filter((m) => m.role !== 'system')
   messages.push(...carried)
   if (opts.task.trim() || opts.images?.length) {
-    messages.push({
+    record({
       role: 'user',
       content: opts.task,
       ...(opts.images?.length ? { images: opts.images } : {}),
@@ -766,7 +811,7 @@ export async function runAgent(
     // 用户插话：在 step 边界接上。取走而不是 peek，避免同一句被插两遍
     const steers = deps.drainSteer?.() ?? []
     for (const s of steers) {
-      messages.push({
+      record({
         role: 'user',
         content: `[the user interrupted while you were working] ${s.text}`,
       })
@@ -857,8 +902,8 @@ export async function runAgent(
         const failed = await deps.runHooks('pre_finish', {})
         if (failed.length > 0) {
           deps.ev('step/end', { step_index: steps, status: 'ok', kind: 'hook-rejected' })
-          messages.push({ role: 'assistant', content: res.content })
-          messages.push({
+          record({ role: 'assistant', content: res.content })
+          record({
             role: 'user',
             content:
               `Your finish was rejected by a hook:\n\n` +
@@ -871,7 +916,7 @@ export async function runAgent(
 
       // 最终回答也要进历史：否则 --continue 拿到的是「用户说了什么、模型没回过话」，
       // 续跑时模型等于失忆；压缩估算也会少算这一段
-      messages.push({ role: 'assistant', content: res.content })
+      record({ role: 'assistant', content: res.content })
       deps.ev('step/end', { step_index: steps, status: 'ok', kind: 'assistant' })
       break
     }
@@ -888,6 +933,9 @@ export async function runAgent(
         messages.length = 0
         messages.push(...c.messages)
         compactions++
+        // 压缩不改写日志，而是**追加一个压缩点**：重放到这里就把之前的消息全换掉。
+        // 这样日志仍然只追加（崩了不损坏），而且压缩前的内容还有据可查。
+        opts.onCompacted?.(c.messages.filter((m) => m.role !== 'system'))
         deps.ev('session/compacted', {
           dropped_messages: c.dropped,
           kept_messages: before - c.dropped,
@@ -900,7 +948,7 @@ export async function runAgent(
       }
     }
 
-    messages.push({ role: 'assistant', content: res.content, tool_calls: res.toolCalls })
+    record({ role: 'assistant', content: res.content, tool_calls: res.toolCalls })
 
     // 互不依赖的并行跑；apply_patch 改文件，必须按顺序
     const outcomes = new Array<ToolOutcome>(res.toolCalls.length).fill('')
@@ -938,12 +986,12 @@ export async function runAgent(
     for (let i = 0; i < res.toolCalls.length; i++) {
       const o: ToolOutcome = outcomes[i] ?? ''
       const text = typeof o === 'string' ? o : o.text
-      messages.push({ role: 'tool', tool_call_id: (res.toolCalls[i] as ToolCall).id, content: clip(text) })
+      record({ role: 'tool', tool_call_id: (res.toolCalls[i] as ToolCall).id, content: clip(text) })
       // tool 消息在 OpenAI 协议里只能是字符串，塞不进图片。所以看图的结果
       // 另起一条 user 消息带图——模型看到的顺序是「工具说图在这里」→「图」。
       const img = typeof o === 'string' ? undefined : o.image
       if (img) {
-        messages.push({
+        record({
           role: 'user',
           content: `[view_image] ${img.path}`,
           images: [{ path: img.path, mediaType: img.mediaType, data: img.data }],
@@ -1018,7 +1066,7 @@ export async function runAgent(
       usage.total += fin.usage.total_tokens
       if (fin.content.trim()) {
         lastText = fin.content
-        messages.push({ role: 'assistant', content: fin.content })
+        record({ role: 'assistant', content: fin.content })
       }
       deps.ev('step/end', { step_index: steps, status: 'ok', kind: 'final-report' })
     } catch (err) {

@@ -17,7 +17,7 @@ import {
   loadMcpServers, upsertMcpServer, removeMcpServer, McpRegistry,
   listRecipes, loadRecipe, resolveVars, renderTemplate, runRecipeChecks,
   loadHosts, upsertHost, removeHost, runRemote, classify, describeRisk,
-  latestResumable, uhHome, sessionsDir, workspaceDir,
+  latestResumable, resumeMessages, uhHome, sessionsDir, workspaceDir,
   readSessionEvents, editsForLastTurn, applyUndo, isRestorable, isTurnUndone, markTurnUndone,
   hydrateEdits, discoverSkills,
 } from '@unit-harness/core'
@@ -1194,7 +1194,9 @@ async function cmdRun(task?: string): Promise<void> {
   if (cont) {
     const st = latestResumable()
     if (!st) fail('no previous session to continue (run something first)')
-    resumeFrom = st.messages
+    // rollout 优先：state.json 只在"整轮结束"时写，被打断的那一轮它没有。
+    // latestResumable() 只是用来定位"上一个是哪条"，历史要从日志重放。
+    resumeFrom = resumeMessages(st.sessionId) ?? st.messages
     contSid = st.sessionId
     // 轮次必须递增，且要和日志里已经有的轮数对得上
     try {

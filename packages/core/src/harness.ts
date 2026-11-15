@@ -16,6 +16,7 @@ import { pathToFileURL } from 'node:url'
 import { probeIsolation } from './sandbox/probe.ts'
 import { isJunkDirName } from './fs/junk.ts'
 import { EventStore } from './evidence/store.ts'
+import { appendRollout } from './evidence/rollout.ts'
 import { LlmGateway } from './llm/gateway.ts'
 import { resolveProvider } from './llm/resolve.ts'
 import { resolveContextWindow } from './llm/window.ts'
@@ -444,6 +445,16 @@ export class Harness {
   readonly workspace: string
   private readonly store: EventStore
   private session: SessionMeta | null = null
+
+  /**
+   * 当前会话目录：rollout 和 state.json 都落这里。
+   *
+   * 会话还没分配 id 时返回 null——那种情况下这一轮本来也不该续（没有身份可续）。
+   */
+  private sessionDirForRollout(): string | null {
+    if (!this.session) return null
+    return this.store.sessionDir(this.session.id) ?? nodePath.join(uhHome(), 'sessions', this.session.id)
+  }
 
   constructor(opts: HarnessOptions = {}) {
     this.opts = opts
@@ -1416,6 +1427,8 @@ export class Harness {
     }
     depsRef = agentDeps
 
+    // 每条消息都要写盘，所以目录只算一次
+    const rolloutDir = this.sessionDirForRollout()
     const result = await runAgent(
       agentDeps,
       {
@@ -1431,6 +1444,14 @@ export class Harness {
         // 那是"这个进程见过多少"，不是"今天花了多少"
         ...(this.budget().perRun || this.budget().perDay
           ? { budget: { ...this.budget(), dayUsed: this.todayUsage() } }
+          : {}),
+        // 边跑边追加：被打断的那一轮也留得下已经发生的事。
+        // 会话目录要现在就知道，所以先算一次（store 里已经建好这条会话了）
+        ...(rolloutDir
+          ? {
+              onMessage: (m: Message) => appendRollout(rolloutDir, { type: 'message', message: m }),
+              onCompacted: (msgs: Message[]) => appendRollout(rolloutDir, { type: 'compacted', messages: msgs }),
+            }
           : {}),
       },
     )

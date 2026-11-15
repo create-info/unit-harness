@@ -159,6 +159,11 @@
           border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 32px rgba(0,0,0,.45);
           padding:11px 13px;display:none;z-index:8;font-size:11.5px;line-height:1.65;color:var(--fg)}
   #ctxPop.on{display:block}
+  /* 小三角：气泡比按钮宽得多，右对齐之后视觉上像浮在页面中间，
+     一个指向按钮的尖角就能把两者连起来 */
+  #ctxPop::after{content:'';position:absolute;right:14px;bottom:-6px;width:11px;height:11px;
+                 background:var(--panel);border-right:1px solid var(--line);border-bottom:1px solid var(--line);
+                 transform:rotate(45deg)}
   #ctxPop .h{font-size:10.5px;color:var(--dim);letter-spacing:.04em;text-transform:uppercase;margin-bottom:6px}
   #ctxPop .row{display:flex;justify-content:space-between;gap:18px}
   #ctxPop .row span:first-child{color:var(--dim)}
@@ -1643,6 +1648,9 @@ function bindCtxPop(){
     if (!pop) return;
     const open = on === undefined ? !pop.classList.contains('on') : on;
     if (open) {
+      // 原生 title 提示和气泡会叠在一起（它跟鼠标走，位置不受控）。
+      // 气泡里已经有全部信息，先把 title 摘掉，关上再还回去。
+      if (box.title) { box.dataset.title = box.title; box.removeAttribute('title'); }
       // 气泡是 fixed 的：先显示（尺寸才能量），再把右边缘对齐按钮、底边压在按钮上方
       pop.classList.add('on');
       const r = box.getBoundingClientRect();
@@ -1652,6 +1660,7 @@ function bindCtxPop(){
       pop.style.top = 'auto';
     } else {
       pop.classList.remove('on');
+      if (box.dataset.title && !box.title) { box.title = box.dataset.title; delete box.dataset.title; }
     }
   };
   box.addEventListener('click', (e) => { e.stopPropagation(); toggle(); });

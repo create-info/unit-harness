@@ -15,7 +15,7 @@ import fs6 from 'node:fs'
 import * as nodeCrypto from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
 import {
-  EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey, readState,
+  EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey, readState, resumeMessages,
   listCheckpoints, editsAfterSeq, undoToCheckpoint, lastRestoreSeq,
   buildAdapters, readChannels, writeChannels, missingFields,
   getBinding, setBinding, claimMessage, bindingKey,
@@ -2605,10 +2605,12 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         // 会话属于某个工作区。用户是从这条会话点进来的，就跟着它走——
         // 否则会在 A 项目的对话里改 B 项目的文件。
         if (meta.workspace && meta.workspace !== currentWorkspace) currentWorkspace = meta.workspace
-        const st = readState(contId)
-        // 没有 state.json（老会话、或上一轮崩在落盘之前）也能续：
-        // 只是这句话不带上文，比直接拒绝让人能继续干活。
-        if (st && st.messages.length) resumeFrom = st.messages
+        // rollout 优先：它是边跑边追加的。state.json 是"整轮结束时"的快照，
+        // 而被 Stop / --force 打断的那一轮根本没有结束——以前就在这儿丢记忆。
+        const msgs = resumeMessages(contId)
+        // 两样都没有（老会话、或第一轮就崩了）也允许续：这句话不带上文，
+        // 比直接拒绝让人能继续干活。
+        if (msgs && msgs.length) resumeFrom = msgs
         // 轮次接着数。同一个会话里出现两个 turn_index:1，回放和撤销都分不清边界。
         turnIndex = store0.read(contId, { kinds: ['turn/start'] }).length + 1
         // 清掉上一轮的广播缓存：否则这一轮连上 SSE 会把上一轮重放一遍，屏幕上两份

@@ -41,7 +41,7 @@ export type { ApprovalGate, ApprovalPolicy, ApprovalRequest, ApprovalDecision } 
 export { buildSystemPrompt, findProjectInstructions } from './agent/prompt.ts'
 export { compactMessages, shouldCompact, safeCutIndex } from './agent/compact.ts'
 export { parsePatch, planPatch } from './agent/tools/apply-patch.ts'
-export { readState, latestResumable } from './evidence/resume.ts'
+export { readState, latestResumable, resumeMessages } from './evidence/resume.ts'
 export type { ResumeState } from './evidence/resume.ts'
 export { loadHosts, upsertHost, removeHost, hostsConfigPath, targetOf } from './remote/hosts.ts'
 export type { RemoteHost } from './remote/hosts.ts'
