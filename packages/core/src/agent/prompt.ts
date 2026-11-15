@@ -33,6 +33,8 @@ export interface PromptContext {
   projectInstructions?: string
   /** 已发现 skill 的索引文本（由 renderSkillIndex 生成） */
   skillIndex?: string
+  /** 只读（Plan）模式：提示词里必须说，否则模型会一次次撞在 E_READ_ONLY 上 */
+  readOnly?: boolean
 }
 
 /** 从 workspace 向上找 AGENTS.md，越近的越优先（同名文件后出现的覆盖前面的） */
@@ -107,6 +109,7 @@ function environmentSection(ctx: PromptContext): string {
     `  <platform>${process.platform}/${process.arch} ${os.release()}</platform>`,
     `  <sandbox>${sandbox}</sandbox>`,
     `  <home_readable>${ctx.homeReadable !== false}</home_readable>`,
+    ...(ctx.readOnly ? ['  <mode>plan — read-only</mode>'] : []),
     `  <date>${new Date().toISOString().slice(0, 10)}</date>`,
     '</environment_context>',
     '',

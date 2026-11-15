@@ -186,7 +186,7 @@ let usageCache: { at: number; data: Record<string, unknown> } | null = null
  *
  * 默认 ask 而不是 allow：装插件、跑陌生仓库时，静默执行破坏性命令是最贵的错。
  */
-export type ApprovalMode = 'ask' | 'auto' | 'allow'
+export type ApprovalMode = 'plan' | 'ask' | 'auto' | 'allow'
 
 /**
  * 项目显示名：路径 → 名字。
@@ -229,7 +229,22 @@ function sandboxPrefs(): { allowHome: boolean; denyNetwork: boolean; unconfined:
 
 function approvalMode(): ApprovalMode {
   const m = readConfig().approval
-  return m === 'auto' || m === 'allow' ? m : 'ask'
+  return m === 'plan' || m === 'auto' || m === 'allow' ? m : 'ask'
+}
+
+/**
+ * Plan 模式：只读。
+ *
+ * 各家都有一档"先说方案、别动手"——Cursor 的 Ask/Plan、Claude Code 的 Plan mode。
+ * 我们的四档是同一把梯子：
+ *
+ *   plan  只读：能查，不能改（这条）
+ *   ask   改之前问（默认）
+ *   auto  只有毁灭性的才问
+ *   allow 不问
+ */
+function isReadOnly(): boolean {
+  return approvalMode() === 'plan'
 }
 
 /**
@@ -1612,7 +1627,9 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       let body: { mode?: string } = {}
       try { body = JSON.parse(await readBody(req)) as typeof body } catch { /* empty */ }
       const m = body.mode
-      if (m !== 'ask' && m !== 'auto' && m !== 'allow') { json(res, 400, { error: 'mode must be ask, auto or allow' }); return }
+      if (m !== 'plan' && m !== 'ask' && m !== 'auto' && m !== 'allow') {
+        json(res, 400, { error: 'mode must be plan, ask, auto or allow' }); return
+      }
       const cfg = readConfig()
       cfg.approval = m
       writeConfig(cfg)
@@ -2733,6 +2750,9 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         // `<mcp_servers> - server "mock": ...`
         ...(contId ? { resumeSessionId: contId } : { label: task0.slice(0, 60) }),
         workspace: currentWorkspace,
+        // plan 档不只是"不问"，而是一律不许改：光靠审批门拒绝，
+        // 模型会以为"再问一次也许能过"，然后把同一件事重试一遍
+        readOnly: isReadOnly(),
         // 网页里也要能审批：不接这个门，破坏性命令在 UI 里只能一律失败
         gate: makeWebGate(sidRef),
         // session 在 start() 里创建，所以这里先缓冲，拿到 id 后再推送

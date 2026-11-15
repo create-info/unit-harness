@@ -32,8 +32,18 @@ export interface ProviderConfigEntry {
 export interface UhConfig {
   defaultProvider?: string
   providers: Record<string, ProviderConfigEntry>
-  /** 审批档位：ask（逐次问）/ auto（只问不可逆的）/ allow（不问） */
-  approval?: 'ask' | 'auto' | 'allow'
+  /**
+   * 审批档位——和设置面板上那四档是同一串值。
+   *
+   *   plan   只读，一个字节都不改
+   *   ask    动手之前问（默认）
+   *   auto   只有毁灭性的才问
+   *   allow  不问
+   *
+   * 这条字符串是持久化在 config.json 里的：少写一个值，读回来就会被
+   * 静默降级成 ask，用户以为切了 plan 其实没切。
+   */
+  approval?: 'plan' | 'ask' | 'auto' | 'allow'
   /** 沙箱开关。默认全关：默认值要能兜住，不能靠人记得去打开 */
   sandbox?: SandboxPrefs
   /** 界面外观。默认浅色（白底 #FFFFFF / 正文 #1A1C1F），和桌面端一致 */

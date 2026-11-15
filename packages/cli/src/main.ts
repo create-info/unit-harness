@@ -166,6 +166,9 @@ async function withHarness<T>(
     onReasoning: streamReasoning,
     // 默认策略是 deny：没人回答 = 不批准。只有真的连着终端才逐次问。
     approval: argv.includes('--yes') ? 'allow' : 'deny',
+    // `uh run --plan`：只读跑一轮，把方案交出来但不许落盘。
+    // 和网页上的 plan 档是同一件事，命令行也得有——脚本里"先看看"同样常见。
+    readOnly: argv.includes('--plan'),
     ...(process.stdin.isTTY && !argv.includes('--yes') && !argv.includes('--no-ask')
       ? { gate: { request: askApproval } }
       : {}),

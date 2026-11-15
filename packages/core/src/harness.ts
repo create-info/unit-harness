@@ -108,6 +108,14 @@ export interface HarnessOptions {
   approval?: ApprovalPolicy
   /** 自定义审批门（覆盖 approval 策略，用于 UI / API 场景） */
   gate?: ApprovalGate
+  /**
+   * 只读（Plan 模式）。
+   *
+   * 抄的是 Cursor 的 Ask/Plan 和 Claude Code 的 Plan mode：可以先调研、先说打算
+   * 怎么做，但不许动文件。和审批档不是一回事——审批档问的是"要不要问你"，
+   * 这里问的是"允不允许做"，所以它不能靠"问"来满足，只能拒。
+   */
+  readOnly?: boolean
   configs?: Record<string, unknown>
   /** path-guard 级别下是否允许执行（fail-closed 默认 false） */
   unconfined?: boolean
@@ -335,6 +343,20 @@ export class Harness {
     const files = this.pendingEdits.slice()
     this.pendingEdits.length = 0
     this.ev('checkpoint/created', { label, files, file_count: files.length }, 'agent')
+  }
+
+  /**
+   * 只读模式下把写动作挡在这里。
+   *
+   * 报错文案是说给模型听的：它读得到，就知道该改成"把方案交出来"，
+   * 而不是反复重试同一次写入。所以这里要写清**为什么**，不能只说 denied。
+   */
+  private refuseIfReadOnly(rel: string): void {
+    if (!this.opts.readOnly) return
+    throw new Error(
+      `E_READ_ONLY: this run is in plan mode — "${rel}" was not written. ` +
+      'Describe the change you would make instead; the user will switch modes to apply it.',
+    )
   }
 
   /** 审批门：显式 gate 优先，否则按策略挑 */
@@ -795,6 +817,20 @@ export class Harness {
       cwd: workdir0,
     }, 'agent')
 
+    // ---- 只读（Plan）模式：能查不能改 ----
+    // 放在审批门之前：这不是"要不要问"，是"根本不许"。问一遍再拒绝，
+    // 屏幕上会多一条让人以为可以点的审批请求。
+    if (spec.source === 'model' && this.opts.readOnly) {
+      const cmdline = spec.argv.join(' ')
+      if (classify(cmdline) !== 'read') {
+        this.ev('tool/result', {
+          tool: 'exec', status: 'refused', isolation: level, refused: true, denied_by: 'plan-mode',
+        }, 'environment', attempted?.id ?? null)
+        throw new Error(`E_READ_ONLY: plan mode — "${cmdline.slice(0, 120)}" was not run. ` +
+          'Only read-only commands are allowed in plan mode; describe what you would run instead.')
+      }
+    }
+
     // ---- 审批门：模型发起的危险动作在人点头之前不执行 ----
     if (spec.source === 'model') {
       const cmdline = spec.argv.join(' ')
@@ -1175,6 +1211,7 @@ export class Harness {
       isolation: this.isolation.enforced,
       networkBlocked: this.opts.denyNetwork === true,
       planEnabled: o.plan !== false,
+      readOnly: this.opts.readOnly === true,
       skillIndex: renderSkillIndex(skills),
       tools: this.tools.map((t) => ({ name: t.name, description: t.description })),
     })
@@ -1399,6 +1436,7 @@ export class Harness {
           }
         },
         writeBytes: (rel, bytes) => {
+          this.refuseIfReadOnly(rel)
           // 二进制走独立入口：writeFile 收字符串，图片过一遍 utf8 编码就废了
           const abs = this.safeJoin(rel)
           const before = readMaybe(abs)
@@ -1407,6 +1445,7 @@ export class Harness {
           this.recordEdit(rel, before, Buffer.from(bytes))
         },
         writeFile: (rel, content) => {
+          this.refuseIfReadOnly(rel)
           const abs = this.safeJoin(rel)
           const before = readMaybe(abs)
           fsSync.mkdirSync(nodePath.dirname(abs), { recursive: true })
@@ -1414,6 +1453,7 @@ export class Harness {
           this.recordEdit(rel, before, Buffer.from(content, 'utf8'))
         },
         deleteFile: (rel) => {
+          this.refuseIfReadOnly(rel)
           const abs = this.safeJoin(rel)
           const before = readMaybe(abs)
           try { fsSync.unlinkSync(abs) } catch { /* already gone */ }
