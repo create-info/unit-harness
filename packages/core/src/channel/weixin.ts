@@ -104,23 +104,70 @@ export function makeWeixin(cfg: WeixinConfig): ChannelAdapter {
         raw: req.body,
       }
 
-      // 公众号只给 5 秒：先回 success，把结果用客服消息推回去
-      void ctx.ask(msg).then(
-        (answer) => {
-          if (answer === null) return undefined   // 重复投递：什么都不回
-          return weixinSend(cfg, from, answer)
-        },
-        (err) => {
-          ctx.log('error', `weixin: 跑任务失败 ${err instanceof Error ? err.message : String(err)}`)
-          return weixinSend(cfg, from, '这一轮没跑起来：' + (err instanceof Error ? err.message : String(err))).catch(() => {})
-        },
-      )
-      return { body: 'success' }
+      /**
+       * 订阅号只有「被动回复」这一条路：结果必须写在这次 HTTP 响应体里，
+       * 而且只有 5 秒。实测这个号连客服消息接口都没开（errcode 48001 api unauthorized），
+       * 所以「先回 success 再推」在这台号上等于不回。
+       *
+       * 微信的做法是 5 秒不回就重投，最多三次。于是重投就是我们的机会：
+       * 第一次投递如果没跑完，第二、三次投递时把已经跑完的答案被动回出去。
+       * 记的不是「处理过」，是「这句正在跑」——重投要等它，不能另起一轮。
+       */
+      const msgId = xmlValue(req.body, 'MsgId') || `${from}:${xmlValue(req.body, 'CreateTime')}`
+      const myBudget = 4200
+
+      let answer: string | null | undefined
+      let entry = inflight.get(msgId)
+      const fresh = !entry
+      if (!entry) {
+        entry = { p: ctx.ask(msg), at: Date.now(), delivered: false }
+        inflight.set(msgId, entry)
+        if (inflight.size > 200) {
+          const cut = Date.now() - 5 * 60 * 1000
+          for (const [k, v] of inflight) if (v.at < cut) inflight.delete(k)
+        }
+      }
+
+      answer = await raceTimeout(entry.p, myBudget)
+
+      if (answer === undefined) {
+        // 这一轮还没跑完：多半是重投也来不及。有客服消息权限的号还能推回去。
+        if (fresh) {
+          void entry.p.then((a) => {
+            if (!a) return
+            return weixinSend(cfg, from, a).catch((e) => {
+              ctx.log('warn', `weixin: 客服消息推不出去（${e instanceof Error ? e.message : String(e)}）——`
+                + '这个号只能被动回复，超过 5 秒的任务在微信里就看不到了')
+            })
+          })
+        }
+        return { body: 'success' }
+      }
+      if (answer === null) return { body: '' }
+      // 同一条消息只让它出现在聊天里一次：重投的第 2、3 次都拿到答案时，
+      // 每次都回一遍会让用户看到三遍同样的话。
+      if (entry.delivered) return { body: 'success' }
+      entry.delivered = true
+      return { body: weixinPassiveXml(from, xmlValue(req.body, 'ToUserName'), answer) }
     },
   }
 }
 
-/** 被动回复的 XML（服务号可用；订阅号在 5 秒内跑完时也能用） */
+/** 按 MsgId 记住「这一句正在跑」，重投时等它而不是再跑一轮 */
+const inflight = new Map<string, { p: Promise<string | null>; at: number; delivered: boolean }>()
+
+/** 等一个 promise，超时就给 undefined（不是 null：null 表示「这句不该回」） */
+async function raceTimeout<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  let timer: NodeJS.Timeout | undefined
+  const timeout = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), ms) })
+  try {
+    return await Promise.race([p, timeout])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/** 被动回复的 XML（订阅号唯一能用的一条路） */
 export function weixinPassiveXml(to: string, from: string, text: string): string {
   return `<xml><ToUserName>${cdata(to)}</ToUserName><FromUserName>${cdata(from)}</FromUserName>`
     + `<CreateTime>${Math.floor(Date.now() / 1000)}</CreateTime><MsgType>${cdata('text')}</MsgType>`

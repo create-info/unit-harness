@@ -844,9 +844,13 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       : peer
     const peerLocal = (peer === '127.0.0.1' || peer === '::1') && !fromProxy
 
+    // 渠道回调必须能从公网进来——它们靠各自的验签自证身份，不是靠这条网络限制。
+    // 其余路径仍然只认本机/Tailscale，界面照旧不外露。
+    const isChannelWebhook = url.pathname.startsWith('/webhook/')
+
     // 「仅 Tailscale」：端口对局域网开着，但只认 100.64/10 来的包。
     // 光靠绑定地址做不到这一点——tailscale0 和 eth0 都在同一个 socket 上。
-    if (remoteMode === 'tailnet' && !peerLocal && !isTailnetAddr(origin)) {
+    if (!isChannelWebhook && remoteMode === 'tailnet' && !peerLocal && !isTailnetAddr(origin)) {
       res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' })
       res.end('这台机器只接受 Tailscale 网络内的连接')
       return
@@ -2142,25 +2146,47 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
     }
 
     // 这个 provider 到底有哪些模型 —— 只有配上 key 之后才问得出来
-    if (req.method === 'GET' && url.pathname === '/api/models') {
-      const id = url.searchParams.get('provider') ?? ''
+    /**
+     * 列出这家到底有哪些模型。
+     *
+     * POST 可以带上页面上**刚填但还没保存**的值：之前只有 GET，读的是已保存的配置，
+     * 于是「粘贴 key → 直接点 List」必然是 401——那不是 key 错了，是我们根本没带上它。
+     * key 走请求体而不是查询串：查询串会落到访问日志里。
+     */
+    if ((req.method === 'GET' || req.method === 'POST') && url.pathname === '/api/models') {
+      const fromForm = req.method === 'POST'
+        ? JSON.parse(await readBody(req).catch(() => '{}')) as { provider?: string; baseUrl?: string; apiKey?: string }
+        : {}
+      const id = fromForm.provider ?? url.searchParams.get('provider') ?? ''
       const def = findProvider(id)
       if (!def) { json(res, 400, { models: [], error: 'unknown provider' }); return }
 
       const cfg = readConfig()
       const entry = cfg.providers[id] ?? {}
-      const base = (entry.baseUrl ?? def.baseUrl).replace(/\/$/, '')
-      const key = entry.apiKey ?? process.env[def.envKey ?? ''] ?? ''
+      const base = (fromForm.baseUrl || entry.baseUrl || def.baseUrl || '').replace(/\/$/, '')
+      const key = fromForm.apiKey?.trim() || entry.apiKey || process.env[def.envKey ?? ''] || ''
+
+      // 本机的服务（LM Studio / Ollama）本来就没有 key，不能因为「没填 key」就拦下来
+      const isLocal = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/|$)/.test(base)
+      if (!key && !isLocal) {
+        json(res, 200, { models: [], error: '这家还没配 key：先在 API Key 里粘贴，按回车保存，再点 List' })
+        return
+      }
 
       try {
         const ctl = new AbortController()
-        const timer = setTimeout(() => ctl.abort(), 6000)
+        const timer = setTimeout(() => ctl.abort(), 8000)
         const res2 = await fetch(base + '/models', {
-          headers: key ? { authorization: `Bearer ${key}` } : {},
+          headers: { authorization: 'Bearer ' + key },
           signal: ctl.signal,
         })
         clearTimeout(timer)
-        if (!res2.ok) { json(res, 200, { models: [], error: `HTTP ${res2.status}` }); return }
+        if (!res2.ok) {
+          // 401 不是「网络问题」：把这家的原话带回来，省得用户对着一个数字猜
+          const detail = (await res2.text().catch(() => '')).slice(0, 200)
+          json(res, 200, { models: [], error: `HTTP ${res2.status} ${detail}`.trim(), status: res2.status })
+          return
+        }
         const data = (await res2.json()) as { data?: Array<{ id?: string }>; models?: Array<{ name?: string }> }
         const models = (data.data ?? data.models ?? [])
           .map((m) => (m as { id?: string; name?: string }).id ?? (m as { name?: string }).name ?? '')

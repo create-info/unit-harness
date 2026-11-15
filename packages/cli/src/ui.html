@@ -3310,8 +3310,18 @@ function renderSettings() {
         b.onclick = async () => {
           b.disabled = true; b.textContent = '…';
           try {
-            const r = await fetch('/api/models?provider=' + encodeURIComponent(S.provider)).then(x => x.json());
+            // 带上**框里现在的内容**：以前 List 只读已保存的配置，
+            // 「粘贴 key → 直接点 List」必然 401 —— 那不是 key 错，是我们压根没带它。
+            const keyIn = ($('#fKey') && $('#fKey').value.trim()) || '';
+            const baseIn = ($('#fBaseUrl') && $('#fBaseUrl').value.trim()) || '';
+            if (keyIn) await postSettings({ apiKey: keyIn });   // 点了就是用，顺手存下来
+            const r = await fetch('/api/models', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ provider: S.provider, baseUrl: baseIn, apiKey: keyIn }),
+            }).then(x => x.json());
             b.disabled = false; b.textContent = 'List';
+            if ($('#fKey')) $('#fKey').value = '';
             if (r.error) { setMsg(r.error, true); return; }
             const list = (r.models || []);
             if (!list.length) { setMsg('this provider returned no models', true); return; }
