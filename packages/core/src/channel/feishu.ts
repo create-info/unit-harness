@@ -50,7 +50,7 @@ export async function feishuSend(cfg: FeishuConfig, chatId: string, text: string
   const token = await feishuToken(cfg, f)
   const r = await f(`${cfg.baseUrl ?? DEFAULT_BASE}/open-apis/im/v1/messages?receive_id_type=chat_id`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json; charset=utf-8', authorization: `Bearer ${token}` },
+    headers: { 'content-type': 'application/json; charset=utf-8', authorization: 'Bearer ' + token },
     body: JSON.stringify({ receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }) }),
   })
   const j = (await r.json()) as { code?: number; msg?: string }
