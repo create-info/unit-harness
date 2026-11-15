@@ -17,7 +17,7 @@ import {
   loadMcpServers, upsertMcpServer, removeMcpServer, McpRegistry,
   listRecipes, loadRecipe, resolveVars, renderTemplate, runRecipeChecks,
   loadHosts, upsertHost, removeHost, runRemote, classify, describeRisk,
-  latestResumable, uhHome, sessionsDir,
+  latestResumable, uhHome, sessionsDir, workspaceDir,
   readSessionEvents, editsForLastTurn, applyUndo, isRestorable, isTurnUndone, markTurnUndone,
   hydrateEdits, discoverSkills,
 } from '@unit-harness/core'
@@ -123,11 +123,33 @@ async function askApproval(req: ApprovalRequest): Promise<'allow' | 'deny'> {
   return /^y(es)?$/i.test(answer.trim()) ? 'allow' : 'deny'
 }
 
+/**
+ * 命令行这次跑在哪个目录里。
+ *
+ * 默认是**当前目录**——`cd repo && uh run "..."` 就该动这个仓库，和 Codex 一样。
+ * 之前默认落在 ~/.uh/work：在别的仓库里敲命令，改动悄悄写进了 ~/.uh/work，
+ * 屏幕上还会说「已创建 x.ts」，而那个仓库一个字节都没变。
+ * `--workspace <dir>` 仍然可以显式指定。
+ */
+function cliWorkspace(): string {
+  const w = flag('workspace')
+  if (w) return w.replace(/^~(?=\/)/, os.homedir())
+  // UH_HOME 是「把整个 uh 搬到别处」的总开关：配置、会话、插件都在那边，
+  // 工作区跟着一起搬（测试与隔离环境依赖这一条）。
+  // 没设 UH_HOME 时就是当前目录——cd 到哪个仓库，就动哪个仓库。
+  if (process.env.UH_HOME) return workspaceDir()
+  return process.cwd()
+}
+
 async function withHarness<T>(
   fn: (h: Harness) => Promise<T>,
-  opts: { record?: boolean; label?: string; onEvent?: (kind: string, payload: Record<string, unknown>) => void } = {},
+  opts: { record?: boolean; label?: string; resumeSessionId?: string; onEvent?: (kind: string, payload: Record<string, unknown>) => void } = {},
 ): Promise<T> {
   const h = new Harness({
+    workspace: cliWorkspace(),
+    // 续跑必须复用**同一条**会话：不然「这一轮改的东西」和「上一轮」分属两条日志，
+    // 检查点就断在那儿了，回退也退不到跨轮的位置。
+    ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
     pluginDirs: pluginDirs(),
     logLevel: (process.env.UH_LOG_LEVEL as never) ?? 'warn',
     unconfined: argv.includes('--allow-unconfined'),
@@ -1096,8 +1118,10 @@ function cmdUndo(_raw?: string): void {
   if (edits.length === 0) fail(`the last turn in ${session.id} did not change any files`)
   if (isTurnUndone(session.dir, turn)) fail(`turn ${turn} of ${session.id} has already been undone`)
 
-  const h = new Harness({ pluginDirs: [], logLevel: 'error' })
-  const result = applyUndo(h.workspaceDir, hydrateEdits(edits, session.dir))
+  // 回退写的是**这条会话当时的**目录；拿当前 cwd 去写，就是把改动泼到别的仓库
+  const ws = new EventStore().get(session.id)?.workspace
+  if (!ws) fail(`session ${session.id} did not record a workspace — cannot undo safely`)
+  const result = applyUndo(ws, hydrateEdits(edits, session.dir))
   // 事件日志是 append-only，撤销状态单独记
   markTurnUndone(session.dir, turn)
 
@@ -1113,7 +1137,7 @@ function cmdUndo(_raw?: string): void {
     console.log(
       `${result.restored.length} restored, ${result.removed.length} removed` +
       (result.skipped.length ? `, ${result.skipped.length} skipped` : '') +
-      ` — workspace: ${h.workspaceDir}`,
+      ` — workspace: ${ws}`,
     )
     console.log('only writes made through the agent are recorded; edits from a shell command are not in the log.')
   }
@@ -1164,11 +1188,19 @@ function cmdSessionPrune(args: string[]): void {
 async function cmdRun(task?: string): Promise<void> {
   const cont = argv.includes('--continue')
   let resumeFrom: Message[] | undefined
+  let contSid: string | undefined
+  let turnIndex: number | undefined
 
   if (cont) {
     const st = latestResumable()
     if (!st) fail('no previous session to continue (run something first)')
     resumeFrom = st.messages
+    contSid = st.sessionId
+    // 轮次必须递增，且要和日志里已经有的轮数对得上
+    try {
+      const evs = new EventStore().read(st.sessionId)
+      turnIndex = evs.filter((e) => e.kind === 'turn/start').length + 1
+    } catch { turnIndex = undefined }
     const age = st.updatedAt.replace('T', ' ').slice(0, 19)
     console.log(`resuming ${st.sessionId} — ${st.messages.length} messages, last stopped by ${st.stoppedBy}, ${age}`)
     // 没给新指令时补一句，否则模型拿到一段历史不知道要干什么。
@@ -1191,6 +1223,7 @@ async function cmdRun(task?: string): Promise<void> {
     const res = await h.runTask({
       task: task!,
       ...(resumeFrom ? { resumeFrom } : {}),
+      ...(turnIndex ? { turnIndex } : {}),
       ...(images.length ? { images } : {}),
       ...(flag('provider') ? { provider: flag('provider')! } : {}),
       ...(flag('model') ? { model: flag('model')! } : {}),
@@ -1205,7 +1238,7 @@ async function cmdRun(task?: string): Promise<void> {
     console.log(res.text || '(no text)')
     console.log('')
 
-    // 交付物与断言：这是"proves its work"的字面兑现
+    // 交付物与断言：屏幕上要说清「到底落了什么盘」，而不是让人自己猜
     if (res.artifacts.length === 0) {
       console.log('--- deliverables ---')
       console.log('  (no files changed)')
@@ -1241,7 +1274,11 @@ async function cmdRun(task?: string): Promise<void> {
       console.log('pick it up with:  uh run --continue "what to do next"')
       process.exitCode = 130
     }
-  }, { label: task!.slice(0, 60), onEvent: makePrinter() })
+  }, {
+    label: task!.slice(0, 60),
+    onEvent: makePrinter(),
+    ...(contSid ? { resumeSessionId: contSid } : {}),
+  })
 }
 
 /** 不回显地读一行（API key 不该出现在终端回显或 shell 历史里） */
@@ -1487,7 +1524,7 @@ async function cmdSession(sub?: string, id?: string): Promise<void> {
 }
 
 function cmdHelp(): void {
-  console.log(`uh ${VERSION} — the agent that proves its work
+  console.log(`uh ${VERSION} — a local coding agent
 
 Usage:
   uh                        interactive terminal (type the task, watch it work)

@@ -197,6 +197,21 @@
   .smore::before{content:'';width:2px;height:2px;border-radius:50%;background:currentColor;
     box-shadow:4px 0 0 currentColor,8px 0 0 currentColor}
   .smore:hover{background:var(--hover);color:var(--fg)}
+  /* ---- 检查点面板 ---- */
+  .ckrow{border:1px solid var(--line);border-radius:9px;padding:10px 12px;margin-bottom:8px;background:var(--input)}
+  .cktop{display:flex;align-items:baseline;gap:8px;font-size:12.5px}
+  .cktop b{font-weight:600;color:var(--fg)}
+  .ckmeta{color:var(--dim);font-size:11.5px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ckfiles{margin-top:5px;font-size:11px;color:var(--dim);line-height:1.7;overflow-wrap:anywhere}
+  .ckfiles code{background:var(--soft);padding:1px 5px;border-radius:4px;font-size:10.5px}
+  .ckact{margin-top:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .ckbtn{padding:5px 10px;font-size:11.5px}
+  /* 危险按钮是描边红，不是实心红：填满之后字和底色同色，屏幕上只剩一个红块 */
+  .ckbtn.danger{background:transparent;color:var(--bad);border-color:var(--bad)}
+  .ckwarn{font-size:11.5px;color:var(--warn)}
+  .ckbad{font-size:11.5px;color:var(--bad)}
+  .ckmsg{font-size:11.5px;color:var(--dim);margin-bottom:6px}
+  .ckwhy{font-size:11px;color:var(--dim)}
   /* 空状态：新会话原来是一整块白板，用户不知道能干什么 */
   .welcome{max-width:640px;margin:clamp(44px,12vh,120px) auto 0;padding:0 8px;text-align:center}
   .wtitle{font-family:var(--sans);font-size:19px;font-weight:600;color:var(--fg);letter-spacing:-.01em}
@@ -738,7 +753,9 @@
     <span class="brand">UnitHarness</span>
     <span id="iso" class="pill">isolation …</span>
     <span id="model" class="pill" title="Click to configure">model …</span>
-    <span id="sid" class="pill dim" style="margin-left:auto">no session</span>
+    <button id="ckBtn" class="pill" title="看这条会话改过哪些文件，并回退到其中某一步"
+      style="display:none;margin-left:auto;cursor:pointer">检查点</button>
+    <span id="sid" class="pill dim" style="margin-left:8px">no session</span>
   </header>
   <!-- 左边对话，右边 diff：点开一个文件不是把内容塞进对话里，而是像 Codex 那样
        在旁边并排看。关掉就整块收回，不占位置。 -->
@@ -942,6 +959,12 @@ let es = null, started = Date.now(), firstTs = 0, lastTs = 0;
 /** 已印出去的最大秒数：时间戳只许变大 */ let lastSec = 0;
 let SETTINGS = null, PROVIDERS = [];
 let CURRENT_SID = '', RUNNING = false, ALL_PROJECTS = [];
+
+/** 「检查点」只在有会话时才有意义：没有会话，就没有可回退的东西 */
+function syncCkBtn(){
+  const b = $('#ckBtn');
+  if (b) b.style.display = CURRENT_SID ? '' : 'none';
+}
 /**
  * 「刚发的第一句还没拿到会话号」时，后面那句话不能当新任务。
  *
@@ -1891,6 +1914,7 @@ function startNewTask(){
   if (es){ es.close(); es = null; }
   CURRENT_SID = '';
   STREAM_SID = '';
+  syncCkBtn();
   logEl.innerHTML = '';
   delivEl.innerHTML = '';
   $('#sid').textContent = 'no session';
@@ -2192,6 +2216,110 @@ async function openSkill(name){
  * MCP 的配置就是一段 JSON，而且全网都用 Claude Desktop 那套 mcpServers，
  * 所以最省事的用法是「把别人给你的那段贴进来」。也留了只填地址/命令的两条捷径。
  * ---------------------------------------------------------------------- */
+/**
+ * 检查点面板。
+ *
+ * 「回到某一轮之前」不能只是把对话藏起来——文件还在那儿，模型也还记得。
+ * 这里列的是真实落到工作区的每一次改写，点「恢复」就是按日志倒着重放，
+ * 把文件写回那一刻的样子。
+ */
+async function openCheckpoints(){
+  if (!CURRENT_SID) return
+  let data
+  try {
+    data = await (await fetch('/api/checkpoints?session=' + encodeURIComponent(CURRENT_SID))).json()
+  } catch (e){ console.warn('checkpoints failed', e); return }
+  if (data.error){ console.warn('checkpoints failed', data.error); return }
+
+  const mask = el('<div style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:16px"></div>');
+  const box = el('<div class="card" style="max-width:620px;width:100%;padding:16px;max-height:82vh;overflow:auto"></div>');
+  const head = el('<div class="modhead"></div>');
+  head.appendChild(el('<div class="ttl">检查点</div>'));
+  const xBtn = el('<button class="icon" title="关闭（Esc）">✕</button>');
+  head.appendChild(xBtn);
+  box.appendChild(head);
+
+  const close = () => { mask.remove(); document.removeEventListener('keydown', onKey) };
+  const onKey = (e) => { if (e.key === 'Escape') close() };
+  document.addEventListener('keydown', onKey);
+  xBtn.onclick = close;
+  mask.onclick = (e) => { if (e.target === mask) close() };
+
+  // 一句反馈行：没有全局 toast，就在这里说
+  const msg = el('<div class="ckmsg"></div>');
+  box.appendChild(msg);
+
+  const list = data.checkpoints || [];
+  if (!list.length){
+    box.appendChild(el('<div class="skd" style="color:var(--dim);font-size:12.5px">'
+      + '这条会话还没有改过文件，所以没有检查点。只有真正写盘的操作才记检查点。</div>'));
+  } else {
+    box.appendChild(el('<div class="skd" style="font-size:11.5px;color:var(--dim);line-height:1.7;margin-bottom:10px">'
+      + '每一次动过文件的轮次都会留一个检查点。恢复会把文件真的写回那一刻的样子，'
+      + '之后那些改动就没了。</div>'));
+    // 新的在上面：要看的是「刚刚那一轮」
+    for (const c of [...list].reverse()){
+      const row = el('<div class="ckrow"></div>');
+      const when = c.at ? relTime(c.at) : '';
+      const files = c.files || [];
+      const shown = files.slice(0, 4).map((f) => '<code>' + esc(f) + '</code>').join(' ');
+      const more = files.length > 4 ? ' 等 ' + files.length + ' 个文件' : '';
+      row.innerHTML = '<div class="cktop"><b>第 ' + c.turn + ' 轮</b>'
+        + '<span class="ckmeta">' + esc(when) + (c.label ? ' · ' + esc(c.label) : '') + '</span></div>'
+        + '<div class="ckfiles">' + (shown || '<span style="color:var(--dim)">—</span>') + more + '</div>';
+      const act = el('<div class="ckact"></div>');
+      const btn = el('<button class="btn ckbtn">恢复到这里</button>');
+      if (!c.restorable || data.running){
+        // 不能回退的行：先说清为什么，然后到此为止，不要再挂点击
+        btn.disabled = true;
+        const why = data.running ? '这条会话还在跑' : '已经回退过，更早的检查点不再可用';
+        act.appendChild(el('<span class="ckwhy">' + why + '</span>'));
+        act.appendChild(btn);
+        row.appendChild(act);
+        box.appendChild(row);
+        continue;
+      }
+      btn.onclick = () => {
+        // 二次确认，就地展开：回退是不可逆的（事件日志还在，但文件已被覆盖）
+        const after = list.length - list.indexOf(c) - 1;
+        const warn = el('<span class="ckwarn">确认回退？'
+          + (after ? '之后 ' + after + ' 个检查点的改动会被撤销。' : '这一轮之后的改动会被撤销。')
+          + '</span>');
+        const yes = el('<button class="btn ckbtn danger">确认回退</button>');
+        const no = el('<button class="btn ckbtn">取消</button>');
+        yes.onclick = async () => {
+          yes.disabled = true; yes.textContent = '回退中…';
+          try {
+            const r = await (await fetch('/api/session/restore', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ id: CURRENT_SID, seq: c.seq }),
+            })).json();
+            if (r.error){ act.innerHTML = '<span class="ckbad">' + esc(r.error) + '</span>'; return }
+            close();
+            // 回退真的改了磁盘：重放这条会话，屏幕上的过程与 diff 才是新的
+            await openSession(CURRENT_SID);
+          } catch (e){ act.innerHTML = '<span class="ckbad">' + esc(e.message) + '</span>' }
+        };
+        no.onclick = () => { act.innerHTML = ''; act.appendChild(btn) };
+        act.innerHTML = '';
+        act.appendChild(warn); act.appendChild(yes); act.appendChild(no);
+      };
+      act.appendChild(btn);
+      row.appendChild(act);
+      box.appendChild(row);
+    }
+  }
+
+  if (data.lastRestore){
+    box.appendChild(el('<div class="skd" style="margin-top:10px;font-size:11.5px;color:var(--warn)">'
+      + '这条会话已经回退过一次，比那次更早的检查点不能再用了——重放会把已经撤掉的改动再撤一次，'
+      + '落地的内容没人见过。</div>'));
+  }
+
+  mask.appendChild(box);
+  document.body.appendChild(mask);
+}
+
 function openAddMcp(){
   const mask = el('<div style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;'
     + 'display:flex;align-items:center;justify-content:center;padding:16px"></div>');
@@ -3323,7 +3451,7 @@ function renderSettings() {
   if (SETPAGE === 'about') {
     const d = document.createElement('div');
     d.innerHTML = '<div class="sec"><div class="card">'
-      + '<div class="row"><div class="rt"><b>Unit Harness</b><i>验证闭环 — the agent that proves its work</i></div>'
+      + '<div class="row"><div class="rt"><b>Unit Harness</b><i>本地编码 agent · 每一步都留痕、可回退</i></div>'
       + '<div class="rc"><span class="val">' + esc((window.INFO && window.INFO.version) || 'dev') + '</span></div></div>'
       + '<div class="row"><div class="rt"><b>隔离</b><i>这台机器上实际生效的那一档</i></div>'
       + '<div class="rc"><span class="val">' + esc((window.INFO && window.INFO.isolation) || 'unknown') + '</span></div></div>'
@@ -4647,6 +4775,7 @@ function attach(id, opts){
   }
   $('#sid').textContent = id;
   CURRENT_SID = id;
+  syncCkBtn();
   STREAM_SID = id;
   noteSid(id);
   // after=<seq>：磁盘快照读到第几条。缺口由服务端补齐，否则「正在跑的时候
@@ -4769,6 +4898,7 @@ $('#run').addEventListener('submit', async (e) => {
     // 而不是把人晾在一个 404 上自己想办法
     if (j.error && followId && /no such conversation/.test(String(j.error))){
       CURRENT_SID = '';
+      syncCkBtn();
       j = await (await send('')).json();
     }
     if (j.error){
@@ -4827,7 +4957,8 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
 // boot 会去拉设置、拉会话列表，中途还会清一次 #log；等它 settle 再画欢迎页，
 // 否则刚画上去就被清掉。没有任何事件进来时 logEl 也不会被 mutate，
 // MutationObserver 同样等不到它。
-boot().then(() => syncWelcome()).catch(() => syncWelcome());
+$('#ckBtn').addEventListener('click', openCheckpoints);
+boot().then(() => { syncWelcome(); syncCkBtn() }).catch(() => { syncWelcome(); syncCkBtn() });
 restorePending();
 
 // 注册 service worker：手机浏览器只有见到它，「添加到主屏幕」才会升级成真正的安装。

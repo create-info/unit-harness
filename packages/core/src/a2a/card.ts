@@ -70,8 +70,8 @@ export function buildAgentCard(o: CardOptions): AgentCard {
   const card: AgentCard = {
     name: 'UnitHarness',
     description:
-      'A coding agent that proves its work. Runs tasks in a sandbox, records everything it did as '
-      + 'an append-only event log, and verifies deliverables before claiming success.',
+      'A local coding agent. Runs tasks in a sandbox, records every step as an append-only '
+      + 'event log, and can be rewound to any earlier checkpoint.',
     supportedInterfaces,
     provider: {
       organization: 'UnitAI',

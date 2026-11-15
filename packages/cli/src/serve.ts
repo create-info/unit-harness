@@ -16,6 +16,7 @@ import * as nodeCrypto from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
 import {
   EventStore, Harness, PROVIDERS, findProvider, hydrateEdits, maskKey, readState,
+  listCheckpoints, editsAfterSeq, undoToCheckpoint, lastRestoreSeq,
   readConfig, resolveProvider, setProviderEntry, uhHome, workspaceDir, writeConfig } from '@unit-harness/core'
 import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget, WatchManager } from '@unit-harness/core'
 import {
@@ -122,7 +123,7 @@ const ICON_512 = Buffer.from(
 const MANIFEST = JSON.stringify({
   name: 'UnitHarness',
   short_name: 'UnitHarness',
-  description: 'A local coding agent that proves its work.',
+  description: 'A local coding agent that logs every step it takes.',
   start_url: '/?src=homescreen',
   scope: '/',
   display: 'standalone',
@@ -1120,6 +1121,65 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       } catch (err) {
         json(res, 500, { error: err instanceof Error ? err.message : String(err) })
       }
+      return
+    }
+
+    // ---- 检查点与回退 ------------------------------------------------------
+    // 「回到某一轮之前」是本地 agent 最该有、最容易做错的一件事：
+    // 回退要真把文件写回去，而不是只在界面上把那段对话藏起来。
+    if (req.method === 'GET' && url.pathname === '/api/checkpoints') {
+      const sessionId = url.searchParams.get('session') ?? ''
+      if (!sessionId) { json(res, 400, { error: 'session required' }); return }
+      const store = new EventStore()
+      if (!store.sessionDir(sessionId)) { json(res, 404, { error: 'no such session' }); return }
+      const events = store.read(sessionId)
+      const last = lastRestoreSeq(events)
+      const list = listCheckpoints(events).map((c) => ({
+        ...c,
+        // 跨过一次回退的检查点不再可用：重放会撤掉已经被撤过的改动
+        restorable: last === 0 || c.seq > last,
+      }))
+      json(res, 200, { checkpoints: list, lastRestore: last, running: running.has(sessionId) })
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/session/restore') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as { id?: string; seq?: number }
+      if (!body.id || typeof body.seq !== 'number') { json(res, 400, { error: 'id and seq required' }); return }
+      // 跑着的时候绝不能回退：它正在往这些文件里写，撤到一半就是两边打架
+      if (running.has(body.id)) { json(res, 409, { error: '这条会话还在跑，先停掉再回退' }); return }
+      const store = new EventStore()
+      const dir = store.sessionDir(body.id)
+      if (!dir) { json(res, 404, { error: 'no such session' }); return }
+      const events = store.read(body.id)
+      const anchor = listCheckpoints(events).find((c) => c.seq === body.seq)
+      if (!anchor) { json(res, 404, { error: '没有这个检查点' }); return }
+      const last = lastRestoreSeq(events)
+      if (last && anchor.seq <= last) {
+        json(res, 409, { error: '这条会话已经回退过，只能回到最近一次回退之后' })
+        return
+      }
+      const raw = editsAfterSeq(events, anchor.seq)
+      const edits = hydrateEdits(raw, dir)
+      if (edits.length === 0) {
+        json(res, 200, { ok: true, restored: [], removed: [], skipped: [], note: '这个检查点之后没有文件改动' })
+        return
+      }
+      // 必须用**这条会话当初的工作区**，不能用服务当前的工作区：
+      // 切了项目之后再回退旧会话，拿当前工作区写回去就是往别人的仓库里写。
+      const ws = store.get(body.id)?.workspace
+      if (!ws) { json(res, 409, { error: '这条会话没记下工作区，不能回退' }); return }
+      const result = undoToCheckpoint(ws, edits)
+      // 日志只增不改：回退本身记一条，读日志的人才知道工作区被谁动过
+      try {
+        store.reopen(body.id)
+        store.append(body.id, 'checkpoint/restored', {
+          seq: anchor.seq, turn: anchor.turn, files: edits.map((e) => e.path),
+          restored: result.restored.length, removed: result.removed.length, skipped: result.skipped.length,
+        }, { source: 'user' })
+        store.end(body.id, 'restored')
+      } catch { /* 记不上不影响已经落地的回退，但要能在响应里看出来 */ }
+      json(res, 200, { ok: true, ...result })
       return
     }
 

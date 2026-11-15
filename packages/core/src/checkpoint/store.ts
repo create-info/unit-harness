@@ -189,6 +189,111 @@ export function editsForLastTurn(events: AnyEvent[]): { turn: number; edits: Fil
   return { turn, edits: [...collected.values()] }
 }
 
+export interface CheckpointSummary {
+  /** checkpoint/created 那条事件的 seq —— 回退的锚点 */
+  seq: number
+  /** 第几轮（turn/start 计数） */
+  turn: number
+  label: string
+  files: string[]
+  at: string | null
+}
+
+/**
+ * 会话里所有的检查点，按时间顺序。
+ *
+ * 「检查点」不是另存的一份快照：它就是一轮结束时封的那条 checkpoint/created，
+ * 真正的可回滚内容在它前面那些 checkpoint/file 事件里。所以这里只要列出坐标，
+ * 回退时再按 seq 去捞正文。
+ */
+export function listCheckpoints(events: Array<AnyEvent & { seq?: number; timestamp?: string }>): CheckpointSummary[] {
+  const out: CheckpointSummary[] = []
+  let turn = 0
+  for (const ev of events) {
+    if (ev.kind === 'turn/start') { turn += 1; continue }
+    if (ev.kind !== 'checkpoint/created') continue
+    const files = Array.isArray(ev.payload.files) ? (ev.payload.files as string[]) : []
+    out.push({
+      seq: typeof ev.seq === 'number' ? ev.seq : 0,
+      turn,
+      label: String(ev.payload.label ?? ''),
+      files,
+      at: ev.timestamp ?? null,
+    })
+  }
+  return out
+}
+
+/**
+ * 某个检查点之后发生的所有文件改写，**按时间正序**，一条不合并。
+ *
+ * 和 editsForLastTurn 的区别是要点：那个按路径合并成净变化，因为「回到一轮之前」
+ * 只关心起点。这里要重放到任意一个检查点，重复写的文件必须逐次回退，
+ * 否则中间那些版本会被跳过，最后落在一个谁都没见过的状态。
+ */
+export function editsAfterSeq(
+  events: Array<AnyEvent & { seq?: number }>,
+  cutoffSeq: number,
+): FileEdit[] {
+  const out: FileEdit[] = []
+  for (const ev of events) {
+    if (ev.kind !== 'checkpoint/file') continue
+    if (typeof ev.seq === 'number' && ev.seq <= cutoffSeq) continue
+    const p = String(ev.payload.path ?? '')
+    if (!p) continue
+    const edit: FileEdit = {
+      path: p,
+      before: (ev.payload.before as string | null) ?? null,
+      after: (ev.payload.after as string | null) ?? null,
+      binary: ev.payload.binary === true,
+      tooLarge: ev.payload.too_large === true,
+    }
+    if (typeof ev.payload.before_ref === 'string') edit.beforeRef = ev.payload.before_ref
+    if (typeof ev.payload.after_ref === 'string') edit.afterRef = ev.payload.after_ref
+    if (typeof ev.payload.before_size === 'number') edit.beforeSize = ev.payload.before_size
+    if (typeof ev.payload.after_size === 'number') edit.afterSize = ev.payload.after_size
+    out.push(edit)
+  }
+  return out
+}
+
+/**
+ * 回退到某个检查点。
+ *
+ * 逐条倒着应用（后发生的先撤），最后整个工作区就停在那个检查点上——
+ * 而不是「每个文件回到它在那之后第一次被改之前」。两者的差别只在
+ * 被改过两次以上的文件上，但正是那种文件最容易留下半成品。
+ */
+export function undoToCheckpoint(workspace: string, editsChronological: FileEdit[]): UndoResult {
+  const total: UndoResult = { restored: [], removed: [], skipped: [] }
+  for (const edit of [...editsChronological].reverse()) {
+    const one = applyUndo(workspace, [edit])
+    total.restored.push(...one.restored)
+    total.removed.push(...one.removed)
+    total.skipped.push(...one.skipped)
+  }
+  // 倒着撤的时候同一个文件可能先「还原」再「删除」，报表里只留最后一次的结果
+  const seen = new Set<string>()
+  total.restored = total.restored.reverse().filter((p) => (seen.has(p) ? false : (seen.add(p), true))).reverse()
+  return total
+}
+
+/**
+ * 最近一次「回退到某个检查点」发生在哪条事件之后。
+ *
+ * 回退会改工作区，但事件日志只增不改——所以日志里那些被撤掉的 checkpoint/file
+ * 还留在原处。如果允许跨过一条 checkpoint/restored 往前回退，重放出来的就是
+ * 「把这些已经撤过的改动再撤一次」，落地的内容没人见过。
+ * 所以更早的检查点直接不可用，宁可少做也不做错。
+ */
+export function lastRestoreSeq(events: Array<AnyEvent & { seq?: number }>): number {
+  let last = 0
+  for (const ev of events) {
+    if (ev.kind === 'checkpoint/restored' && typeof ev.seq === 'number' && ev.seq > last) last = ev.seq
+  }
+  return last
+}
+
 /** 已撤销的轮次记在这里。事件日志是 append-only，撤销状态不能反过来往里写 */
 export function undoneMarkerPath(sessionDir: string): string {
   return path.join(sessionDir, 'undone.json')

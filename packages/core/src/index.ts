@@ -20,8 +20,9 @@ export {
   makeEdit, applyUndo, editsForLastTurn, readSessionEvents,
   readMaybeFile, isRestorable, MAX_INLINE_BYTES, isTurnUndone, markTurnUndone,
   hydrateEdits, toPayload, spillToBlob, INLINE_LIMIT_BYTES,
+  listCheckpoints, editsAfterSeq, undoToCheckpoint, lastRestoreSeq,
 } from './checkpoint/store.ts'
-export type { FileEdit, UndoResult } from './checkpoint/store.ts'
+export type { FileEdit, UndoResult, CheckpointSummary } from './checkpoint/store.ts'
 export type { ApprovalGate, ApprovalPolicy, ApprovalRequest, ApprovalDecision } from './approval/gate.ts'
 export { buildSystemPrompt, findProjectInstructions } from './agent/prompt.ts'
 export { compactMessages, shouldCompact, safeCutIndex } from './agent/compact.ts'

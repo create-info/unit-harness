@@ -122,7 +122,7 @@ function banner(s: TuiState): void {
   // 不在这里构造 Harness 只为读一行说明：构造会碰工作区和沙箱探测，
   // 而「开始输入」这件事应该立刻可用。沙箱细节留给 `uh doctor`。
   console.log('')
-  console.log('  ' + bold('UnitHarness') + dim('  ·  the agent that proves its work'))
+  console.log('  ' + bold('UnitHarness') + dim('  ·  local coding agent'))
   console.log('  ' + dim('model     ') + cyan(s.model || '(未设置——用 /model 选一个)') + dim(`  [${s.provider}]`))
   console.log('  ' + dim('workspace ') + s.cwd)
   console.log('  ' + dim('tips      ') + dim('/ 命令与 MCP  ·  @文件  ·  $技能  ·  Tab 补全  ·  Ctrl+C 打断'))
