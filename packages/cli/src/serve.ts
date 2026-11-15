@@ -1235,17 +1235,30 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
           && (e.payload as { path?: string }).path === want
           && (!seq || e.seq === seq))
         if (!hit) {
-          // 说清是哪一种「打不开」，别让用户对着英文 404 猜：
-          //  1) 这个文件在磁盘上变了，但改动不是这次会话做的（别的会话/手动编辑/
-          //     工具自己的缓存），所以没有它的前后版本可对比；
-          //  2) 会话记了，但快照正文已被清理。
+          // 三种「打不开」，说清是哪一种，别让用户对着英文 404 猜：
+          //  1) 这次会话**跑命令**生成了它（python 脚本写 pptx、soffice 转 pdf）；
+          //  2) 磁盘上有，但不是这条会话改的（别的会话、手动编辑）；
+          //  3) 已经不在工作区里。
+          //
+          // 以前只分「在磁盘上 / 不在」，于是第 1 种被说成"在会话之外被写入的，
+          // 比如装依赖产生的缓存"——把用户自己刚做出来的课件说成了缓存，这是
+          // 错误归因：产物确实是这条会话做的，只是它由命令写出、没有逐行改动而已。
+          const emitted = events.find((e) => e.kind === 'artifact/emitted'
+            && (e.payload as { path?: string }).path === want)
           const ws = store.get(sessionId)?.workspace ?? ''
           const onDisk = !!ws && existsSync(pathMod.join(ws, want))
+          const binary = /\.(pptx|docx|xlsx|pdf|png|jpe?g|gif|webp|zip|gz|mp4|mp3)$/i.test(want)
           json(res, 404, {
-            error: onDisk
-              ? `这次会话没有改过「${want}」——它是在会话之外被写入的（比如装依赖产生的缓存），所以没有可对比的前后版本。`
-              : `「${want}」已经不在工作区里了，会话里也没有它的改动记录。`,
-            outsideSession: onDisk,
+            error: emitted
+              ? binary
+                ? `「${want}」是这条会话跑命令生成的产物（不是编辑器改的），二进制文件没有逐行对比——用右上角的 open 打开看。`
+                : `「${want}」是这条会话跑命令生成的（不是编辑器改的），所以没有逐行对比。`
+              : onDisk
+                ? `「${want}」在磁盘上，但这条会话没有改过它——可能是别的会话或你手动改的，所以没有前后对比。`
+                : `「${want}」已经不在工作区里了，会话里也没有它的改动记录。`,
+            outsideSession: onDisk && !emitted,
+            generated: Boolean(emitted),
+            binary,
           })
           return
         }
