@@ -533,7 +533,16 @@
   .cstat.cno{color:var(--bad)}
   .cstat.cwarn{color:var(--warn)}
   .cstat.cdim{color:var(--dim)}
+  /* 自测结果是一句话，不是徽章：必须能折行，否则长句会从卡片右边溢出去
+     （截图里就是被裁掉的「手机锁屏/后台时 iOS 会挂起 Tailsc…」） */
+  .cstat.wrap{white-space:normal;line-height:1.55;text-align:right;max-width:min(560px,52vw)}
+  @media (max-width:820px){ .cstat.wrap{text-align:left;max-width:100%} }
   .ctlwrap{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+  /* 右侧控件默认 flex:0 0 auto（按内容撑开），长句子会顶出卡片右边。
+     钉住 max-width 才有东西可折。 */
+  .row .rc{max-width:100%}
+  .cstat.wrap{min-width:0}
+  .surl{flex-wrap:wrap}
   /* 三档开关：手机上要能一眼看出当前是哪档，所以选中项实心 */
   .segmode{display:flex;gap:2px;background:var(--input);border:1px solid var(--line);border-radius:8px;padding:2px}
   .smode{background:transparent;border:0;color:var(--dim);border-radius:6px;padding:6px 10px;
@@ -2002,7 +2011,7 @@ function renderRemote(body){
 
   // ⑤ 一键自测：从这台机器依次检查 模式 → 端口 → Tailscale → 手机
   const out = document.createElement('span');
-  out.className = 'cstat cdim';
+  out.className = 'cstat cdim wrap';
   out.textContent = '';
   const t = document.createElement('button');
   t.className = 'sbtn';
@@ -2015,10 +2024,10 @@ function renderRemote(body){
     try {
       const r = await fetch('/api/remote/check', { method: 'POST' });
       const j = await r.json();
-      out.className = 'cstat ' + (j.ok ? 'cok' : (j.soft ? 'cwarn' : 'cno'));
+      out.className = 'cstat wrap ' + (j.ok ? 'cok' : (j.soft ? 'cwarn' : 'cno'));
       out.textContent = (j.ok ? '● 通了：' : j.soft ? '● 未确认：' : '● ') + j.detail;
     } catch (e) {
-      out.className = 'cstat cno';
+      out.className = 'cstat wrap cno';
       out.textContent = '● 测不了：' + e;
     }
     t.disabled = false;
