@@ -680,14 +680,17 @@ function collectSessions(workspace?: string): Array<{ id: string; label: string;
  * 但手机用户既拿不到那台机器的终端，也不该为了看一眼界面去敲一条 URL。
  * 所以给一个能输入口令的表单：POST /__unlock 种 cookie 然后回到原来那页。
  */
-function unlockPage(host: string): string {
+function unlockPage(host: string, mode: 'off' | 'tailnet' | 'lan' = 'off', port = 7878): string {
   return '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
     + '<title>UnitHarness · 口令</title>'
     + '<body style="background:#0b0b0d;color:#e6e6e6;font:15px system-ui;padding:32px;line-height:1.7;max-width:560px;margin:0 auto">'
     + '<h2 style="font-weight:600">需要口令</h2>'
-    + '<p style="color:#9a9aa5">这个 uh 监听在 ' + host + '，同一网络里谁都能连到这个端口，所以要先证明是你。</p>'
-    + '<p style="color:#9a9aa5">口令在启动它的那台机器上：<code>~/.uh/serve-token</code>。'
-    + '手机上不方便看文件？在电脑上跑 <code>uh pair --name &quot;我的手机&quot;</code>，扫它给的码也行。</p>'
+    + '<p style="color:#9a9aa5">' + (mode === 'off'
+      ? '这个 uh 只听本机 ' + host + '，你是从别的设备转发进来的，所以要先证明是你。'
+      : '这个 uh 开了远程访问（端口 ' + port + '），同一个网络里的设备都能连到它，所以要先证明是你。')
+    + '</p>'
+    + '<p style="color:#9a9aa5">口令在跑它的那台电脑上：<code>~/.uh/serve-token</code>。'
+    + '手机上不方便看文件？在「设置 → 远程访问」里点地址旁的「二维码」，扫一下就进去了。</p>'
     + '<form method="POST" action="/__unlock" style="margin-top:24px">'
     + '<input name="t" autocomplete="off" spellcheck="false" placeholder="粘贴口令" '
     + 'style="width:100%;box-sizing:border-box;padding:12px 14px;border-radius:10px;border:1px solid #2a2a32;'
@@ -736,7 +739,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       const good = (Boolean(token) && safeEqual(tried, token)) || Boolean(deviceForToken(tried))
       if (!good) {
         res.writeHead(401, { 'content-type': 'text/html; charset=utf-8' })
-        res.end(unlockPage(host).replace('placeholder="粘贴口令"', 'placeholder="口令不对，再试一次"'))
+        res.end(unlockPage(host, remoteMode, port).replace('placeholder="粘贴口令"', 'placeholder="口令不对，再试一次"'))
         return
       }
       res.writeHead(303, {
@@ -777,7 +780,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
           // 光说「去那台机器上看文件」在手机上没用：手机不是那台机器，
           // 人在手机上也没法 cat。所以这一页要能直接输口令，输一次就记住。
           // 口令仍然不打在页面上（页面可能被投屏、被截图），只给输入框。
-          res.end(unlockPage(host))
+          res.end(unlockPage(host, remoteMode, port))
           return
         }
       } else if (given && !cookie) {
