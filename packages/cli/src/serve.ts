@@ -9,7 +9,7 @@ import http from 'node:http'
 import net from 'node:net'
 import os from 'node:os'
 import pathMod, { join as pjoin } from 'node:path'
-import fsSync, { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import fsSync, { mkdirSync, writeFileSync, existsSync, readFileSync, cpSync, rmSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import fs6 from 'node:fs'
 import * as nodeCrypto from 'node:crypto'
@@ -342,6 +342,14 @@ function tailscaleState(): {
     }
   } catch { /* 拿不到就报空 */ }
   return { state: 'up', ip, host, serving, peers }
+}
+
+/** 读文件失败返回空串：路径来自请求，不该把整个接口带崩 */
+const readFileSyncSafe = (p: string): string => {
+  try { return readFileSync(p, 'utf8') } catch { return '' }
+}
+const statSyncSafe = (p: string): ReturnType<typeof statSync> | null => {
+  try { return statSync(p) } catch { return null }
 }
 
 /** `::ffff:192.168.1.5` / `::1` 这类写法先归一，不然前缀判断全会错 */
@@ -1429,6 +1437,129 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
           hooks: pathMod.join(uhHome(), 'hooks'),
         },
         counts: { mcp: Object.keys(mcp.servers).length, skills: skills.length, hooks: Object.keys(hooks).length },
+      })
+      return
+    }
+
+    // 加装 skill：贴一段、给个 URL、指个目录，三种都是同一个终点——
+    // <skills 根>/<name>/SKILL.md。装完立刻出现在 / 补全和插件列表里，
+    // 因为它就是磁盘上的一个目录，没有第二份注册表要同步。
+    if (req.method === 'POST' && url.pathname === '/api/plugins/skill') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as {
+        mode?: 'content' | 'url' | 'path'
+        name?: string
+        content?: string
+        url?: string
+        path?: string
+        scope?: 'user' | 'project'
+      }
+      const mode = body.mode
+      if (mode !== 'content' && mode !== 'url' && mode !== 'path') {
+        json(res, 400, { error: "mode 只能是 content / url / path" })
+        return
+      }
+
+      // 落到哪个根：默认全局（和 Codex 一致，装一次所有项目都能用）
+      const root = body.scope === 'project'
+        ? pathMod.join(currentWorkspace, '.uh', 'skills')
+        : pathMod.join(uhHome(), 'skills')
+
+      /** 名字会变成目录名，所以只接受安全字符——它同时是 skill 的 id */
+      const clean = (raw: string): string => {
+        const t = String(raw || '').trim()
+        return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(t) ? t : ''
+      }
+
+      let text = ''
+      let name = clean(body.name ?? '')
+      let fromDir = ''
+      /** SKILL.md 里写的 name 才是这个 skill 的真名；目录名应当跟着它，否则
+       *  列表里叫 from-dir、磁盘上却是 src-skill，以后想找想删都得猜 */
+      const fmName = (t: string): string => {
+        const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(t)
+        if (!fm) return ''
+        const kv = /^name:\s*(.+)$/m.exec(fm[1] as string)
+        return kv ? clean(String(kv[1]).replace(/["']/g, '').trim()) : ''
+      }
+
+      if (mode === 'content') {
+        text = String(body.content ?? '')
+        if (!text.trim()) { json(res, 400, { error: '内容为空' }); return }
+      } else if (mode === 'url') {
+        const target = String(body.url ?? '').trim()
+        if (!/^https?:\/\//i.test(target)) { json(res, 400, { error: '给一个 http(s) 地址' }); return }
+        try {
+          const r = await fetch(target, { signal: AbortSignal.timeout(15000) })
+          if (!r.ok) { json(res, 400, { error: `下载失败：HTTP ${r.status}` }); return }
+          text = await r.text()
+        } catch (err) {
+          json(res, 400, { error: '下载失败：' + (err instanceof Error ? err.message : String(err)) })
+          return
+        }
+        // 名字没给：先看 SKILL.md 自己写的 name，再退到 URL 文件名
+        if (!name) name = fmName(text)
+        if (!name) {
+          const parts = new URL(target).pathname.split('/').filter(Boolean)
+          const last = parts.pop() ?? ''
+          const base = /^skill\.md$/i.test(last) ? (parts.pop() ?? '') : last.replace(/\.md$/i, '')
+          name = clean(base)
+        }
+        if (!text.trim()) { json(res, 400, { error: '这个地址是空的' }); return }
+      } else {
+        fromDir = String(body.path ?? '').trim().replace(/^~(?=\/)/, os.homedir())
+        const st = fromDir ? statSyncSafe(fromDir) : null
+        if (!st) { json(res, 400, { error: '这个路径不存在' }); return }
+        if (!name) {
+          // 目录来源：优先用 SKILL.md 里的 name，其次目录名
+          text = st.isFile() ? readFileSyncSafe(fromDir) : readFileSyncSafe(pathMod.join(fromDir, 'SKILL.md'))
+          name = fmName(text) || clean(pathMod.basename(fromDir).replace(/\.md$/i, ''))
+        }
+        if (st.isFile()) {
+          if (!/\.md$/i.test(fromDir)) { json(res, 400, { error: '只接受 .md 文件或目录' }); return }
+          text = readFileSyncSafe(fromDir)
+        } else {
+          const md = pathMod.join(fromDir, 'SKILL.md')
+          if (!existsSync(md)) { json(res, 400, { error: '这个目录里没有 SKILL.md' }); return }
+        }
+      }
+
+      if (!name) { json(res, 400, { error: '给它起个名字（字母数字，可带 - _ .）' }); return }
+
+      // 同名已经存在时不能悄悄覆盖：那可能正是用户在用的那份。
+      const existing = discoverSkills(currentWorkspace).find((x) => x.name === name)
+      if (existing) {
+        json(res, 409, { error: `已经有同名 skill「${name}」了（${existing.root}）` })
+        return
+      }
+
+      const targetDir = pathMod.join(root, name)
+      try {
+        mkdirSync(targetDir, { recursive: true })
+        if (mode === 'path' && !statSyncSafe(fromDir)?.isFile()) {
+          // 整目录搬（scripts/ 之类要一起带走），但跳过 .git
+          cpSync(fromDir, targetDir, {
+            recursive: true, force: true,
+            filter: (src: string) => !/(^|[\\/])\.git([\\/]|$)/.test(src),
+          })
+        } else {
+          const file = mode === 'path' && /\.md$/i.test(fromDir) ? fromDir : null
+          const md = file ? readFileSyncSafe(file) : text
+          if (!md.trim()) { json(res, 400, { error: '内容为空' }); return }
+          writeFileSync(pathMod.join(targetDir, 'SKILL.md'), md)
+        }
+      } catch (err) {
+        try { rmSync(targetDir, { recursive: true, force: true }) } catch { /* 清不干净就算了 */ }
+        json(res, 500, { error: err instanceof Error ? err.message : String(err) })
+        return
+      }
+
+      const skill = discoverSkills(currentWorkspace).find((x) => x.name === name)
+      json(res, 200, {
+        ok: true,
+        name,
+        dir: targetDir,
+        scope: body.scope === 'project' ? 'project' : 'user',
+        description: skill?.description ?? '',
       })
       return
     }
