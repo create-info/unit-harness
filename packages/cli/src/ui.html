@@ -175,7 +175,7 @@
   .appr.plan{color:var(--dim);border-color:var(--line)}
   .appr.full{color:var(--bad);border-color:var(--badbg)}
   .appr.auto{color:var(--warn);border-color:var(--warnbg)}
-  #apMenu{position:absolute;bottom:96px;left:20px;min-width:290px;background:var(--panel);border:1px solid var(--line);border-radius:9px;box-shadow:0 8px 28px rgba(0,0,0,.5);display:none;z-index:6;padding:5px}
+  #apMenu{position:fixed;bottom:96px;left:20px;min-width:290px;max-width:340px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 34px rgba(16,24,40,.16);display:none;z-index:60;padding:5px}
   #apMenu.on{display:block}
   .apm{display:flex;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;align-items:flex-start}
   .apm:hover{background:var(--hover)}
@@ -1813,7 +1813,7 @@ async function loadSettings(){
   }
   // 占位只留一句话。工作区、沙箱、审批模式底栏都写着，占位里再讲一遍，
   // 窄屏上会被切在半句中间，看着像坏了。
-  $('#task').placeholder = ph('描述要做的事，Enter 发送 / Shift+Enter 换行', '描述要做的事…');
+  $('#task').placeholder = ph('描述要做的事 · Enter 换行 / Shift+Enter 发送', '描述要做的事…');
 }
 
 /* ---- 打开项目：弹窗 + 本地目录浏览（参考 Codex 的新建/切换项目）----------
@@ -1961,6 +1961,17 @@ function slashCandidates(query, kind) {
   if (kind === '/') {
     // 命令：能立刻执行的那种
     for (const [k, d, run] of [
+      ['/plan', (SETTINGS && SETTINGS.approval === 'plan')
+        ? '关闭计划模式，恢复按规矩执行'
+        : '开启计划模式：只读只推演，一个字节都不改',
+        async () => {
+          const next = (SETTINGS && SETTINGS.approval === 'plan') ? 'ask' : 'plan';
+          const r = await fetch('/api/approval', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode: next }),
+          }).then((x) => x.json());
+          if (r.ok){ SETTINGS.approval = r.approval; paintApproval(r.approval); }
+        }],
       ['/new', '开一个新会话', () => startNewTask()],
       ['/model', '选模型', () => openSettings('model')],
       ['/mcp', '看 MCP server 列表', () => openSettings('plugins')],
@@ -2020,7 +2031,14 @@ function applySlash(idx) {
   const head = upto.slice(0, upto.length - token.length);
   const tail = ta.value.slice(ta.selectionStart);
   hideSlash();
-  if (it.run) { it.run(); return }
+  if (it.run) {
+    // 命令是"立刻执行"，不是"插进输入框"：执行完要把这句 /plan 从框里收走，
+    // 否则下一次按发送会把命令本身当成任务发出去。
+    ta.value = (head + tail).replace(/[ \t]+$/, '');
+    ta.focus();
+    it.run();
+    return;
+  }
   ta.value = head + it.insert + tail;
   const at = (head + it.insert).length;
   ta.setSelectionRange(at, at);
@@ -2050,6 +2068,14 @@ $('#task').addEventListener('input', refreshSlash);
 $('#task').addEventListener('click', () => hideSlash());
 $('#task').addEventListener('blur', () => setTimeout(hideSlash, 120));
 $('#task').addEventListener('keydown', (e) => {
+  // Shift+Enter 才发出去，单独 Enter 换行。
+  // 写长指令时回车绝大多数是在另起一段，误发一次就得等它跑完才能说明白；
+  // 组合键不会误触，适合当"确认"。
+  if (e.key === 'Enter' && e.shiftKey && !SLASH.items.length){
+    e.preventDefault();
+    $('#run').requestSubmit();
+    return;
+  }
   if (!SLASH.items.length) return;
   if (e.key === 'ArrowDown') { e.preventDefault(); SLASH.sel = (SLASH.sel + 1) % SLASH.items.length; paintSlashSel(); }
   else if (e.key === 'ArrowUp') { e.preventDefault(); SLASH.sel = (SLASH.sel - 1 + SLASH.items.length) % SLASH.items.length; paintSlashSel(); }
@@ -2270,6 +2296,10 @@ function openApprovalMenu(){
   if (!m){ m = document.createElement('div'); m.id = 'apMenu'; document.body.appendChild(m); }
   m.innerHTML = '';
   for (const [k, a] of Object.entries(APPR)){
+    // 计划模式不在这张梯子上：它不是一个"批准到多严"的档位，而是"这一轮
+    // 只说不做"。Codex 把它做成 /plan 命令，我们也一样——挂在这儿会让人
+    // 以为选了它就等于放行得更少，其实是换了另一种工作方式。
+    if (k === 'plan') continue;
     const it = document.createElement('div');
     it.className = 'apm' + (SETTINGS.approval === k ? ' cur' : '');
     it.innerHTML = '<span class="ic">' + a.ic + '</span><span class="tx"><b>' + a.name + '</b><i>' + a.desc + '</i></span>';
@@ -2280,6 +2310,15 @@ function openApprovalMenu(){
       if (j.ok){ SETTINGS.approval = j.approval; paintApproval(j.approval); }
     };
     m.appendChild(it);
+  }
+  // 贴着输入卡片弹，而不是钉在屏幕左下角：菜单说的是"这一句话按什么规矩跑"，
+  // 就该长在写这句话的地方上面。
+  const card = document.getElementById('run');
+  if (card){
+    const r = card.getBoundingClientRect();
+    m.style.left = Math.round(Math.max(12, r.left)) + 'px';
+    m.style.width = Math.round(Math.min(340, Math.max(260, r.width))) + 'px';
+    m.style.bottom = Math.round(window.innerHeight - r.top + 10) + 'px';
   }
   m.classList.toggle('on');
 }
