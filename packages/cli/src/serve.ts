@@ -23,7 +23,7 @@ import {
   windowFromModelEntry,
   workspaceDir, writeConfig } from '@unit-harness/core'
 import { describeTool, describeToolResult, describeThinking, describeFilesChanged, normalizeBudget, WatchManager } from '@unit-harness/core'
-import { JUNK_DIRS } from '@unit-harness/core'
+import { JUNK_DIRS, isVenvDir } from '@unit-harness/core'
 import type { IncomingMessage } from '@unit-harness/core'
 import {
   loadMcpServers, discoverSkills, skillRoots, globalMcpConfigPath, projectMcpConfigPath,
@@ -703,6 +703,55 @@ function underWorkspace(rel: string): string | null {
 const REF_SKIP = JUNK_DIRS
 
 /**
+ * 工作区顶层现存的成品文件。
+ *
+ * 有些会话（尤其修好快照之前跑的那些）没有正确的 artifact 记录：`pip install`
+ * 写下的几百个 venv 文件反而全在里面。交付清单不能因此变成空的——用户真正想
+ * 点开的是那个 .pptx。这里按扩展名挑成品，**标记成 snapshot**，界面上会显示在
+ * 「also in the workspace — not written by this session」里，不冒充本次产出。
+ */
+const DELIVERABLE_RE = /\.(pptx|pdf|docx|xlsx|mp4|png|jpe?g|zip)$/i
+function workspaceDeliverables(root: string): { path: string; bytes: number; sha256: string; source: 'snapshot' }[] {
+  let ents: fsSync.Dirent[]
+  try { ents = fsSync.readdirSync(root, { withFileTypes: true }) } catch { return [] }
+  const out: { path: string; bytes: number; sha256: string; source: 'snapshot' }[] = []
+  for (const e of ents) {
+    if (!e.isFile() || e.name.startsWith('.') || !DELIVERABLE_RE.test(e.name)) continue
+    try {
+      const st = fsSync.statSync(pathMod.join(root, e.name))
+      out.push({ path: e.name, bytes: st.size, sha256: '', source: 'snapshot' })
+    } catch { /* unreadable */ }
+  }
+  // 文档优先：用户多半是来找这份 .pptx，不该排在几张随手截的图后面
+  const rank = (p: string): number => (/\.(pptx|docx|xlsx)$/i.test(p) ? 0 : /\.pdf$/i.test(p) ? 1 : 2)
+  return out.sort((a, b) => rank(a.path) - rank(b.path) || b.bytes - a.bytes).slice(0, 12)
+}
+
+/**
+ * 这个相对路径是不是写在某个 venv 里（含 pyvenv.cfg 的那一级）。
+ *
+ * 判据在 core 的 isVenvDir：`pptvenv`、`.venv-ppt` 这类自命名环境按名字
+ * 枚举永远漏，只能看目录里有没有 pyvenv.cfg。这里逐级 stat，命中一次就
+ * 缓存——一条会话的 780 个产物大多落在同一棵树上。
+ */
+const venvProbe = new Map<string, boolean>()
+function writtenInsideVenv(root: string, rel: string): boolean {
+  if (!rel) return false
+  const parts = rel.split('/')
+  let acc = root
+  for (let i = 0; i < parts.length - 1; i++) {
+    acc = pathMod.join(acc, parts[i] as string)
+    let hit = venvProbe.get(acc)
+    if (hit === undefined) {
+      hit = isVenvDir(acc)
+      venvProbe.set(acc, hit)
+    }
+    if (hit) return true
+  }
+  return false
+}
+
+/**
  * 工作区里有哪些文件可以被 @ 到。
  *
  * 不用 `git ls-files`：换项目时目录未必是 git 仓库，而且用户常常就想引用
@@ -1369,7 +1418,7 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
     // 课件是 png/pdf/pptx：点开没有"改动对比"可看，但用户真正想要的是"看一眼"。
     // 面板只给一句"用 open 打开看"等于把问题推回给用户。这里按会话的工作区
     // 回原文，类型从扩展名推，只允许读工作区内、且大小有上限。
-    if (req.method === 'GET' && url.pathname === '/api/file') {
+    if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/api/file') {
       const sid = url.searchParams.get('session') ?? ''
       const rel = url.searchParams.get('path') ?? ''
       if (!rel) { json(res, 400, { error: 'path is required' }); return }
@@ -1394,12 +1443,22 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       }
       // 未知类型一律当二进制下载，绝不让浏览器把内容当 HTML 执行
       const type = types[ext] ?? 'application/octet-stream'
+      // 二进制要带 Content-Disposition：手机上（尤其 iOS Safari）只有
+      // download 属性、响应却没声明 attachment 时，点了既不下载也不打开，
+      // 表现就是「pptx 根本下不来」。filename* 走 RFC5987，中文名才不会丢。
+      const asAttachment = type === 'application/octet-stream'
       res.writeHead(200, {
         'content-type': type,
         'content-length': String(buf.length),
         'cache-control': 'no-store',
         'x-content-type-options': 'nosniff',
+        ...(asAttachment
+          ? { 'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(pathMod.basename(abs))}` }
+          : {}),
       })
+      // HEAD 只回头部：前端用它探测「同名 PDF 在不在」，不该为了问一句就把
+      // 整份文件传一遍
+      if (req.method === 'HEAD') { res.end(); return }
       res.end(buf)
       return
     }
@@ -3034,6 +3093,10 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
           ? (answerEvent!.payload as { text: string }).text
           : null
         const artifacts = events.filter((e) => e.kind === 'artifact/emitted').map((e) => e.payload)
+          // 老会话把 `pip install` 写下的整棵 venv 都记成了交付物。快照层后来
+          // 学会跳过 venv（core 的 isVenvDir），但这些记录已经落在盘上了，
+          // 不在这里滤一道，翻开旧会话还是几百条 `bin/activate`。
+          .filter((a) => !writtenInsideVenv(currentWorkspace, (a as { path?: string }).path || ''))
         const verifications = events
           .filter((e) => e.kind === 'verification/asserted')
           .map((e) => {
@@ -3047,7 +3110,11 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         // lastSeq 给页面当游标：它拿着这个数去接实时流，中间那段才不会漏
         const lastSeq = events.at(-1)?.seq ?? 0
         json(res, 200, {
-          id, events, artifacts, verifications, answer, lastSeq,
+          id, events,
+          // 一条产物都没记下来时（老会话把 venv 当产物），退回列工作区里的成品，
+          // 否则用户点不到那份 pptx——而它就在那儿。
+          artifacts: artifacts.length ? artifacts : workspaceDeliverables(currentWorkspace),
+          verifications, answer, lastSeq,
           running: running.has(id),
         })
       } catch (err) {

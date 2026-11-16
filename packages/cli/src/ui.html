@@ -615,6 +615,15 @@
      52px 写死就会断成两行（" +1072.7 / s "），整列看着像错位 */
   .row .t{color:var(--soft);flex:0 0 58px;text-align:right;font-size:10.5px;white-space:nowrap}
   .row .c{flex:1;min-width:0}
+  /* 答案和上面的卡片头左对齐。
+     .row 是 flex，左边那列 58px 时间戳把答案整体推右了 68px，读起来像
+     「回答被缩进了一级」，而它和 steps 行、产物行本该是一条竖线。答案不需要
+     秒数，自己独占一行。 */
+  .row:has(> .c.answer){display:block;padding-left:0}
+  .row:has(> .c.answer) > .t{display:none}
+  /* 表格自带的左右框和 .answer 的蓝边并排，视觉上就是「两条竖线」：
+     引用线留着，表格只保留上下框。 */
+  .answer .mdtwrap{border-left:0;border-right:0;border-radius:0}
   /* 可点开的过程行：鼠标移上去给一点暗示，展开的那块是原文，不改写 */
   .row.expandable{cursor:pointer;border-radius:6px}
   .row.expandable:hover .c{color:var(--fg)}
@@ -4048,7 +4057,11 @@ const replayStreams = [];
 
 function openRun(){
   if (runGrp) return runGrp;
-  if (REPLAY && replayStream){
+  if (REPLAY){
+    // 回放中「当前段还没有」是常态：上一段在 closeRun / replaySplit 时收笔了。
+    // 以前这里直接落到下面的 live 分支——建出来的卡不属于任何一段，replayFinish
+    // 折不到它，于是一条历史会话翻开就是一屏永远收不起来的命令。
+    if (!replayStream) replayStream = { anchor: replayAnchor, card: null, body: null, steps: 0, touched: 0, files: new Map() };
     // 回放：这条「流」第一次用到时就建卡并**当场挂上去**。
     // 挂上去的那一刻就是它该在的位置——之后的工具行都被搬进这张卡，
     // 再往后的行自然排在它后面。不需要事后再找锚点搬一次
@@ -4132,7 +4145,9 @@ function updateRunHead(){
 function foldFinishedRun(){
   if (!runGrp) return;
   const { el, steps } = runGrp;
-  if (steps >= 3) el.classList.add('fold');
+  // 有过程就收。以前门槛是 3 步，于是两行的回合还摊着——可用户要的从来
+  // 不是那两行，是结论。只有一步时也不亏：标题那行本身就写着做了什么。
+  if (steps >= 1) el.classList.add('fold');
 }
 
 /** 工具调用、文件卡片这些过程行进组；问答和结论留在组外 */
@@ -4229,11 +4244,17 @@ function replayTouch(anchorEl, stepNo){
 
 /** 回放收尾：卡片已经在正确位置上（见 openRun），这里只补标题和时间线 */
 function replayFinish(){
+  // 最后一段还在 replayStream 里，没被 replaySplit 推进 replayStreams——
+  // 漏掉它，屏幕上就剩那张**永不折叠**的卡，几百步过程全摊着：回放一条
+  // 早上跑完的会话，看到的仍是满屏命令，而结论被顶到看不见的地方。
+  if (replayStream && replayStream.card) replayStreams.push(replayStream);
   for (const st of replayStreams){
     if (!st.card) continue;
     const n = Math.max(st.steps, st.touched);
     const ttl = st.card.querySelector('.ttl');
     if (ttl) ttl.textContent = n ? n + (n === 1 ? ' step' : ' steps') : 'tools';
+    // 历史会话默认收起过程：结论是用户要的东西，过程点开还在
+    st.card.classList.add('fold');
   }
   replayStreams.length = 0;
   replayStream = null;
@@ -4247,8 +4268,12 @@ function replayFinish(){
 function closeRun(){
   if (!runGrp) return;
   updateRunHead();
-  // 回放时不收起：卡片要留在原处等着整体嵌回去，收进折叠里反而看不出范围
-  if (!REPLAY) runGrp.el.classList.add('fold');
+  // 跑完就收起，回放也一样。
+  //
+  // 以前只在 live 结束时收：翻开一条历史会话，几百步过程整屏摊着，
+  // 用户先看到的是满屏「● exec / ✓ Done」，结论要划好几屏才出现。
+  // 卡片标题已经写着「N steps」，收起来反而更能看出这一轮的范围。
+  runGrp.el.classList.add('fold');
   runGrp = null;
   if (REPLAY) replayStream = null;
 }
@@ -4399,7 +4424,29 @@ function renderFilePreview(body, path, meta){
     body.appendChild(f);
     return;
   }
-  // 其它二进制（pptx/docx…）：给它下载，外加 open
+  // 其它二进制（pptx/docx…）：给下载，外加 open
+  //
+  // pptx 浏览器放不了，但同目录常有同名 PDF（导出时一起生成的）。
+  // 手机上一个只有「download」的面板等于看不了——先探一下 PDF，有就内嵌。
+  if (/^(pptx|docx|xlsx|key|pages)$/.test(ext)) {
+    const pdfPath = path.replace(/\.[^./]+$/, '.pdf');
+    const pdfQ = '/api/file?session=' + encodeURIComponent(CURRENT_SID) + '&path=' + encodeURIComponent(pdfPath);
+    fetch(pdfQ, { method: 'HEAD' }).then((r) => {
+      if (!r.ok) return;
+      body.innerHTML = '';
+      const f = document.createElement('iframe');
+      f.className = 'dppdf';
+      f.src = pdfQ;
+      body.appendChild(f);
+      // 预览之外还要能拿走原件
+      const dl = document.createElement('a');
+      dl.className = 'dpopen';
+      dl.href = q;
+      dl.download = path.split('/').pop();
+      dl.textContent = 'download ' + path.split('/').pop();
+      body.appendChild(dl);
+    }).catch(() => {});
+  }
   const a = document.createElement('a');
   a.className = 'dpopen';
   a.href = q;
@@ -4934,21 +4981,38 @@ function render(kind, p){
     case 'tool/call': {
       // label 是服务端翻译好的人话（"Reading src/cli.ts"），永远优先用它。
       // 只有翻译缺失时才退回原始信息，绝不会把 run_command 这种词直接扔到屏幕上。
-      const text = p.label || (p.tool === 'run_command' && p.argv ? p.argv.join(' ') : String(p.tool || 'working'))
+      const text = p.label || (p.argv && p.argv.length ? p.argv.join(' ') : String(p.tool || 'working'))
       const el = procRow('tool', '● ' + who(p) + esc(String(text)));
       // 两条信息都要留得住：想看懂它到底干了什么，就点开这一行。
       // 服务端已经给了 detail（真实命令/路径），args_preview 是兜底。
       attachDetail(el, p);
+      // 记下这一行：结果回来时**就地改状态**，不再追加一行「✓ Done」。
+      LASTTOOL.set(String(p.tool || ''), el);
+      LASTTOOL.set('__last__', el);
       break;
     }
     case 'tool/result': {
-      // 「✗」只留给真的失败；exit=0 显示成 Done，别让用户去读退出码
-      const el = procRow(p.status === 'ok' ? 'ok' : 'bad', (p.status === 'ok' ? '✓ ' : '✗ ') + who(p) + esc(String(p.label || (p.status === 'ok' ? 'Done' : 'That did not work'))));
-      // 输出是下一条事件才到的：先把这行记下，等 tool/output 挂上去
-      LASTTOOL.set(String(p.tool || ''), el);
-      // 兜底：事件里的工具名和模型看到的名字不完全一致时（exec / run_command），
-      // 至少还能挂到最近的那条结果上，不至于只剩「参数」没有「结果」
-      LASTTOOL.set('__last__', el);
+      // 一步一行。Codex 的 transcript 也是这个形状：一条命令一行，成功只在行首
+      // 换个记号，从不追加一条「Done」。之前每次调用都新起一行，几百步下来
+      // 屏幕上是一串「● exec / ✓ Done」的复读，把结论顶出好几屏。
+      const el = LASTTOOL.get(String(p.tool || '')) || LASTTOOL.get('__last__');
+      const ok = p.status === 'ok';
+      if (el) {
+        const c = el.querySelector('.c');
+        if (c) {
+          // 只换标记，保留那行本来写的动作，别让「✓ Done」把信息顶掉
+          const body = String(c.textContent || '').replace(/^[●✓✗]\s*/, '');
+          c.textContent = (ok ? '✓ ' : '✗ ') + body;
+          c.className = 'c ' + (ok ? 'ok' : 'bad');
+        }
+        // 输出是下一条事件才到的：行本身留着接 tool/output
+        break;
+      }
+      // 找不到对应的调用行（回放被截断、事件顺序颠倒）：仍然补一行，
+      // 别把一次失败悄悄吞掉
+      const fallback = procRow(ok ? 'ok' : 'bad', (ok ? '✓ ' : '✗ ') + who(p) + esc(String(p.label || p.tool || (ok ? 'Done' : 'That did not work'))));
+      LASTTOOL.set(String(p.tool || ''), fallback);
+      LASTTOOL.set('__last__', fallback);
       break;
     }
     // 工具真正返回的内容。挂在对应的结果行上，点开才看——
@@ -5082,13 +5146,16 @@ function render(kind, p){
         row('answer','<div class="answer">' + (t ? md(t) : esc('(no text)')) + '</div>')
       }
       break;
-    case 'deliverables': renderDeliverables(p.items || [], p.verifications || []); break;
+    // 回放的 /api/session 用 artifacts 这个键，实时流的 deliverables 事件用 items：
+    // 只认 items 写着「produced 9 files」却在下面开不出清单，产物根本点不到
+    case 'deliverables': renderDeliverables(p.items || p.artifacts || [], p.verifications || []); break;
     case 'done':
       // 跑完了左栏那个 running 点要消掉——列表只在启动时拉过一次
       loadProjects();
       // 正常结束：把过程收成一行，让结论露出来
       foldFinishedRun();
-      row('dim','— done —');
+      // 不再画一行「— done —」：完成状态由卡片标题和输入框上的按钮表达，
+      // 单独一行只是又一条要用户扫过去才发现的噪音
       setRunning(false);
       break;
     case 'error': {
@@ -5136,13 +5203,25 @@ function scheduleArtRow(){
 function artRow(){
   // 只数自己写的。把"跑的时候工作区里多出来的"也算进 produced，就是在替不存在的
   // 归属背书——那条只写了 _fetch.py 的复现正是这样报出 16 个的。
-  const n = ARTIFACTS.filter((a) => sourceOf(a) !== 'snapshot').length;
+  const n = ARTIFACTS.filter((a) => sourceOf(a) !== 'snapshot' && !isEnvArtifact(a)).length;
+  const line = '◆ produced ' + n + ' file' + (n === 1 ? '' : 's') + ' — listed at the bottom';
+  // 一个都没有就别挂这行：那次跑出来的全是依赖目录（`pip install` 的副作用），
+  // 「produced 0 files」既难看又没信息
+  if (!n) {
+    if (ART_ROW) { ART_ROW.remove(); ART_ROW = null; }
+    return;
+  }
+  // 这一行是**结论**，不是过程：不能走 procRow。
+  //
+  // procRow 会 openRun()，回放时它排在 replayFinish 之后，于是凭空又建了一张
+  // 「working…」过程卡，把交付行全塞进去——那张卡永远不折叠，屏幕上就剩一屏
+  // 命令。产物清单属于结果，跟助手那句话并列。
   if (!ART_ROW){
-    ART_ROW = procRow('ok', '◆ produced ' + n + ' file' + (n === 1 ? '' : 's') + ' — listed at the bottom');
+    ART_ROW = row('ok', line);
     return;
   }
   const c = ART_ROW.querySelector('.c');
-  if (c) c.textContent = '◆ produced ' + n + ' file' + (n === 1 ? '' : 's') + ' — listed at the bottom';
+  if (c) c.textContent = line;
 }
 
 /**
@@ -5178,12 +5257,27 @@ function sourceOf(a){
   return WRITTEN.has(path) ? 'tool' : 'exec';
 }
 
+/**
+ * 依赖和解释器里的文件不是产物。
+ *
+ * 快照层已经整棵跳过 venv / site-packages（packages/core/src/fs/junk.ts 的
+ * isVenvDir），但历史会话的 deliverables 早就写进事件日志了——不在显示层兜
+ * 一道，用户翻开早上那条会话，看到还是一屏 `site-packages/... sha256=...`。
+ * 这不是「藏数据」：那是 `pip install` 的副作用，删掉还能再装回来，
+ * 而交付清单要回答的是「这次给我留下了什么」。
+ */
+const ENV_PATH_RE = /(^|\/)(site-packages|dist-packages|node_modules)\/|(^|\/)pyvenv\.cfg$|(^|\/)__pycache__\/|(^|\/)[^/]*venv[^/]*\//i;
+
+function isEnvArtifact(a){
+  return ENV_PATH_RE.test(String((a && a.path) || '').replace(/^\.\//, ''));
+}
+
 function renderDeliverables(items, verifications, showAll){
   delivEl.innerHTML = '';
   // 分两张单子：自己写的，和「跑的时候工作区里多出来的」。
   // 合成一张的后果已经见过了：另一条会话做的课件算到了这次头上，还带着 ✓ 3/3。
-  const own = items.filter((a) => sourceOf(a) !== 'snapshot');
-  const seen = items.filter((a) => sourceOf(a) === 'snapshot');
+  const own = items.filter((a) => sourceOf(a) !== 'snapshot' && !isEnvArtifact(a));
+  const seen = items.filter((a) => sourceOf(a) === 'snapshot' && !isEnvArtifact(a));
   items = own;
   // 先按路径建索引：每行只查一次，不再对 6000 条从头扫
   const byPath = new Map();
@@ -5327,6 +5421,12 @@ async function openSession(id){
   runGrp = null;
   sawText = false;
   $('#sid').textContent = id;
+  // 会话号必须在这里就落地。attach() 里也设一次，但已结束的会话不再接流
+  // （见下），只靠它的话 CURRENT_SID 永远是空的——点产物会报
+  // 「session and path are required」，预览和下载全打不开。
+  CURRENT_SID = id;
+  STREAM_SID = id;
+  syncCkBtn();
   // 用事件自己带的时间戳：否则回放历史会话时每一行都显示 +0.0s，
   // 看不出哪一步是同一秒发生的、哪一步隔了很久
   const t0 = detail.events.length ? Date.parse(detail.events[0].timestamp) : NaN;
@@ -5358,7 +5458,11 @@ async function openSession(id){
   const lastSeq = typeof detail.lastSeq === 'number'
     ? detail.lastSeq
     : (detail.events.length ? detail.events[detail.events.length - 1].seq : 0);
-  attach(id, { clear: false, after: lastSeq });
+  // 已经跑完的会话没有实时流可接。无条件 attach 的后果是：服务端把缓冲的
+  // 历史事件再补发一遍，回放结束后又冒出一张永不折叠的「working…」卡，
+  // 屏幕上重新铺满命令——这正是「翻开历史会话怎么看都是满屏输出」的来源。
+  // 接着说的时候 submit 会重新 attach（带 clear），不会漏掉后续事件。
+  if (detail.running) attach(id, { clear: false, after: lastSeq });
   // 这条会话可能还在跑：切回来时按钮得是 Stop，否则用户会以为它已经结束、
   // 再发一句就变成「排队等它跑完」，而屏幕上一点提示都没有
   setRunning(Boolean(detail.running));
@@ -5389,10 +5493,22 @@ $('#run').addEventListener('submit', async (e) => {
         body: JSON.stringify({ sessionId: sid, text: task }),
       });
       const j = await r.json();
-      if (j.error){ row('bad', 'ERROR: ' + j.error); return }
-      $('#task').value = '';  // 服务端会广播 queued，队列区自己会加
+      if (j.error){
+        // 「这一轮已经结束」不是用户说错了，是界面上的 RUNNING 过期了：
+        // 服务端那条 run 早没了。以前这里只画一行红字、按钮还停在 Stop，
+        // 用户再点还是同一个错——现在把这句话直接当成下一轮发出去。
+        if (!/already finished/i.test(String(j.error))){
+          row('bad', 'ERROR: ' + j.error);
+          return;
+        }
+        RUNNING = false;
+        setRunning(false);
+      } else {
+        $('#task').value = '';  // 服务端会广播 queued，队列区自己会加
+        return;
+      }
     } finally { $('#go').disabled = false }
-    return;
+    // 过期状态已经清掉：往下走「接着说的下一轮」，别再把这句话丢掉
   }
 
   // 跑完了但当前会话还在：这句话是「接着说的下一轮」，不是新对话。
@@ -5427,8 +5543,15 @@ $('#run').addEventListener('submit', async (e) => {
     clearAttach();
     REFS = [];
     renderRefs();
-    // 续跑时这条流本来就开着，再 attach 一次会把整屏历史清掉
-    if (!(STREAM_SID && j.sessionId === STREAM_SID)) attach(j.sessionId);
+    // 续跑时这条流本来就开着，再 attach 一次会把整屏历史清掉。
+    //
+    // 但「会话号一样」不等于「流还活着」：手机锁屏、切后台之后 EventSource
+    // 会断，STREAM_SID 却还停在原值——以前那就不接了，第二轮的事件没人在听，
+    // 界面一片空白、按钮永远是 Stop，看起来就是「多轮对话报错」。
+    // 所以判的是 readyState，真断了就重新接上（并且不清屏，历史要留着）。
+    const sameStream = STREAM_SID === j.sessionId;
+    const live = sameStream && es && es.readyState === 1;
+    if (!live) attach(j.sessionId, sameStream ? { clear: false, live: true } : undefined);
     loadProjects();
   } catch (err) {
     row('bad','ERROR: ' + (err.message || err));
