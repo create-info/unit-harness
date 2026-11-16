@@ -10,6 +10,9 @@
  * 依赖、构建产物、工具缓存都符合；源码、
  * 笔记、生成的 .pptx 不符合——它们再小也不能跳。
  */
+import fs from 'node:fs'
+import path from 'node:path'
+
 export const JUNK_DIRS: ReadonlySet<string> = new Set([
   // 依赖
   'node_modules', 'bower_components', '.pnpm-store', '.yarn',
@@ -24,6 +27,9 @@ export const JUNK_DIRS: ReadonlySet<string> = new Set([
   '__pycache__', '.idea', '.vscode',
   // Python 环境
   '.venv', 'venv', 'env', '.conda',
+  // 任意 venv 内部必然存在的目录（`pptvenv`、`.venv-ppt` 这类自定义名字
+  // 靠上面那行枚举永远盖不住，见 isVenvDir）
+  'site-packages', 'dist-packages',
 ])
 
 /** 名字像垃圾但不是目录的（打包产物、系统杂项）也一并跳过 */
@@ -40,4 +46,22 @@ export function isJunkPath(rel: string): boolean {
 /** 遍历时是否该跳过这个目录（按 basename 判断，调用方已有 abs） */
 export function isJunkDirName(name: string): boolean {
   return JUNK_DIRS.has(name)
+}
+
+/**
+ * 这是一个 venv 吗？判据是根下的 `pyvenv.cfg`，不是目录名。
+ *
+ * 按名字枚举只能盖住默认的 `venv` / `.venv`：`pptvenv`、`.venv-ppt`、用户随手
+ * 起的名字一个都盖不住，而它们里面都有 config 和 site-packages。一次跑完，
+ * 几百个 `site-packages/*.py` 就变成了「交付物」刷满界面——用户看到的是一屏
+ * 和自己工作无关的哈希，跟 Codex 只报自己补丁的做法完全不同。
+ *
+ * 依赖和解释器不是人的产出：删掉还能装回来，所以整棵跳过。
+ */
+export function isVenvDir(abs: string): boolean {
+  try {
+    return fs.statSync(path.join(abs, 'pyvenv.cfg')).isFile()
+  } catch {
+    return false
+  }
 }

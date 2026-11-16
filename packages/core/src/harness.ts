@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { probeIsolation } from './sandbox/probe.ts'
-import { isJunkDirName } from './fs/junk.ts'
+import { isJunkDirName, isVenvDir } from './fs/junk.ts'
 import { EventStore } from './evidence/store.ts'
 import { appendRollout } from './evidence/rollout.ts'
 import { LlmGateway } from './llm/gateway.ts'
@@ -1391,6 +1391,7 @@ export class Harness {
               if (st.isDirectory()) {
                 const base = nodePath.basename(abs)
                 if (isJunkDirName(base)) return false
+                if (isVenvDir(abs)) return false
                 for (const e of fsSync.readdirSync(abs)) {
                   if (walk(nodePath.join(abs, e))) return true
                 }

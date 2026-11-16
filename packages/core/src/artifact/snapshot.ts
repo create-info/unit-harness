@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { JUNK_DIRS, isJunkPath } from '../fs/junk.ts'
+import { JUNK_DIRS, isJunkPath, isVenvDir } from '../fs/junk.ts'
 
 export interface FileMeta {
   size: number
@@ -79,6 +79,8 @@ export function snapshotDir(root: string): Snapshot {
       const relPath = rel ? `${rel}/${String(e.name)}` : String(e.name)
       if (e.isDirectory()) {
         if (SKIP_DIRS.has(String(e.name))) continue
+        // 名字枚举盖不住 `pptvenv` 这类自命名的 venv：整棵跳过，见 fs/junk.ts
+        if (isVenvDir(abs)) continue
         walk(abs, relPath)
       } else if (e.isFile()) {
         try {
