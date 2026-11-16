@@ -185,6 +185,22 @@
   .aplink:hover{color:var(--fg)}
   .apck{position:absolute;right:10px;top:11px;font-size:12px;color:var(--fg);opacity:.75}
   .apm .tx b{font-size:12.5px}
+  /* 通用的浮层菜单（模型列表等）：和审批菜单同一套皮，别让两个弹层长得不一样 */
+  .popmenu{position:fixed;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    box-shadow:0 12px 34px rgba(16,24,40,.16);display:none;z-index:60;padding:5px;
+    max-height:min(420px,70vh);overflow:auto}
+  .popmenu.on{display:block}
+  .pophead{display:flex;align-items:center;justify-content:space-between;padding:8px 10px 6px;
+    font-size:11.5px;color:var(--dim)}
+  .poplink{background:none;border:0;padding:0;color:var(--dim);font-size:11.5px;cursor:pointer;
+    text-decoration:underline;text-underline-offset:2px;font-family:inherit}
+  .poplink:hover{color:var(--fg)}
+  .popitem{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;
+    border-radius:8px;cursor:pointer;font-size:12.5px;color:var(--fg);font-family:var(--mono)}
+  .popitem:hover,.popitem.cur{background:var(--hover)}
+  .popitem .ptx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .popitem .pck{flex:0 0 auto;font-size:12px;opacity:.75}
+  .popempty{padding:12px 10px;font-size:12px;color:var(--dim);line-height:1.5}
   .apm:hover{background:var(--hover)}
   .apm.cur{background:var(--hover)}
   .apm .ic{font-size:14px;line-height:1.2}
@@ -213,7 +229,7 @@
   .apbody pre{margin:0;background:var(--input);border:1px solid var(--line);border-radius:8px;padding:11px 12px;font:11.5px/1.55 var(--mono);color:var(--fg);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto}
   .apfoot{border-top:1px solid var(--line);padding:11px 18px;display:flex;gap:8px;justify-content:flex-end}
   .btn.danger{background:var(--bad);color:var(--badbg);border:0;font-weight:600}
-  #mpMenu{position:absolute;bottom:96px;left:20px;min-width:300px;max-height:60vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:9px;box-shadow:0 8px 28px rgba(0,0,0,.5);display:none;z-index:6;padding:5px}
+  #mpMenu{position:fixed;bottom:96px;left:20px;min-width:300px;max-height:60vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 34px rgba(16,24,40,.16);display:none;z-index:60;padding:5px}
   #mpMenu.on{display:block}
   .mpitem{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:6px;cursor:pointer;font-size:12px}
   .mpitem:hover{background:var(--hover)}
@@ -1672,7 +1688,7 @@ async function switchProject(path){
 }
 
 /** 模型就地下拉：Codex 那种，不逼人去设置页 */
-function openModelMenu(){
+function openProviderMenu(){
   let m = document.getElementById('mpMenu');
   if (!m){ m = document.createElement('div'); m.id = 'mpMenu'; document.body.appendChild(m); }
   m.innerHTML = '';
@@ -2123,7 +2139,7 @@ $('#pmNewName').addEventListener('keydown', (e) => {
 });
 $('#projModal').addEventListener('click', (e) => { if (e.target.id === 'projModal') closeProjectModal(); });
 
-$('#model').addEventListener('click', () => openSettings('model'));
+$('#model').addEventListener('click', () => openModelList());
 $('#setClose').addEventListener('click', () => $('#setModal').classList.remove('on'));
 for (const it of document.querySelectorAll('.setitem')) {
   it.addEventListener('click', async () => {
@@ -2135,7 +2151,7 @@ for (const it of document.querySelectorAll('.setitem')) {
   });
 }
 $('#setModal').addEventListener('click', (e) => { if (e.target.id === 'setModal') $('#setModal').classList.remove('on'); });
-$('#modelPick').addEventListener('click', (e) => { e.stopPropagation(); openModelMenu(); });
+$('#modelPick').addEventListener('click', (e) => { e.stopPropagation(); openModelList(); });
 $('#apprBtn').addEventListener('click', (e) => { e.stopPropagation(); openApprovalMenu(); });
 // cwd 本身就是入口：看着是一条路，点下去就该能换地方（Codex 的项目就在会话里）
 $('#mpWork') && $('#mpWork').addEventListener('click', (e) => { e.stopPropagation(); openProjectModal(); });
@@ -2302,6 +2318,84 @@ function paintApproval(mode){
   $('#apprName').textContent = a.name;
   $('#apprBtn').className = 'appr ' + a.cls;
 }
+
+/** 浮层统一贴着输入卡片弹：左对齐或右对齐，底边压住卡片上沿 10px。 */
+function placePopMenu(m, align){
+  const card = document.getElementById('run');
+  if (!card) return;
+  const r = card.getBoundingClientRect();
+  const w = Math.min(m.offsetWidth || 340, Math.max(260, r.width));
+  m.style.position = 'fixed';
+  m.style.width = w + 'px';
+  m.style.left = Math.round(align === 'right'
+    ? Math.max(12, r.right - w)
+    : Math.max(12, r.left)) + 'px';
+  m.style.bottom = Math.round(window.innerHeight - r.top + 10) + 'px';
+}
+
+/**
+ * 模型选择器：点一下模型名，列出这家实际有哪些，点哪个用哪个。
+ *
+ * 以前这个按钮直接把设置页面翻到「模型」那一栏——为了换一个名字，要离开
+ * 对话、滚过 provider、key、base url 三个字段。Codex 就是一张列表：名字、
+ * 当前那个打勾，别的一行不写。
+ */
+async function openModelList(){
+  let m = document.getElementById('mdMenu');
+  if (!m){
+    m = document.createElement('div');
+    m.id = 'mdMenu';
+    m.className = 'popmenu';
+    document.body.appendChild(m);
+  }
+  const prov = (SETTINGS && SETTINGS.provider) || '';
+  m.innerHTML = '<div class="pophead"><span>选择模型</span>'
+    + '<button type="button" class="poplink">设置</button></div>'
+    + '<div id="mdList"><div class="popempty">正在问 ' + esc(prov || '这家') + ' 有哪些模型…</div></div>';
+  m.querySelector('.poplink').onclick = () => { m.classList.remove('on'); openSettings('model'); };
+  placePopMenu(m, 'right');
+  m.classList.add('on');
+
+  const box = () => document.getElementById('mdList');
+  let list = [];
+  try {
+    const r = await fetch('/api/models?provider=' + encodeURIComponent(prov)).then((x) => x.json());
+    if (r.error && !(r.models || []).length){
+      const b = box(); if (b) b.innerHTML = '<div class="popempty">' + esc(r.error) + '</div>';
+      return;
+    }
+    list = r.models || [];
+  } catch (e) {
+    const b = box(); if (b) b.innerHTML = '<div class="popempty">' + esc(String(e.message || e)) + '</div>';
+    return;
+  }
+  const b = box();
+  if (!b) return;
+  if (!list.length){ b.innerHTML = '<div class="popempty">这家没有报出任何模型名</div>'; return; }
+  b.innerHTML = '';
+  for (const name of list){
+    const it = document.createElement('div');
+    const cur = (SETTINGS.model || '') === name;
+    it.className = 'popitem' + (cur ? ' cur' : '');
+    it.innerHTML = '<span class="ptx">' + esc(name) + '</span>' + (cur ? '<span class="pck">✓</span>' : '');
+    it.onclick = async () => {
+      m.classList.remove('on');
+      await postSettings({ model: name });
+      paintModelPicker();
+    };
+    b.appendChild(it);
+  }
+}
+
+// 点空白处收起浮层；点按钮本身不算"空白"（否则按钮的 toggle 会先被关掉）
+document.addEventListener('click', (e) => {
+  for (const [id, btn] of [['mdMenu', '#model'], ['apMenu', '#apprBtn']]){
+    const m = document.getElementById(id);
+    if (!m || !m.classList.contains('on')) continue;
+    if (m.contains(e.target) || (e.target.closest && e.target.closest(btn))) continue;
+    m.classList.remove('on');
+  }
+}, true);
 
 function openApprovalMenu(){
   let m = document.getElementById('apMenu');
