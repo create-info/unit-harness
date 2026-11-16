@@ -2642,6 +2642,45 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       return
     }
 
+    // ---- 新建工作树：同一条仓库的另一个目录，改动和主工作区互不影响 -----
+    // 这不是"切分支"。切分支是换掉你脚下的地板（未提交的改动会被拒绝）；
+    // 工作树是另开一间房：同一个 .git，另一份工作目录，两个分支可以同时在
+    // 两个终端里跑，谁也不挡谁。要给 agent 一块能随便试的地方时用这个。
+    if (req.method === 'POST' && url.pathname === '/api/git/worktree') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as { branch?: string }
+      const git = (args: string[], cwd = currentWorkspace): string =>
+        execFileSync('git', args, {
+          cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000,
+        }).toString().trim()
+      try {
+        const root = git(['rev-parse', '--show-toplevel'])
+        const base = git(['rev-parse', '--abbrev-ref', 'HEAD'])
+        const stamp = new Date()
+        const pad = (n: number) => String(n).padStart(2, '0')
+        const auto = 'uh-' + pad(stamp.getMonth() + 1) + pad(stamp.getDate()) + '-'
+          + pad(stamp.getHours()) + pad(stamp.getMinutes())
+        const branch = ((body.branch ?? '').trim() || auto)
+        if (!/^[A-Za-z0-9._\/-]{1,120}$/.test(branch) || branch.startsWith('-') || branch.includes('..')) {
+          json(res, 400, { ok: false, error: '这个分支名不合法' }); return
+        }
+        // 放在仓库的**同级**目录，而不是仓库里面：工作树里再放工作树，
+        // git status 和 search 都会把它当成未跟踪的垃圾翻出来。
+        const repoName = pathMod.basename(root)
+        const dir = pathMod.join(pathMod.dirname(root), '.uh-worktrees',
+          repoName + '-' + branch.replace(/\//g, '-'))
+        mkdirSync(pathMod.dirname(dir), { recursive: true })
+        const exists = git(['branch', '--list', branch], root)
+        git(exists ? ['worktree', 'add', dir, branch] : ['worktree', 'add', '-b', branch, dir], root)
+        json(res, 200, { ok: true, path: dir, branch, root, from: base })
+      } catch (err) {
+        const e = err as { stderr?: Buffer; message?: string }
+        const raw = e.stderr?.toString() || e.message || '建不出来'
+        const lines = raw.split('\n').map((x) => x.trim()).filter(Boolean)
+        json(res, 200, { ok: false, error: lines.slice(-4).join(' ') || '建不出来' })
+      }
+      return
+    }
+
     // ---- 加装 MCP：写进 ~/.uh/mcp.json 的 mcpServers ----------------------
     // 结构沿用 Claude Desktop 的，所以从别处抄来的 JSON 能整块贴进来。
     // 之前 MCP 只能靠终端 `uh mcp add` 加，设置页里看得见却加不了。

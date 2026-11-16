@@ -870,6 +870,14 @@
   .popdim{font-family:var(--mono);opacity:.6}
   .popitem .bico{opacity:.55;margin-right:2px}
   .popitem.newbr{color:var(--dim);border-top:1px solid var(--line);border-radius:0 0 8px 8px;margin-top:2px}
+  .popitem.wtrow{border-radius:8px}
+  .popitem.wtrow.busy{opacity:.55;pointer-events:none}
+  .wtSw{flex:0 0 auto;width:26px;height:15px;border-radius:99px;background:var(--line);position:relative;
+    transition:background .15s}
+  .wtSw i{position:absolute;top:2px;left:2px;width:11px;height:11px;border-radius:50%;background:var(--panel);
+    box-shadow:0 1px 2px rgba(0,0,0,.25);transition:transform .15s}
+  .popitem.wtrow:hover .wtSw{background:var(--dim)}
+  .popitem.wtrow:hover .wtSw i{transform:translateX(11px)}
   #run textarea#task{
     width:100%;box-sizing:border-box;border:0;outline:0;background:transparent;
     resize:none;font:15px/1.55 var(--mono);color:var(--fg);
@@ -2395,6 +2403,8 @@ async function openBranchMenu(){
   }
   let creating = false;
   m.innerHTML = '<div class="pophead"><span>分支</span><span id="brCur" class="popdim"></span></div>'
+    + '<div class="popitem wtrow" id="wtRow"><span class="ptx"><span class="bico">⑂</span> 新建工作树</span>'
+    + '<span class="wtSw"><i></i></span></div>'
     + '<div class="brsrch"><input id="brSearch" type="text" placeholder="搜索分支…" autocomplete="off" spellcheck="false"></div>'
     + '<div id="brList"><div class="popempty">读取中…</div></div>'
     + '<div class="popitem newbr" id="brNew">+ 创建并检出新分支…</div>';
@@ -2440,6 +2450,31 @@ async function openBranchMenu(){
     };
     search.focus();
   }
+  // 工作树是"另开一间房"：同一个 .git，另一份工作目录，可以和新分支一起跑，
+  // 主目录里没提交的改动一点都不受影响。开关打开就地建好并切过去——
+  // 建好了再问"要不要过去"是多一步。
+  const wt = document.getElementById('wtRow');
+  if (wt) wt.onclick = async () => {
+    wt.classList.add('busy');
+    const body = JSON.stringify({ branch: m.dataset.wtBranch || '' });
+    const r = await fetch('/api/git/worktree', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body,
+    }).then((x) => x.json()).catch(() => ({ ok: false, error: '建不出来' }));
+    wt.classList.remove('busy');
+    if (!r.ok){
+      list.innerHTML = '<div class="popempty">' + esc(r.error || '建不出来') + '</div>';
+      return;
+    }
+    m.classList.remove('on');
+    await fetch('/api/project', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: r.path }),
+    });
+    await loadSettings();
+    await loadProjects();
+    startNewTask();
+  };
+
   const nw = document.getElementById('brNew');
   if (nw) nw.onclick = () => {
     creating = true;
