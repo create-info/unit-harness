@@ -27,8 +27,9 @@ function assertClean(line, what) {
   }
   assert.ok(line.label.length > 0, `${what}: empty label`)
   assert.ok(line.label.length <= 120, `${what}: label too long (${line.label.length})`)
-  // 句子型文案动词开头；文件汇总是计数器，允许 "2 files · +4 −0" 这种形状
-  assert.ok(/^[A-Za-z0-9]/.test(line.label), `${what}: label should start with a word, got "${line.label}"`)
+  // 句子型文案动词开头；文件汇总是计数器，允许 "2 files · +4 −0" 这种形状。
+  // 界面说是中文，所以中文开头同样合法。
+  assert.ok(/^[\u4e00-\u9fa5A-Za-z0-9]/.test(line.label), `${what}: label should start with a word, got "${line.label}"`)
   // detail 可以带命令原文，但也不能带工具名
   if (line.detail) {
     for (const bad of ['run_command', 'mcp__', 'undefined']) {
@@ -41,22 +42,22 @@ function assertClean(line, what) {
 
 test('common commands are described by intent, not by argv', () => {
   const cases = [
-    [['npm', 'test'], /test/i],
-    [['npm', 'run', 'test'], /test/i],
-    [['pytest', '-q'], /test/i],
-    [['cargo', 'test'], /test/i],
-    [['go', 'test', './...'], /test/i],
-    [['node', '--test', 'tests/a.test.mjs'], /test/i],
-    [['npm', 'install'], /install/i],
-    [['pip', 'install', 'six'], /install/i],
-    [['npm', 'run', 'build'], /build/i],
-    [['git', 'status'], /repo/i],
-    [['git', 'commit', '-m', 'x'], /commit/i],
-    [['ls', '-la'], /listing/i],
-    [['grep', '-rn', 'foo', 'src'], /searching/i],
-    [['rm', '-rf', 'build'], /delet/i],
-    [['curl', 'https://x'], /network/i],
-    [['ssh', 'box', 'uptime'], /remote/i],
+    [['npm', 'test'], /测试/],
+    [['npm', 'run', 'test'], /测试/],
+    [['pytest', '-q'], /测试/],
+    [['cargo', 'test'], /测试/],
+    [['go', 'test', './...'], /测试/],
+    [['node', '--test', 'tests/a.test.mjs'], /测试/],
+    [['npm', 'install'], /依赖/],
+    [['pip', 'install', 'six'], /依赖/],
+    [['npm', 'run', 'build'], /编译/],
+    [['git', 'status'], /仓库/],
+    [['git', 'commit', '-m', 'x'], /提交/],
+    [['ls', '-la'], /目录/],
+    [['grep', '-rn', 'foo', 'src'], /搜索/],
+    [['rm', '-rf', 'build'], /删除/],
+    [['curl', 'https://x'], /下载/],
+    [['ssh', 'box', 'uptime'], /远程/],
   ]
   for (const [argv, re] of cases) {
     const line = describeTool('run_command', { argv })
@@ -68,7 +69,7 @@ test('common commands are described by intent, not by argv', () => {
 test('sh -c wrappers are looked through', () => {
   const line = describeTool('run_command', { argv: ['sh', '-c', 'npm test -- --watch=false'] })
   assertClean(line, 'sh -c')
-  assert.match(line.label, /test/i)
+  assert.match(line.label, /测试/)
 })
 
 test('an unrecognised command is still readable and keeps the command as detail', () => {
@@ -89,16 +90,16 @@ test('a long command is truncated instead of pushing the layout', () => {
 test('file tools read like sentences', () => {
   const reading = describeTool('read_file', { path: '/home/u/proj/src/cli.ts' })
   assertClean(reading, 'read_file')
-  assert.match(reading.label, /^Reading /)
+  assert.match(reading.label, /^已读取 /)
   assert.match(reading.label, /cli\.ts/)
 
   const listing = describeTool('list_dir', { path: '/home/u/proj/src' })
   assertClean(listing, 'list_dir')
-  assert.match(listing.label, /^Listing /)
+  assert.match(listing.label, /^已列出 /)
 
   const searching = describeTool('grep', { pattern: 'function main' })
   assertClean(searching, 'grep')
-  assert.match(searching.label, /^Searching for "function main"/)
+  assert.match(searching.label, /搜索"function main"/)
 })
 
 test('a commit-shaped home path is shortened but the file name survives', () => {
@@ -111,13 +112,13 @@ test('a commit-shaped home path is shortened but the file name survives', () => 
 test('editing many files is summarised, not listed', () => {
   const line = describeTool('apply_patch', { files: ['a.ts', 'b.ts', 'c.ts', 'd.ts'] })
   assertClean(line, 'patch many')
-  assert.match(line.label, /^Editing 4 files$/)
+  assert.match(line.label, /^已修改 4 个文件$/)
 })
 
 test('a single edit names the file', () => {
   const line = describeTool('apply_patch', { files: ['src/a.ts'] })
   assertClean(line, 'patch one')
-  assert.match(line.label, /^Editing /)
+  assert.match(line.label, /^已修改 /)
   assert.match(line.label, /a\.ts/)
 })
 
@@ -129,17 +130,17 @@ test('plugin tools say which system they went to', () => {
 
   const browse = describeTool('browser_open', { url: 'https://example.com' })
   assertClean(browse, 'browser')
-  assert.match(browse.label, /^Opening /)
+  assert.match(browse.label, /^打开网页/)
 
   const tap = describeTool('phone_tap', {})
   assertClean(tap, 'phone')
-  assert.match(tap.label, /phone/)
+  assert.match(tap.label, /手机/)
 })
 
 test('an unknown tool name is turned into a sentence, never printed raw', () => {
   const line = describeTool('some_new_tool_name', {})
   assertClean(line, 'unknown tool')
-  assert.match(line.label, /^Some new tool name$/)
+  assert.match(line.label, /^some new tool name$/)
 })
 
 // ─────────────────────── 结果 ───────────────────────

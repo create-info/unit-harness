@@ -833,6 +833,16 @@
     background:#e0453b;color:#fff;font-size:11px;line-height:1;
     display:grid;place-items:center;cursor:pointer;padding:0}
   #run .crow #ctx{flex:0 0 auto}
+  /* 工具行跑完只在行尾补个勾：行首的记号是「这是什么动作」，不能被状态顶掉 */
+  .row .c .okmark{color:var(--ok,#3fa45b);opacity:.75;font-size:11px}
+  /* 同类调用收成一节：组头一行，组内缩进 + 一条竖线，和 Codex 一样 */
+  .row.grphead{cursor:pointer;user-select:none}
+  .row.grphead .caret{margin-left:5px;font-size:10px;opacity:.55;display:inline-block;transition:transform .12s}
+  .row.grphead.folded .caret{transform:rotate(-90deg)}
+  .tgbody{border-left:1px solid var(--line);margin:0 0 4px 10px;padding-left:12px}
+  .tgbody.hide{display:none}
+  .row.tool.sub{padding-left:0}
+  .row.tool.sub .t{display:none}
   /* ── 空会话：一句话，照 Codex ─────────────────────────────── */
   .welcome{max-width:760px;margin:clamp(60px,18vh,190px) auto 0;padding:0 22px;text-align:center}
   .wtitle{font-family:var(--sans);font-size:22px;font-weight:400;color:var(--fg);line-height:1.65;letter-spacing:0}
@@ -4967,6 +4977,112 @@ function who(p){
   return p && p.agent ? String(p.agent) + ' · ' : '';
 }
 
+/**
+ * 工具调用 → 一行人话 + 一个记号。
+ *
+ * core/agent/progress.ts 里也有一份同样的映射（给 ACP 和 CLI 用），但那是
+ * Node 模块，这份静态页面 import 不到；而且历史会话里的事件没有 label，
+ * 只能在渲染时按 tool 名补出来，否则老会话永远是一串英文动词。
+ */
+function toolLine(p){
+  const t = String((p && p.tool) || '');
+  const arg = (k) => (typeof p[k] === 'string' ? p[k] : '');
+  const cut = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
+  const path = arg('path') || arg('file') || '';
+  const files = Array.isArray(p && p.files) ? p.files : [];
+
+  if (t === 'run_command' || t === 'exec'){
+    const cmd = Array.isArray(p.argv) ? p.argv.join(' ') : arg('command');
+    return { icon: '⌘', text: cut(cmd, 96) || '执行命令' };
+  }
+  if (t === 'read_file') return { icon: '▤', text: '已读取 ' + cut(path, 60) };
+  if (t === 'list_dir') return { icon: '▦', text: '已列出 ' + cut(path || '工作区', 50) };
+  if (t === 'grep'){
+    const where = path ? ' ' + cut(path, 40) + ' 中' : '工作区';
+    return { icon: '⌕', text: '已在' + where + '搜索"' + cut(arg('pattern'), 40) + '"' };
+  }
+  if (t === 'apply_patch'){
+    if (files.length > 1) return { icon: '✎', text: '已修改 ' + files.length + ' 个文件' };
+    return { icon: '✎', text: '已修改 ' + cut(path || files[0] || '', 60) };
+  }
+  if (t === 'write_file' || t === 'create_file') return { icon: '✎', text: '已写入 ' + cut(path, 60) };
+  if (t === 'update_plan') return { icon: '☰', text: '正在规划这一步' };
+  if (t === 'use_skill') return { icon: '✦', text: ('加载技能 ' + arg('name')).trim() };
+  if (t === 'run_skill_script') return { icon: '⌘', text: ('运行脚本 ' + arg('script')).trim() };
+  if (t === 'spawn_agent' || t === 'delegate') return { icon: '↳', text: '分一部分活给子 agent' };
+  if (t === 'remote_exec') return { icon: '⌘', text: '在 ' + (arg('host') || '远程机器') + ' 上执行' };
+  if (t.startsWith('browser_')) return { icon: '◍', text: '浏览器：' + t.slice(8).replace(/_/g, ' ') };
+  if (t.startsWith('phone_')) return { icon: '▭', text: '手机：' + t.slice(6).replace(/_/g, ' ') };
+
+  // 插件/协议工具：前缀本身就是信息
+  const m = /^mcp__([^_]+(?:_[^_]+)*?)__(.+)$/.exec(t);
+  if (m) return { icon: '◇', text: m[1] + '：' + m[2].replace(/_/g, ' ') };
+
+  // 老事件可能带着服务端翻好的 label（英文），聊胜于无
+  const label = typeof p.label === 'string' ? p.label : '';
+  if (label) return { icon: '●', text: label };
+  return { icon: '●', text: t ? t.replace(/[_-]+/g, ' ') : '工作中' };
+}
+
+const KIND_HEAD = { read: '读取文件', search: '搜索', list: '列目录', write: '修改文件' };
+const KIND_OF = { read_file: 'read', grep: 'search', list_dir: 'list',
+  apply_patch: 'write', write_file: 'write', create_file: 'write' };
+let TOOLGRP = null;
+
+/**
+ * 把连续的同类调用收成一节：标题一句话，点开才看细节。
+ *
+ * Codex 的 transcript 就是这个形状——一屏幕里四十条命令平铺下来，没人读得完。
+ * 收成「读取文件 3」之后，眼睛只需要扫标题；真要追某一次读了什么，点一下就行。
+ * 命令（run_command）不进组：它本来就是"做了什么"本身，收起来反而看不见。
+ */
+function toolGroupRow(p, icon, text){
+  const kind = KIND_OF[String((p && p.tool) || '')] || '';
+  const g = openRun();
+
+  // 同一步内、类型相同 → 并进当前这一节
+  if (kind && TOOLGRP && TOOLGRP.grp === g && TOOLGRP.kind === kind){
+    const el = row('tool sub', icon + ' ' + esc(text));
+    el.remove();
+    TOOLGRP.body.appendChild(el);
+    TOOLGRP.count++;
+    const n = TOOLGRP.head.querySelector('.gn');
+    if (n) n.textContent = String(TOOLGRP.count);
+    return el;
+  }
+
+  TOOLGRP = null;
+  if (kind){
+    const head = document.createElement('div');
+    head.className = 'row tool grphead';
+    head.innerHTML = '<span class="t"></span><span class="c">' + icon + ' ' + KIND_HEAD[kind]
+      + ' <span class="gn">1</span><span class="caret">▾</span></span>';
+    const body = document.createElement('div');
+    body.className = 'tgbody';
+    g.body.appendChild(head);
+    g.body.appendChild(body);
+    TOOLGRP = { kind, grp: g, head, body, count: 0 };
+    head.onclick = () => {
+      body.classList.toggle('hide');
+      head.classList.toggle('folded');
+    };
+    const el = row('tool sub', icon + ' ' + esc(text));
+    el.remove();
+    body.appendChild(el);
+    TOOLGRP.count = 1;
+    if (REPLAY && replayStream){
+      replayStream.steps = Math.max(replayStream.steps, replayStream.touched);
+      g.steps = replayStream.steps;
+    } else {
+      followTail();
+    }
+    return el;
+  }
+
+  // 不分组（命令、未知工具）：还是原来那一行
+  return procRow('tool', icon + ' ' + text);
+}
+
 function render(kind, p){
   if (p && typeof p._ts === 'number'){ lastTs = p._ts; if (!firstTs) firstTs = p._ts; }
   switch(kind){
@@ -5034,10 +5150,10 @@ function render(kind, p){
       break;
     }
     case 'tool/call': {
-      // label 是服务端翻译好的人话（"Reading src/cli.ts"），永远优先用它。
-      // 只有翻译缺失时才退回原始信息，绝不会把 run_command 这种词直接扔到屏幕上。
-      const text = p.label || (p.argv && p.argv.length ? p.argv.join(' ') : String(p.tool || 'working'))
-      const el = procRow('tool', '● ' + who(p) + esc(String(text)));
+      // 一行一句话，行首一个记号说明类型——读文件、搜索、跑命令，各有各的样子。
+      // 以前这里显示 `run_command` 或原始 argv，用户得先学会我们的词汇表才看得懂。
+      const L = toolLine(p);
+      const el = toolGroupRow(p, L.icon, who(p) + L.text);
       // 两条信息都要留得住：想看懂它到底干了什么，就点开这一行。
       // 服务端已经给了 detail（真实命令/路径），args_preview 是兜底。
       attachDetail(el, p);
@@ -5055,10 +5171,18 @@ function render(kind, p){
       if (el) {
         const c = el.querySelector('.c');
         if (c) {
-          // 只换标记，保留那行本来写的动作，别让「✓ Done」把信息顶掉
-          const body = String(c.textContent || '').replace(/^[●✓✗]\s*/, '');
-          c.textContent = (ok ? '✓ ' : '✗ ') + body;
-          c.className = 'c ' + (ok ? 'ok' : 'bad');
+          // 行首那个记号说明的是「这是什么动作」，不该被状态替换掉：跑成功了
+          // 就给行尾补一个勾，失败了才把行首换成 ✗ 并变红。
+          if (!ok) {
+            const body = String(c.textContent || '').replace(/^[●✓✗]\s*/, '');
+            c.textContent = '✗ ' + body;
+            c.className = 'c bad';
+          } else if (!c.querySelector('.okmark')) {
+            const m = document.createElement('span');
+            m.className = 'okmark';
+            m.textContent = ' ✓';
+            c.appendChild(m);
+          }
         }
         // 输出是下一条事件才到的：行本身留着接 tool/output
         break;
