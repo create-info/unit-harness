@@ -177,7 +177,14 @@
   .appr.auto{color:var(--warn);border-color:var(--warnbg)}
   #apMenu{position:fixed;bottom:96px;left:20px;min-width:290px;max-width:340px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 12px 34px rgba(16,24,40,.16);display:none;z-index:60;padding:5px}
   #apMenu.on{display:block}
-  .apm{display:flex;gap:9px;padding:8px 10px;border-radius:7px;cursor:pointer;align-items:flex-start}
+  .apm{display:flex;gap:10px;padding:9px 10px;border-radius:8px;cursor:pointer;align-items:flex-start;position:relative;padding-right:30px}
+  .aphead{display:flex;align-items:center;justify-content:space-between;padding:8px 10px 6px;
+    font-size:11.5px;color:var(--dim);letter-spacing:.01em}
+  .aplink{background:none;border:0;padding:0;color:var(--dim);font-size:11.5px;cursor:pointer;
+    text-decoration:underline;text-underline-offset:2px;font-family:inherit}
+  .aplink:hover{color:var(--fg)}
+  .apck{position:absolute;right:10px;top:11px;font-size:12px;color:var(--fg);opacity:.75}
+  .apm .tx b{font-size:12.5px}
   .apm:hover{background:var(--hover)}
   .apm.cur{background:var(--hover)}
   .apm .ic{font-size:14px;line-height:1.2}
@@ -2176,8 +2183,12 @@ const WELCOME_SUGGEST = [
 
 function syncWelcome(){
   const w = logEl.querySelector('.welcome');
-  // 有会话、或者屏幕已经有内容了，欢迎页就没有意义
-  if (CURRENT_SID || [...logEl.children].some((e) => !e.classList.contains('welcome'))) {
+  // 判据是「屏幕上还没有东西」，不是「还没有会话号」。
+  // 刚点 New task 建出来的会话、或者打开一个一条消息都没有的旧会话，
+  // CURRENT_SID 已经有值了，但那还是一个空页面——和 New task 看到的是
+  // 同一件事，就该看到同一句话。以前这里卡在会话号上，于是「新建会话」
+  // 进来是一片空白，只有一个输入框，没人知道自己该干嘛。
+  if ([...logEl.children].some((e) => !e.classList.contains('welcome'))) {
     if (w) w.remove();
     return;
   }
@@ -2276,12 +2287,13 @@ function askApproval(req){
 
 const APPR = {
   // 四档梯子，和 Cursor（Ask/Plan/Agent）、Claude Code（Plan/Manual/Accept edits）、
-  // Codex（approval × sandbox）是同一件事：**同一把梯子上放不同高度**，
-  // 不是两个产品。plan 在最下面：只说方案，一个字节都不改。
-  plan:  { ic: '📋', name: 'Plan only',        cls: 'plan', desc: 'Read and research, but change nothing' },
-  ask:   { ic: '🛡', name: 'Request approval', cls: '',     desc: 'Ask every time a command needs it' },
-  auto:  { ic: '✅', name: 'Approve for me',    cls: 'auto', desc: 'Only ask about destructive actions' },
-  allow: { ic: '🔓', name: 'Full access',       cls: 'full', desc: 'Never ask — runs whatever the model asks for' },
+  // Codex（approval × sandbox）是同一件事：**同一把梯子上放不同高度**，不是两个产品。
+  // 界面是中文，这里就不能留着英文：一句「Ask every time a command needs it」
+  // 混在「描述要做的事」旁边，读的人得在两种语言之间来回切。
+  plan:  { ic: '💡', name: '计划模式', cls: 'plan', desc: '只读只推演，一个字节都不改' },
+  ask:   { ic: '✋', name: '请求批准', cls: '',     desc: '每次要动手时都问你' },
+  auto:  { ic: '🛡', name: '帮我批准', cls: 'auto', desc: '只对危险操作问你' },
+  allow: { ic: '⚠️', name: '完全访问', cls: 'full', desc: '不问，任何命令都直接跑' },
 };
 
 function paintApproval(mode){
@@ -2295,14 +2307,23 @@ function openApprovalMenu(){
   let m = document.getElementById('apMenu');
   if (!m){ m = document.createElement('div'); m.id = 'apMenu'; document.body.appendChild(m); }
   m.innerHTML = '';
+  // 标题行：一句「这次怎么批准」，右边给个出口。Codex 也是这么开的头——
+  // 没有标题的四行选项，看起来像四个开关，看不出是"选一个"。
+  const head = document.createElement('div');
+  head.className = 'aphead';
+  head.innerHTML = '<span>这次怎么批准？</span><button type="button" class="aplink">了解</button>';
+  head.querySelector('.aplink').onclick = () => { m.classList.remove('on'); openSettings('general'); };
+  m.appendChild(head);
   for (const [k, a] of Object.entries(APPR)){
     // 计划模式不在这张梯子上：它不是一个"批准到多严"的档位，而是"这一轮
     // 只说不做"。Codex 把它做成 /plan 命令，我们也一样——挂在这儿会让人
     // 以为选了它就等于放行得更少，其实是换了另一种工作方式。
     if (k === 'plan') continue;
     const it = document.createElement('div');
-    it.className = 'apm' + (SETTINGS.approval === k ? ' cur' : '');
-    it.innerHTML = '<span class="ic">' + a.ic + '</span><span class="tx"><b>' + a.name + '</b><i>' + a.desc + '</i></span>';
+    const cur = SETTINGS.approval === k;
+    it.className = 'apm' + (cur ? ' cur' : '');
+    it.innerHTML = '<span class="ic">' + a.ic + '</span><span class="tx"><b>' + a.name + '</b><i>' + a.desc + '</i></span>'
+      + (cur ? '<span class="apck">✓</span>' : '');
     it.onclick = async () => {
       m.classList.remove('on');
       const r = await fetch('/api/approval', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ mode: k }) });
