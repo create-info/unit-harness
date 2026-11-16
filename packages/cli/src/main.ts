@@ -29,7 +29,6 @@ import * as readline from 'node:readline'
 import { VERSION } from './version.ts'
 import { pluginDirs } from './plugin-dirs.ts'
 import { createDevice, loadDevices, revokeDevice, pairUrl } from './pairing.ts'
-import qrcode from 'qrcode-terminal'
 import { startServer, startServerOrRestart, openBrowser } from './serve.ts'
 import { startA2A } from './a2a.ts'
 import { startAcp } from './acp.ts'
@@ -273,7 +272,19 @@ async function cmdPair(rest: string[]): Promise<void> {
   console.log('')
   console.log(`  配对的设备：${device.name}（${device.id}）`)
   console.log('')
-  qrcode.generate(url, { small: true }, (q: string) => console.log(q))
+  // 二维码是锦上添花：这个包只负责在终端画一张码。装不上（浅克隆、依赖没
+  // 装全、全局安装时被裁剪）就不画，下面那行 URL 照样能扫、能粘贴——绝不能
+  // 因为一个可选依赖，让整次构建连带 `npm i -g .` 一起失败。
+  let drew = false
+  try {
+    const mod: any = await import('qrcode-terminal')
+    const qr = mod?.default ?? mod
+    if (typeof qr?.generate === 'function'){
+      qr.generate(url, { small: true }, (q: string) => console.log(q))
+      drew = true
+    }
+  } catch { /* 没有就当没装 */ }
+  if (!drew) console.log(dim2('  （终端二维码不可用：在手机上打开下面这个地址即可）'))
   console.log('  ' + url)
   console.log('')
   console.log('  手机：相机对着上面的码扫 → Safari 打开 → 分享 → 添加到主屏幕')

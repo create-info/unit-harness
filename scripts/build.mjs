@@ -47,6 +47,10 @@ await esbuild.build({
     __UH_LANDLOCK_B64__: JSON.stringify(embedHelper),
   },
   loader: { '.html': 'text' },
+  // 终端二维码是可选功能（`uh pair` 才用到）。不把它打进 bundle：解析失败
+  // 会让整个构建挂掉，而在别人机器上装不全依赖是常态——构建不该被一个
+  // 画色块的包卡住。运行时缺它，那边已经 try/catch 掉了。
+  external: ['qrcode-terminal'],
   logLevel: 'info',
 })
 
