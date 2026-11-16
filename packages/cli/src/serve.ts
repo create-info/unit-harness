@@ -1440,6 +1440,17 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
         '.webp': 'image/webp', '.svg': 'image/svg+xml', '.pdf': 'application/pdf',
         '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8',
         '.json': 'application/json; charset=utf-8', '.html': 'text/plain; charset=utf-8',
+        // 源码也要能被当成文本读：右侧面板要显示行号，而 octet-stream 只会
+        // 把浏览器引到"下载"上去。这里只声明类型，不改任何访问控制。
+        '.ts': 'text/plain; charset=utf-8', '.tsx': 'text/plain; charset=utf-8',
+        '.js': 'text/plain; charset=utf-8', '.jsx': 'text/plain; charset=utf-8',
+        '.mjs': 'text/plain; charset=utf-8', '.cjs': 'text/plain; charset=utf-8',
+        '.go': 'text/plain; charset=utf-8', '.rs': 'text/plain; charset=utf-8',
+        '.py': 'text/plain; charset=utf-8', '.sh': 'text/plain; charset=utf-8',
+        '.css': 'text/plain; charset=utf-8', '.yml': 'text/plain; charset=utf-8',
+        '.yaml': 'text/plain; charset=utf-8', '.toml': 'text/plain; charset=utf-8',
+        '.xml': 'text/plain; charset=utf-8', '.csv': 'text/plain; charset=utf-8',
+        '.log': 'text/plain; charset=utf-8',
       }
       // 未知类型一律当二进制下载，绝不让浏览器把内容当 HTML 执行
       const type = types[ext] ?? 'application/octet-stream'

@@ -512,12 +512,14 @@
    * ------------------------------------------------------------------ */
   @media (max-width: 820px){
     body{height:100dvh}
-    aside{position:fixed;left:0;top:0;bottom:0;width:min(84vw,320px);z-index:70;
+    /* 只推左侧会话抽屉：<aside id="diffPane"> 也是 aside，同一条选择器会把
+       右侧代码面板一起推到屏幕外，表现就是「手机上点文件什么都不出现」。 */
+    body>aside{position:fixed;left:0;top:0;bottom:0;width:min(84vw,320px);z-index:70;
       transform:translateX(-102%);transition:transform .22s ease;box-shadow:0 0 60px #000a;
       padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
-    body.drawer aside{transform:none}
+    body.drawer>aside{transform:none}
     #scrim{display:none}
-    body.drawer #scrim{display:block;position:fixed;inset:0;background:#00000088;z-index:65;
+    body.drawer>#scrim{display:block;position:fixed;inset:0;background:#00000088;z-index:65;
       backdrop-filter:blur(2px)}
     main{width:100%}
     header{padding-top:calc(10px + env(safe-area-inset-top));
@@ -545,8 +547,11 @@
     /* 用 id 而不是类：`.plus` 的基础样式写在文件更后面，同权重会反过来赢，
        留给手机的就是 30px 宽的小方块 */
     #plusBtn,#micBtn{width:44px;height:44px;align-self:flex-end;border-radius:10px;flex:0 0 44px}
-    /* 右侧 diff 面板在手机上占满整屏，不再和对话挤在一起 */
-    #diffPane{position:fixed;inset:0;z-index:80;width:100%;flex:1 1 100%;
+    /* 右侧 diff 面板在手机上占满整屏，不再和对话挤在一起。
+       `.on` 那条规则写在媒体查询外面，权重更高——这里必须连它也一起覆盖，
+       否则手机上打开面板只得到 46% 宽、还从左边探出去一截。 */
+    #stage>#diffPane,#stage>#diffPane.on{position:fixed;inset:0;z-index:80;width:100%;height:100%;
+      flex:1 1 100%;min-width:0;max-width:none;
       padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
     #slashPop{bottom:calc(var(--jumpb,112px) + env(safe-area-inset-bottom))}
   }
@@ -577,13 +582,28 @@
   #diffPane{flex:0 0 0;width:0;overflow:hidden;border-left:1px solid var(--line);
     background:var(--panel);display:flex;flex-direction:column;transition:flex-basis .16s ease,width .16s ease}
   #diffPane.on{flex:0 1 46%;width:46%;min-width:260px;max-width:720px}
-  .dphead{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line);flex:0 0 auto}
-  .dpfile{font:11.5px var(--mono);color:var(--fg);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+  .dphead{display:flex;align-items:center;gap:8px;padding:9px 14px;border-bottom:1px solid var(--line);flex:0 0 auto}
+  .dpfile{font:12px var(--mono);color:var(--fg);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .dpstat{font:10.5px var(--mono);color:var(--dim);white-space:nowrap}
   .dpopen{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:6px;
     font:10.5px var(--mono);padding:3px 8px;cursor:pointer;white-space:nowrap}
   .dpopen:hover{color:var(--fg);border-color:var(--hoverline)}
   .dpopen[disabled]{opacity:.5;cursor:default}
+  /* ── 代码视图：行号 + 四种 token，照 Codex 右侧那块 ─────────────── */
+  .dpmode{background:transparent;border:1px solid var(--line);color:var(--dim);border-radius:7px;
+    font:11.5px var(--sans);padding:4px 10px;cursor:pointer;flex:0 0 auto}
+  .dpmode:hover{color:var(--fg);border-color:var(--hoverline)}
+  .dpmode.on{color:var(--fg);border-color:var(--hoverline);background:var(--hover)}
+  .codeview{font:12.5px/20px var(--mono);padding:6px 0 14px;background:transparent}
+  .cl{display:flex;min-height:20px}
+  .cl:hover{background:var(--hover)}
+  .cn{flex:0 0 44px;text-align:right;padding-right:12px;color:var(--dim);opacity:.55;
+    user-select:none;font-size:11px;line-height:20px}
+  .cc{flex:1 1 auto;white-space:pre;overflow-x:auto;padding-right:14px;color:var(--fg)}
+  .c-kw{color:#8a3fa8}
+  .c-str{color:#1f7a4d}
+  .c-num{color:#b4671a}
+  .c-com{color:var(--dim);opacity:.9;font-style:italic}
   .dpclose{background:none;border:0;color:var(--dim);cursor:pointer;font-size:13px;padding:2px 4px;border-radius:5px}
   .dpclose:hover{color:var(--fg);background:var(--hover)}
   .dpbody{flex:1;overflow:auto;font:11.5px/1.55 var(--mono);padding:6px 0}
@@ -885,6 +905,7 @@
       <div class="dphead">
         <span class="dpfile" id="dpFile"></span>
         <span class="dpstat" id="dpStat"></span>
+        <button class="dpmode" id="dpMode" title="在文件原文和本次改动之间切换">显示更改</button>
         <button class="dpopen" id="dpOpen" title="Open this file in an editor">↗ open</button>
         <button class="dpclose" id="dpClose" title="Close (Esc)">✕</button>
       </div>
@@ -4238,6 +4259,15 @@ function toolSections(p){
 }
 
 function attachDetail(el, p, extra){
+  // 有具体文件的行，点一下就把文件摆到右边去：想「看一眼这个文件」的人，
+  // 要的是那个文件，不是对话里嵌一段被折行的代码（Codex 也是点开就开面板）。
+  const fpath = toolArg(p || {}, 'path');
+  if (fpath && /\.[A-Za-z0-9]{1,6}$/.test(fpath)){
+    el.classList.add('expandable');
+    el.title = fpath + ' — 点开在右边看';
+    el.addEventListener('click', () => openDiffPane(fpath));
+    return;
+  }
   const sections = toolSections(p).concat(extra || []);
   if (!sections.length) return;
   el.classList.add('expandable');
@@ -4420,27 +4450,61 @@ function fileCard(p, seq){
  * --------------------------------------------------------------------- */
 let DP_PATH = '';
 
+let DP_MODE = 'file';
+let DP_SEQ = 0;
+
+/** 头部写「目录 › 文件」，不写整条路径：Codex 的标题栏就是这么认文件的。 */
+function crumbOf(path){
+  const parts = String(path).split('/').filter(Boolean);
+  const file = parts.pop() || String(path);
+  const dir = parts.pop() || '';
+  return (dir ? dir + ' › ' : '') + file;
+}
+
 async function openDiffPane(path, seq){
-  const pane = $('#diffPane'), body = $('#dpBody');
+  const pane = $('#diffPane');
   DP_PATH = path;
-  $('#dpFile').textContent = path;
+  DP_SEQ = seq || 0;
+  DP_MODE = 'file';
+  const mb = $('#dpMode');
+  if (mb) mb.textContent = '显示更改';
+  $('#dpFile').textContent = crumbOf(path);
   $('#dpFile').title = path;
   $('#dpStat').textContent = '';
   pane.classList.add('on');
   pane.setAttribute('aria-hidden', 'false');
+  await paintPane();
+}
+
+/** 按当前模式重画：默认给原文（带行号），点了「显示更改」才给前后对比。 */
+async function paintPane(){
+  if (DP_MODE === 'diff') return renderDiff(DP_PATH, DP_SEQ);
+  return renderCodeFile(DP_PATH);
+}
+
+async function renderDiff(path, seq){
+  const body = $('#dpBody');
   body.innerHTML = '<div class="dpempty">loading…</div>';
   try {
     const q = '/api/diff?session=' + encodeURIComponent(CURRENT_SID)
       + '&path=' + encodeURIComponent(path) + (seq ? '&seq=' + seq : '');
     const r = await fetch(q).then((x) => x.json());
     // 等着的时候用户可能点了别的文件：迟到的响应不许覆盖新的
-    if (DP_PATH !== path) return;
+    if (DP_PATH !== path || DP_MODE !== 'diff') return;
     body.innerHTML = '';
     if (r.error){
       // 生成出来的东西没有逐行对比，但"看一眼"是能做到的：
       //   png/jpg → 直接贴图；pdf → 内嵌；其它二进制 → 给下载和 open。
       // 只显示一句"没有可对比的前后版本"，等于把用户推回文件管理器。
-      if (r.generated || r.binary) { renderFilePreview(body, path, r); return; }
+      if (r.generated || r.binary) {
+        // 文本文件这次根本没被改：退回原文比甩一句 error 有用得多
+        DP_MODE = 'file';
+        const mb = $('#dpMode');
+        if (mb){ mb.textContent = '显示更改'; mb.classList.remove('on'); }
+        await renderCodeFile(path);
+        if (DP_PATH === path && !r.binary) $('#dpStat').textContent = '这次没有改动';
+        return;
+      }
       body.innerHTML = '<div class="dpempty">' + esc(r.error) + '</div>'; return;
     }
     let add = 0, del = 0;
@@ -4450,10 +4514,95 @@ async function openDiffPane(path, seq){
       else if (ln.classList.contains('del')) del++;
     }
     $('#dpStat').textContent = add || del ? '+' + add + ' −' + del : '';
-    if (!body.children.length) body.innerHTML = '<div class="dpempty">No textual change in this file.</div>';
+    if (!body.children.length) body.innerHTML = '<div class="dpempty">这个文件这次没有文字上的改动。</div>';
   } catch (e) {
     if (DP_PATH === path) body.innerHTML = '<div class="dpempty">' + esc(String(e.message || e)) + '</div>';
   }
+}
+
+/**
+ * 文件原文，带行号和一点颜色。
+ *
+ * 浏览器里读代码，行号比语法高亮更重要——没有行号，对话里那句
+ * 「第 246 行」就落不到地方。高亮只做四种 token（注释/字符串/数字/关键字），
+ * 够看清结构，又不至于为了配色写一个词法分析器。
+ */
+async function renderCodeFile(path){
+  const body = $('#dpBody');
+  try {
+    const q = '/api/file?session=' + encodeURIComponent(CURRENT_SID) + '&path=' + encodeURIComponent(path);
+    const r = await fetch(q);
+    if (DP_PATH !== path || DP_MODE !== 'file') return;
+    const ct = String((r.headers && r.headers.get('content-type')) || '');
+    if (!r.ok || (ct && !/^(text\/|application\/(json|javascript|xml))/.test(ct))){
+      // 图片、pdf、pptx 这些走另一条路（预览/下载），不能当文本念
+      renderFilePreview(body, path, { binary: true });
+      return;
+    }
+    const text = await r.text();
+    if (DP_PATH !== path || DP_MODE !== 'file') return;
+    body.innerHTML = codeBlock(text, langOf(path));
+    const n = text.split('\n').length;
+    $('#dpStat').textContent = n + ' 行';
+  } catch (e) {
+    if (DP_PATH === path) body.innerHTML = '<div class="dpempty">' + esc(String(e.message || e)) + '</div>';
+  }
+}
+
+const LANG_OF = {
+  go: 'go', rs: 'go', c: 'go', h: 'go', cpp: 'go', cs: 'go', java: 'go', kt: 'go', swift: 'go',
+  ts: 'ts', tsx: 'ts', js: 'ts', jsx: 'ts', mjs: 'ts', cjs: 'ts', mts: 'ts',
+  py: 'py', sh: 'sh', bash: 'sh', zsh: 'sh', fish: 'sh',
+  json: 'json',
+};
+const KWS = {
+  go: 'package import func type struct interface var const return if else for range switch case default go defer chan map nil true false string int int64 uint32 float64 bool error byte rune make new select break continue fallthrough iota',
+  ts: 'import export from const let var function return if else for while do class interface type enum new await async throw try catch finally true false null undefined typeof instanceof extends implements public private protected readonly static default switch case break continue of in as any string number boolean void never unknown this',
+  py: 'import from def class return if elif else for while with as try except finally raise True False None in is not and or lambda yield pass global nonlocal assert del async await self',
+  sh: 'if then else fi for while do done case esac function return export local echo cd exit set unset source',
+  json: 'true false null',
+};
+
+function langOf(p){
+  const ext = String(p).split('.').pop().toLowerCase();
+  return LANG_OF[ext] || 'md';
+}
+
+/** 一行一个 token 流：注释、字符串、数字、关键字，其余原样（但要转义）。 */
+function hlLine(line, lang){
+  if (lang === 'md') return esc(line);
+  const kws = new Set((KWS[lang] || '').split(' '));
+  const hash = lang === 'py' || lang === 'sh';
+  const re = new RegExp(
+    (hash ? '(#.*$)' : '(//.*$|/\\*.*?\\*/)')
+    + '|("(?:[^"\\\\]|\\\\.)*"|\'(?:[^\'\\\\]|\\\\.)*\'|`(?:[^`\\\\]|\\\\.)*`)'
+    + '|(\\b\\d+(?:\\.\\d+)?\\b)'
+    + '|([A-Za-z_][A-Za-z0-9_]*)',
+    'g',
+  );
+  let out = '', last = 0, m;
+  while ((m = re.exec(line)) !== null){
+    out += esc(line.slice(last, m.index));
+    const t = m[0];
+    if (m[1]) out += '<span class="c-com">' + esc(t) + '</span>';
+    else if (m[2]) out += '<span class="c-str">' + esc(t) + '</span>';
+    else if (m[3]) out += '<span class="c-num">' + esc(t) + '</span>';
+    else out += kws.has(t) ? '<span class="c-kw">' + esc(t) + '</span>' : esc(t);
+    last = m.index + t.length;
+  }
+  return out + esc(line.slice(last));
+}
+
+function codeBlock(text, lang){
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const cap = 3000;            // 再长也没人在这儿读，留给编辑器
+  const shown = lines.slice(0, cap);
+  const rows = shown.map((ln, i) =>
+    '<div class="cl"><span class="cn">' + (i + 1) + '</span><span class="cc">'
+    + (hlLine(ln, lang) || ' ') + '</span></div>').join('');
+  const more = lines.length > cap
+    ? '<div class="dpempty">… 后面还有 ' + (lines.length - cap) + ' 行</div>' : '';
+  return '<div class="codeview">' + rows + more + '</div>';
 }
 
 /**
@@ -4526,6 +4675,14 @@ function closeDiffPane(){
 }
 
 $('#dpClose')?.addEventListener('click', closeDiffPane);
+// 同一个文件在「原文」和「这次改了什么」之间来回看，是读代码最常用的一个动作
+$('#dpMode')?.addEventListener('click', () => {
+  DP_MODE = DP_MODE === 'diff' ? 'file' : 'diff';
+  const b = $('#dpMode');
+  if (b){ b.textContent = DP_MODE === 'diff' ? '看原文' : '显示更改'; b.classList.toggle('on', DP_MODE === 'diff'); }
+  $('#dpStat').textContent = '';
+  paintPane();
+});
 
 /**
  * 在编辑器里打开当前文件（Goland / VS Code / Cursor / 系统默认）。
@@ -4984,19 +5141,52 @@ function who(p){
  * Node 模块，这份静态页面 import 不到；而且历史会话里的事件没有 label，
  * 只能在渲染时按 tool 名补出来，否则老会话永远是一串英文动词。
  */
+/**
+ * 工具调用的参数。
+ *
+ * 事件里这条路比较绕：有的工具（exec）把参数平铺在 payload 上，有的把整个
+ * 参数对象塞进 `args` 这个 **JSON 字符串**里，长参数还会被截断成一份不可解析
+ * 的 args_preview。所以先看平铺字段，再试着解析，最后用正则从原文里捞——
+ * 捞不到就算了，绝不能因此显示一行「已读取 」后面什么都没有。
+ */
+function toolArgs(p){
+  if (!p) return {};
+  if (p.args && typeof p.args === 'object') return p.args;
+  const raw = typeof p.args === 'string' ? p.args
+    : (typeof p.args_preview === 'string' ? p.args_preview : '');
+  if (!raw.trim().startsWith('{')) return {};
+  try { return JSON.parse(raw); } catch { return {}; }
+}
+
+function toolArg(p, k){
+  if (typeof p[k] === 'string') return p[k];
+  const A = toolArgs(p);
+  const v = A[k];
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v)) return v.join(' ');
+  const raw = typeof p.args === 'string' ? p.args : (p.args_preview || '');
+  const m = new RegExp('"' + k + '"\\s*:\\s*"([^"]+)').exec(String(raw));
+  return m ? m[1] : '';
+}
+
 function toolLine(p){
   const t = String((p && p.tool) || '');
-  const arg = (k) => (typeof p[k] === 'string' ? p[k] : '');
+  const A = toolArgs(p);
+  const arg = (k) => toolArg(p, k);
   const cut = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
   const path = arg('path') || arg('file') || '';
-  const files = Array.isArray(p && p.files) ? p.files : [];
+  const files = Array.isArray(p && p.files) ? p.files
+    : (Array.isArray(A.files) ? A.files : []);
 
   if (t === 'run_command' || t === 'exec'){
     const cmd = Array.isArray(p.argv) ? p.argv.join(' ') : arg('command');
     return { icon: '⌘', text: cut(cmd, 96) || '执行命令' };
   }
   if (t === 'read_file') return { icon: '▤', text: '已读取 ' + cut(path, 60) };
-  if (t === 'list_dir') return { icon: '▦', text: '已列出 ' + cut(path || '工作区', 50) };
+  if (t === 'list_dir'){
+    const dir = (path === '.' || !path) ? '工作区' : cut(path, 50);
+    return { icon: '▦', text: '已列出 ' + dir };
+  }
   if (t === 'grep'){
     const where = path ? ' ' + cut(path, 40) + ' 中' : '工作区';
     return { icon: '⌕', text: '已在' + where + '搜索"' + cut(arg('pattern'), 40) + '"' };
