@@ -790,6 +790,61 @@
   .pmnew input:focus{border-color:var(--hoverline)}
   .pmfoot{padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;gap:8px;flex:0 0 auto}
   .pmfoot .msg{flex:1;font-size:11.5px;color:var(--dim)}
+  /* ── 输入区：照 Codex 的一张卡片 ─────────────────────────────
+     顶上写「在哪儿干活」，中间是输入，底下一排小控件。模型从顶栏挪到
+     右下：手在键盘上，眼睛不用跨整屏去找「用谁跑」。 */
+  footer{padding:10px 16px 14px}
+  footer>form#run{
+    display:flex;flex-direction:column;align-items:stretch;gap:2px;
+    max-width:880px;margin:0 auto;
+    background:var(--panel);border:1px solid var(--line);border-radius:20px;
+    padding:8px 12px;box-shadow:0 12px 32px rgba(16,24,40,.08)}
+  /* 手机上那条老规则写着 align-items:flex-end，会把路径行挤到右边去 */
+  #run .cpath{display:flex;align-items:center;justify-content:flex-start;gap:8px;padding:2px 2px 0;width:100%}
+  #run .cpath .mbcwd{
+    display:inline-block;              /* 手机上原来这条是 display:none，现在路径进了卡片，得露出来 */
+    border:0;background:transparent;color:var(--dim);cursor:pointer;
+    font:12.5px/1.6 var(--mono);padding:2px 6px;border-radius:6px;
+    max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #run .cpath .mbcwd::before{content:'🖥  ';font-size:11px}
+  #run .cpath .mbcwd:hover{background:var(--hover);color:var(--fg)}
+  #run textarea#task{
+    width:100%;box-sizing:border-box;border:0;outline:0;background:transparent;
+    resize:none;font:15px/1.55 var(--mono);color:var(--fg);
+    min-height:52px;max-height:38vh;padding:6px 2px;border-radius:0}
+  #run textarea#task::placeholder{color:var(--dim)}
+  #run .crow{display:flex;align-items:center;gap:6px;min-width:0}
+  #run .crow-grow{flex:1 1 auto;min-width:0}
+  #run .crow .plus,#run .crow .mic,#run .crow .appr,#run .crow .modelbtn{
+    border:0;background:transparent;color:var(--dim);cursor:pointer;
+    font:12.5px/1 var(--mono);border-radius:999px;padding:6px 9px;
+    max-width:42%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #run .crow .plus{font-size:17px;padding:4px 9px}
+  #run .crow .plus:hover,#run .crow .mic:hover,#run .crow .appr:hover,
+  #run .crow .modelbtn:hover{background:var(--hover);color:var(--fg)}
+  #run .crow .go{
+    flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:0;
+    background:#0a84ff;color:#fff;font-size:17px;line-height:1;
+    display:grid;place-items:center;cursor:pointer;padding:0}
+  #run .crow .go:hover{background:#0a76e6}
+  #run .crow .go:disabled{opacity:.45;cursor:default}
+  #run .crow .stop{
+    flex:0 0 auto;width:34px;height:34px;border-radius:50%;border:0;
+    background:#e0453b;color:#fff;font-size:11px;line-height:1;
+    display:grid;place-items:center;cursor:pointer;padding:0}
+  #run .crow #ctx{flex:0 0 auto}
+  /* ── 空会话：一句话，照 Codex ─────────────────────────────── */
+  .welcome{max-width:760px;margin:clamp(60px,18vh,190px) auto 0;padding:0 22px;text-align:center}
+  .wtitle{font-family:var(--sans);font-size:22px;font-weight:400;color:var(--fg);line-height:1.65;letter-spacing:0}
+  .wtitle b{font-weight:600}
+  @media (max-width:620px){
+    footer{padding:8px 10px 12px}
+    footer>form#run{border-radius:18px;padding:7px 10px}
+    #run .crow .modelbtn{max-width:36%}
+    #run .crow .appr #apprName{display:none}   /* 窄屏只留盾牌，字挤不下 */
+    .wtitle{font-size:17px}
+    .welcome{margin-top:clamp(40px,14vh,120px);padding:0 16px}
+  }
 </style>
 </head>
 <body>
@@ -831,29 +886,6 @@
   <button id="jump" title="Jump to the latest">↓ latest</button>
   <div id="deliverables"></div>
   <footer>
-    <div class="modelbar">
-      <button class="modelbtn" id="modelPick" title="Switch model"><span id="mpName">no model</span><span class="caret">▾</span></button>
-      <button class="appr" id="apprBtn" title="How runs are approved"><span id="apprIco">🛡</span><span id="apprName">Request approval</span></button>
-      <button class="mbcwd" id="mpWork" title="Switch project folder"></button>
-      <!-- 上下文：圆环走一圈 = 压缩阈值用完。脑子图标说明这是"模型的记忆" -->
-      <div id="ctx" role="button" tabindex="0" aria-label="Context window">
-        <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
-          <circle class="ring-bg" cx="13" cy="13" r="11.2" stroke-width="2"></circle>
-          <circle class="ring-fg" id="ctxRing" cx="13" cy="13" r="11.2" stroke-width="2"
-                  transform="rotate(-90 13 13)" stroke-dasharray="70.37 70.37" stroke-dashoffset="70.37"></circle>
-          <!-- 图标：三条横线 = 堆叠的上下文层。
-               试过简笔脑子（糊成墨点）和同心弧（挤成一团），13px 里都认不出。
-               三条平行粗线是这个尺寸下唯一还站得住的图形，意思也直白：历史是一行行摞起来的。 -->
-          <g class="brain" stroke-width="1.9" stroke-linecap="round">
-            <path d="M9.6 9.3h6.8"></path>
-            <path d="M8.8 13h8.4"></path>
-            <path d="M9.6 16.7h6.8"></path>
-          </g>
-        </svg>
-        <span class="num" id="ctxText">—</span>
-        <div id="ctxPop"></div>
-      </div>
-    </div>
     <div class="attach" id="attach"></div>
     <div class="fpick" id="fpick"></div>
     <div class="qzone" id="qzone">
@@ -862,13 +894,42 @@
     </div>
     <!-- 敲 / 或 $ 时弹出的补全：MCP server、技能、命令，像 Codex 那样选一个 -->
     <div id="slashPop" role="listbox" aria-label="commands and plugins"></div>
+    <!-- 输入区照 Codex 摆：一张卡片，顶上写着「在哪儿干活」，中间是输入，
+         底下排一排小控件。模型放右下而不是顶栏——眼睛从输入框移到「用谁跑」
+         不该跨过整屏。 -->
     <form id="run">
-      <button class="plus" id="plusBtn" type="button" title="Attach an image">+</button>
+      <div class="cpath">
+        <button class="mbcwd" id="mpWork" type="button" title="Switch project folder">正在读取…</button>
+      </div>
       <input type="file" id="filePick" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
-      <button class="mic" id="micBtn" type="button" title="Speak — recorded and transcribed on this machine">🎤</button>
-      <textarea id="task" placeholder="Describe the task…"></textarea>
-      <button class="go" id="go" type="submit">Run</button>
-      <button class="stop" id="stopBtn" type="button" style="display:none">Stop</button>
+      <textarea id="task" placeholder="随心输入，或说清要做的事" rows="1"></textarea>
+      <div class="crow">
+        <button class="plus" id="plusBtn" type="button" title="Attach an image">+</button>
+        <button class="appr" id="apprBtn" type="button" title="How runs are approved"><span id="apprIco">🛡</span><span id="apprName">Request approval</span></button>
+        <span class="crow-grow"></span>
+        <button class="modelbtn" id="modelPick" type="button" title="Switch model"><span id="mpName">no model</span><span class="caret">▾</span></button>
+        <!-- 上下文：圆环走一圈 = 压缩阈值用完。脑子图标说明这是"模型的记忆" -->
+        <div id="ctx" role="button" tabindex="0" aria-label="Context window">
+          <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true">
+            <circle class="ring-bg" cx="13" cy="13" r="11.2" stroke-width="2"></circle>
+            <circle class="ring-fg" id="ctxRing" cx="13" cy="13" r="11.2" stroke-width="2"
+                    transform="rotate(-90 13 13)" stroke-dasharray="70.37 70.37" stroke-dashoffset="70.37"></circle>
+            <!-- 图标：三条横线 = 堆叠的上下文层。
+                 试过简笔脑子（糊成墨点）和同心弧（挤成一团），13px 里都认不出。
+                 三条平行粗线是这个尺寸下唯一还站得住的图形，意思也直白：历史是一行行摞起来的。 -->
+            <g class="brain" stroke-width="1.9" stroke-linecap="round">
+              <path d="M9.6 9.3h6.8"></path>
+              <path d="M8.8 13h8.4"></path>
+              <path d="M9.6 16.7h6.8"></path>
+            </g>
+          </svg>
+          <span class="num" id="ctxText">—</span>
+          <div id="ctxPop"></div>
+        </div>
+        <button class="mic" id="micBtn" type="button" title="Speak — recorded and transcribed on this machine">🎤</button>
+        <button class="go" id="go" type="submit" title="Run" aria-label="Run">↑</button>
+        <button class="stop" id="stopBtn" type="button" style="display:none" title="Stop" aria-label="Stop">■</button>
+      </div>
     </form>
   </footer>
 </main>
@@ -1707,6 +1768,10 @@ async function loadSettings(){
   const home = (window.INFO && window.INFO.userHome) || '';
   $('#mpWork').textContent = home && ws.startsWith(home) ? '~' + ws.slice(home.length) : ws;
   $('#mpWork').title = ws;
+  // 空会话那句「你想让我们在 X 中构建什么」要写着项目名，不是整条路径：
+  // 一整条 /home/xxx/.uh/work 摆在页面中央没人想读
+  const ews = document.querySelector('#emptyWs');
+  if (ews) ews.textContent = (ws.split('/').filter(Boolean).pop() || '这个项目');
   paintApproval(SETTINGS.approval || 'ask');
   if (SETTINGS.context) {
     CTX.window = SETTINGS.context.window || 0;
@@ -2063,24 +2128,11 @@ function syncWelcome(){
   const host = document.createElement('div');
   host.className = 'welcome';
   const ws = SETTINGS.workspace || '';
-  const home = (window.INFO && window.INFO.userHome) || '';
-  const short = home && ws.startsWith(home) ? '~' + ws.slice(home.length) : ws;
-  host.innerHTML = '<div class="wtitle">要做什么？</div>'
-    + '<div class="wsub">它在这个目录里跑，动手之前会问你要不要批准：<code>' + esc(short) + '</code></div>'
-    + '<div class="wchips">'
-    + WELCOME_SUGGEST.map((s, i) => '<button class="wchip' + (s[1] ? '' : ' ghost') + '" data-i="' + i + '">'
-        + esc(s[0]) + '</button>').join('')
-    + '</div>';
-  host.addEventListener('click', (e) => {
-    const b = e.target.closest('.wchip');
-    if (!b) return;
-    const s = WELCOME_SUGGEST[Number(b.dataset.i)];
-    if (!s) return;
-    // 没有具体说法的那条只是提示：把光标放进输入框，让用户自己把报错贴上来
-    $('#task').value = s[1];
-    $('#task').focus();
-    $('#task').dispatchEvent(new Event('input'));
-  });
+  // 只问一句，摆那些「看看这个项目 / 补一组测试」的胶囊按钮反而是在替用户
+  // 想事情：他不知道该点哪个，也不知道点了会发生什么。Codex 的空页面就是
+  // 一句话——把「在哪儿、能做什么」说清楚，剩下交给输入框。
+  const name = ws.split('/').filter(Boolean).pop() || '这个项目';
+  host.innerHTML = '<div class="wtitle">你想让我们在 <b>' + esc(name) + '</b> 中构建什么？</div>';
   logEl.appendChild(host);
 }
 
@@ -4892,7 +4944,10 @@ function dim2hint(s){
 function setRunning(on){
   RUNNING = on;
   // 跑着的时候输入框不能锁：人看到它走偏了，得能立刻说一句
-  $('#go').textContent = on ? 'Steer' : 'Run';
+  // 按钮现在是圆形 ↑（照 Codex），不再写字：跑着的时候点它仍然是「插一句」，
+  // 语义靠 title / aria 说清楚，别把两个字硬塞进 34px 的圆里
+  $('#go').title = on ? '插一句（下一步生效）' : 'Run';
+  $('#go').setAttribute('aria-label', on ? 'Steer' : 'Run');
   $('#go').style.display = '';
   $('#stopBtn').style.display = on ? '' : 'none';
   $('#task').disabled = false;
@@ -4902,7 +4957,7 @@ function setRunning(on){
     ? ph('跑着的时候也能插话，会在下一步生效', '插一句…')
     : (CURRENT_SID
         ? ph('接着说，会续在这条会话里', '接着说…')
-        : ph('描述要做的事', '描述要做的事…'));
+        : ph('随心输入，或说清要做的事', '随心输入…'));
   if (!on) clearQueue();
   paintQueueState();
 }
