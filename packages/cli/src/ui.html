@@ -1698,9 +1698,13 @@ function applySearch(){
 /** 在某个项目里开一个新会话：切过去 + 清空对话区（会话在你说第一句时才落盘） */
 async function newTaskInProject(path){
   await fetch('/api/project', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ path }) });
+  // 不重新读一次设置，欢迎语里印的还是上一个项目名
+  await loadSettings();
   await loadProjects();
   startNewTask();
-  row('dim','new session in ' + path);
+  // 这里原来写一行 `new session in /path` 到对话区：那行字把「空会话」变成了
+  // 非空，欢迎语（你想让我们在 X 中构建什么？）就此被顶掉——项目菜单里点
+  // 「新建会话」永远看不到那句话，就是这个原因。
 }
 
 async function switchProject(path){
@@ -5305,7 +5309,7 @@ function setRunning(on){
     ? ph('跑着的时候也能插话，会在下一步生效', '插一句…')
     : (CURRENT_SID
         ? ph('接着说，会续在这条会话里', '接着说…')
-        : ph('随心输入，或说清要做的事', '随心输入…'));
+        : ph('描述要做的事 · Enter 换行 / Shift+Enter 发送', '描述要做的事…'));
   if (!on) clearQueue();
   paintQueueState();
 }
