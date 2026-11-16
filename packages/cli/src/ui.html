@@ -106,7 +106,7 @@
   /* 项目 = 工作区。会话挂在项目下面，和 Codex 的左栏一致 */
   .grp{margin-bottom:2px}
   /* 右边留出「…」的位置：不留的话鼠标一上去，按钮就压在会话数量上 */
-  .grphead{display:flex;align-items:center;gap:6px;padding:6px 22px 6px 10px;border-radius:7px;
+  .grphead{display:flex;align-items:center;gap:6px;padding:6px 42px 6px 10px;border-radius:7px;
     cursor:pointer;font-size:12px;color:var(--dim)}
   .grphead:hover{background:var(--hover);color:var(--fg)}
   .grphead.on{color:var(--fg)}
@@ -309,6 +309,14 @@
   .grphead .smore.pm{position:absolute;right:2px;top:50%;transform:translateY(-50%)}
   .grphead:hover .smore.pm,.grphead .smore.pm:focus{display:flex}
   @media (hover:none){ .grphead .smore.pm{display:flex} }
+  /* 项目行上的「新建对话」：和「…」并排，悬停才出现。
+     悬停时把数字藏起来——两个按钮正好压在它上面，露一半比不露更乱。 */
+  .grphead .gnnew{position:absolute;right:24px;top:50%;transform:translateY(-50%);display:none;
+    border:0;background:none;color:var(--dim);cursor:pointer;font-size:14px;line-height:1;padding:2px 3px}
+  .grphead:hover .cnt{visibility:hidden}
+  .grphead:hover .gnnew,.grphead .gnnew:focus{display:block}
+  @media (hover:none){ .grphead .gnnew{display:block} }
+  .grphead .gnnew:hover{color:var(--fg)}
   .smenu{position:fixed;z-index:9998;min-width:150px;padding:5px;border-radius:11px;
     background:var(--panel);border:1px solid var(--line);box-shadow:0 12px 34px rgba(0,0,0,.28)}
   .smitem{display:block;width:100%;text-align:left;border:0;background:transparent;color:var(--fg);
@@ -1330,6 +1338,23 @@ async function loadProjects(){
     pmore.onclick = (e) => { e.stopPropagation(); openProjMenu(e, head, proj, name) };
     head.appendChild(pmore);
 
+    // 每个项目自带一个「在这个项目里新建对话」：不然想开一条新会话，得先点
+    // 项目切过去、再点顶部的 + New task——两步，而且第一步看起来像"查看"。
+    // 悬停才出现，和「…」一样，列表不会因此变挤。
+    const pnew = document.createElement('button');
+    pnew.className = 'gnnew';
+    pnew.type = 'button';
+    pnew.title = '在「' + name + '」里新建对话';
+    pnew.textContent = '+';
+    pnew.onclick = async (e) => {
+      e.stopPropagation();
+      if (!isCur) await switchProject(proj.path);
+      else startNewTask();
+      const ta = document.getElementById('task');
+      if (ta){ ta.value = ''; ta.focus(); }
+    };
+    head.appendChild(pnew);
+
     head.onclick = (e) => {
       if (e.target.closest && e.target.closest('.smore')) return;
       if (!isCur) { switchProject(proj.path); return; }
@@ -1684,7 +1709,6 @@ async function switchProject(path){
   await loadProjects();
   // 换项目就是换对话：旧会话的事件属于旧工作区，接着说话会在另一个目录里动文件
   startNewTask();
-  row('dim','project → ' + path);
 }
 
 /** 模型就地下拉：Codex 那种，不逼人去设置页 */
@@ -1952,7 +1976,10 @@ async function openProjectPath(target){
   await loadProjects();
   // 换项目就是换对话：旧会话属于旧工作区，接着说话会在另一个目录里动文件
   startNewTask();
-  row('dim', 'project → ' + j.current);
+  // 这里原来写一行 `project → /path` 到对话区。那行字不属于任何一段对话，
+  // 它是我们自己的日志；更要紧的是它让「空会话」不再空——欢迎语被它顶掉了，
+  // 于是「在某个项目里新建对话」得到的是一片空白。工作目录本来就印在输入
+  // 卡片顶上，用户不需要第二处。
 }
 
 async function pmCreate(){
