@@ -859,6 +859,17 @@
     max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #run .cpath .mbcwd::before{content:'🖥  ';font-size:11px}
   #run .cpath .mbcwd:hover{background:var(--hover);color:var(--fg)}
+  #run .cpath .brbtn{display:none;align-items:center;gap:4px;border:0;background:none;color:var(--dim);
+    font:11.5px var(--mono);cursor:pointer;padding:3px 7px;border-radius:6px;flex:0 0 auto;max-width:40%;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #run .cpath .brbtn:hover{background:var(--hover);color:var(--fg)}
+  .brsrch{padding:0 5px 6px}
+  .brsrch input{width:100%;box-sizing:border-box;border:1px solid var(--line);background:var(--bg2);
+    color:var(--fg);border-radius:8px;padding:7px 9px;font:12px var(--sans);outline:none}
+  .brsrch input:focus{border-color:var(--accent)}
+  .popdim{font-family:var(--mono);opacity:.6}
+  .popitem .bico{opacity:.55;margin-right:2px}
+  .popitem.newbr{color:var(--dim);border-top:1px solid var(--line);border-radius:0 0 8px 8px;margin-top:2px}
   #run textarea#task{
     width:100%;box-sizing:border-box;border:0;outline:0;background:transparent;
     resize:none;font:15px/1.55 var(--mono);color:var(--fg);
@@ -962,6 +973,9 @@
     <form id="run">
       <div class="cpath">
         <button class="mbcwd" id="mpWork" type="button" title="Switch project folder">正在读取…</button>
+        <!-- 分支：Codex 把「在哪个目录、哪条分支上干活」放在同一行。
+             不是 git 仓库时这里自己隐藏，别对非仓库的项目说"master"。 -->
+        <button class="brbtn" id="brBtn" type="button" title="切换分支" style="display:none"></button>
       </div>
       <input type="file" id="filePick" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
       <textarea id="task" placeholder="随心输入，或说清要做的事" rows="1"></textarea>
@@ -1850,6 +1864,7 @@ async function loadSettings(){
   const home = (window.INFO && window.INFO.userHome) || '';
   $('#mpWork').textContent = home && ws.startsWith(home) ? '~' + ws.slice(home.length) : ws;
   $('#mpWork').title = ws;
+  paintBranch();
   // 空会话那句「你想让我们在 X 中构建什么」要写着项目名，不是整条路径：
   // 一整条 /home/xxx/.uh/work 摆在页面中央没人想读
   const ews = document.querySelector('#emptyWs');
@@ -2186,6 +2201,7 @@ $('#modelPick').addEventListener('click', (e) => { e.stopPropagation(); openMode
 $('#apprBtn').addEventListener('click', (e) => { e.stopPropagation(); openApprovalMenu(); });
 // cwd 本身就是入口：看着是一条路，点下去就该能换地方（Codex 的项目就在会话里）
 $('#mpWork') && $('#mpWork').addEventListener('click', (e) => { e.stopPropagation(); openProjectModal(); });
+$('#brBtn').addEventListener('click', (e) => { e.stopPropagation(); openBranchMenu(); });
 document.addEventListener('click', (e) => {
   const m = document.getElementById('mpMenu');
   if (m && m.classList.contains('on') && !m.contains(e.target) && e.target.id !== 'modelPick') m.classList.remove('on');
@@ -2350,6 +2366,103 @@ function paintApproval(mode){
   $('#apprBtn').className = 'appr ' + a.cls;
 }
 
+/** 路径旁边那条「⎇ 分支」：不是 git 仓库就整条不显示 */
+async function paintBranch(){
+  const b = document.getElementById('brBtn');
+  if (!b) return;
+  try {
+    const r = await fetch('/api/git/branches').then((x) => x.json());
+    if (!b.isConnected) return;
+    if (!r.ok){ b.style.display = 'none'; return; }
+    b.style.display = 'inline-flex';
+    b.innerHTML = '<span>⎇</span><b>' + esc(r.current || 'HEAD') + '</b>';
+    b.title = '当前分支「' + (r.current || '') + '」——点开换一条';
+  } catch { b.style.display = 'none'; }
+}
+
+/**
+ * 分支列表：搜索、当前项打勾、底部能新建。
+ *
+ * 切换是一条会动的 git 命令：本地有未提交的改动时它会拒绝，理由（哪个文件
+ * 挡着）必须原样给人看，所以失败时面板不关，错误就写在列表里。
+ */
+async function openBranchMenu(){
+  let m = document.getElementById('brMenu');
+  if (!m){
+    m = document.createElement('div');
+    m.id = 'brMenu'; m.className = 'popmenu';
+    document.body.appendChild(m);
+  }
+  let creating = false;
+  m.innerHTML = '<div class="pophead"><span>分支</span><span id="brCur" class="popdim"></span></div>'
+    + '<div class="brsrch"><input id="brSearch" type="text" placeholder="搜索分支…" autocomplete="off" spellcheck="false"></div>'
+    + '<div id="brList"><div class="popempty">读取中…</div></div>'
+    + '<div class="popitem newbr" id="brNew">+ 创建并检出新分支…</div>';
+  placePopMenu(m, 'right');
+  m.classList.add('on');
+
+  const r = await fetch('/api/git/branches').then((x) => x.json())
+    .catch(() => ({ ok: false, error: '读不到分支' }));
+  const list = document.getElementById('brList');
+  if (!list || !m.classList.contains('on')) return;
+  if (!r.ok){
+    list.innerHTML = '<div class="popempty">' + esc(r.error || '这个目录不是 git 仓库') + '</div>';
+    return;
+  }
+  const curEl = document.getElementById('brCur');
+  if (curEl) curEl.textContent = r.current || '';
+
+  const draw = (q) => {
+    const kw = (q || '').toLowerCase();
+    const rows = (r.branches || []).filter((b) => !kw || b.toLowerCase().includes(kw));
+    list.innerHTML = rows.length ? '' : '<div class="popempty">没有匹配的分支</div>';
+    for (const b of rows){
+      const it = document.createElement('div');
+      it.className = 'popitem' + (b === r.current ? ' cur' : '');
+      it.innerHTML = '<span class="ptx"><span class="bico">⎇</span> ' + esc(b) + '</span>'
+        + (b === r.current ? '<span class="pck">✓</span>' : '');
+      it.onclick = () => checkoutBranch(b, false);
+      list.appendChild(it);
+    }
+  };
+  draw('');
+
+  const search = document.getElementById('brSearch');
+  if (search){
+    search.oninput = () => { if (!creating) draw(search.value); };
+    search.onkeydown = (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const v = search.value.trim();
+      if (creating && v){ checkoutBranch(v, true); return; }
+      const first = list.querySelector('.popitem');
+      if (first) first.click();
+    };
+    search.focus();
+  }
+  const nw = document.getElementById('brNew');
+  if (nw) nw.onclick = () => {
+    creating = true;
+    if (search){ search.value = ''; search.placeholder = '新分支名，回车从当前分支切出去'; search.focus(); }
+    list.innerHTML = '<div class="popempty">从「' + esc(r.current || 'HEAD') + '」切一条新分支</div>';
+  };
+}
+
+async function checkoutBranch(name, create){
+  const m = document.getElementById('brMenu');
+  const r = await fetch('/api/git/checkout', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ branch: name, create }),
+  }).then((x) => x.json()).catch(() => ({ ok: false, error: '切不过去' }));
+  if (!r.ok){
+    const list = document.getElementById('brList');
+    if (list) list.innerHTML = '<div class="popempty">' + esc(r.error || '切不过去') + '</div>';
+    return;
+  }
+  if (m) m.classList.remove('on');
+  await paintBranch();
+}
+
 /** 浮层统一贴着输入卡片弹：左对齐或右对齐，底边压住卡片上沿 10px。 */
 function placePopMenu(m, align){
   const card = document.getElementById('run');
@@ -2420,7 +2533,7 @@ async function openModelList(){
 
 // 点空白处收起浮层；点按钮本身不算"空白"（否则按钮的 toggle 会先被关掉）
 document.addEventListener('click', (e) => {
-  for (const [id, btn] of [['mdMenu', '#model'], ['apMenu', '#apprBtn']]){
+  for (const [id, btn] of [['mdMenu', '#model'], ['apMenu', '#apprBtn'], ['brMenu', '#brBtn']]){
     const m = document.getElementById(id);
     if (!m || !m.classList.contains('on')) continue;
     if (m.contains(e.target) || (e.target.closest && e.target.closest(btn))) continue;

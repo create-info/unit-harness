@@ -2593,6 +2593,55 @@ export async function startServer(opts: ServeOptions = {}): Promise<{
       return
     }
 
+    // ---- git 分支：看一眼这个工作区在 git 的哪条线上 -------------------
+    // Codex 把「目录 + 分支」摆在同一个位置：换分支和换目录一样，都是换掉
+    // 「这段话将在什么状态下被执行」，只是前者不换文件路径。
+    if (req.method === 'GET' && url.pathname === '/api/git/branches') {
+      const g = (args: string[]): string =>
+        execFileSync('git', args, {
+          cwd: currentWorkspace, stdio: ['ignore', 'pipe', 'ignore'], timeout: 8000,
+        }).toString().trim()
+      try {
+        const current = g(['rev-parse', '--abbrev-ref', 'HEAD'])
+        // 按最近提交排：经常用的分支应该在手指边上，而不是按字母序翻半天
+        const branches = g(['for-each-ref', '--sort=-committerdate',
+          '--format=%(refname:short)', 'refs/heads']).split('\n').filter(Boolean)
+        json(res, 200, { ok: true, current, branches })
+      } catch {
+        json(res, 200, { ok: false, error: '这个目录不是 git 仓库', current: '', branches: [] })
+      }
+      return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/git/checkout') {
+      const body = JSON.parse(await readBody(req).catch(() => '{}')) as
+        { branch?: string; create?: boolean }
+      const name = (body.branch ?? '').trim()
+      // 分支名最终会成为一个命令行参数：只认 git 自己允许的字符。
+      // 开头的 `-` 会被 git 当成选项，`..` 是范围语法，两种都直接拒。
+      if (!/^[A-Za-z0-9._\/-]{1,120}$/.test(name) || name.startsWith('-') || name.includes('..')) {
+        json(res, 400, { ok: false, error: '这个分支名不合法' }); return
+      }
+      const g = (args: string[]): string =>
+        execFileSync('git', args, {
+          cwd: currentWorkspace, stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
+        }).toString()
+      try {
+        g(['switch', ...(body.create ? ['-c'] : []), name])
+        const current = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'],
+          { cwd: currentWorkspace, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim()
+        json(res, 200, { ok: true, current })
+      } catch (err) {
+        // 未提交的改动会让 switch 直接拒绝，那份 "would be overwritten" 清单
+        // 是这次失败唯一有用的话，原样带回去
+        const e = err as { stderr?: Buffer; message?: string }
+        const raw = (e.stderr?.toString() || e.message || '切换失败')
+        const lines = raw.split('\n').map((x) => x.trim()).filter(Boolean)
+        json(res, 200, { ok: false, error: lines.slice(-4).join(' ') || '切换失败' })
+      }
+      return
+    }
+
     // ---- 加装 MCP：写进 ~/.uh/mcp.json 的 mcpServers ----------------------
     // 结构沿用 Claude Desktop 的，所以从别处抄来的 JSON 能整块贴进来。
     // 之前 MCP 只能靠终端 `uh mcp add` 加，设置页里看得见却加不了。
