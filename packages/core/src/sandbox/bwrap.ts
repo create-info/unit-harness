@@ -70,17 +70,27 @@ export interface BwrapOptions {
   unmasked?: boolean
   /** 覆盖 $HOME（测试用；默认取 os.homedir()） */
   home?: string
+  /** 是否允许读 $HOME（--no-home 时为 false：整个 home 用空 tmpfs 盖掉） */
+  allowHome?: boolean
 }
 
 /** 构造 `bwrap ... -- cmd` 的参数 */
 export function buildBwrapArgv(info: BwrapInfo, o: BwrapOptions): string[] {
   const home = o.home ?? os.homedir()
+  // /tmp 用 tmpfs 盖住是隔离的一部分，但如果工作区（或 ~/.uh）本身就放在 /tmp 下，
+  // 盖掉等于把工作区一起抹了——测试里的项目目录、CI 的临时工作区都在那儿。
+  // 这种情况下退成真绑定：写仍然落在 /tmp，但不是原来的私有环境。
+  const underTmp = (p: string) => p === '/tmp' || p.startsWith('/tmp/')
+  const maskTmp = !underTmp(o.workspace) && !underTmp(home)
   const args: string[] = [
     '--ro-bind', '/', '/',
     '--dev', '/dev',
     '--proc', '/proc',
-    '--tmpfs', '/tmp',
+    ...(maskTmp ? ['--tmpfs', '/tmp'] : ['--bind', '/tmp', '/tmp']),
   ]
+
+  // --no-home：把整个 $HOME 换成空 tmpfs（用户明确要求收紧时的唯一正确做法）
+  if (o.allowHome === false) args.push('--tmpfs', home)
 
   if (!o.unmasked) {
     for (const rel of MASKED) {

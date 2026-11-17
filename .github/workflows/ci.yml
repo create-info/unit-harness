@@ -55,11 +55,16 @@ jobs:
           set -o pipefail
           fail=0
           mkdir -p .ci
+          # macOS 上没有 GNU timeout（只有装了 coreutils 才有 gtimeout）。
+          # 之前直接用 `timeout` 导致 macOS 上每个文件都 127 退出，annotation 还是空的。
+          TO=''
+          if command -v timeout >/dev/null 2>&1; then TO='timeout 300'
+          elif command -v gtimeout >/dev/null 2>&1; then TO='gtimeout 300'; fi
           for f in tests/*.test.mjs; do
             base=$(basename "$f")
             log=".ci/${base}.log"
             echo "::group::${base}"
-            if timeout 300 node --test --test-timeout=120000 "$f" > "$log" 2>&1; then
+            if $TO node --test --test-timeout=120000 "$f" > "$log" 2>&1; then
               grep -E '^# (pass|fail)' "$log" || true
             else
               fail=1

@@ -989,6 +989,7 @@ export class Harness {
         workspace: workdir,
         denyNetwork: this.opts.denyNetwork,
         extraReadOnly: [...toolchainPaths().readOnly, ...this.sandboxRoots(spec.argv, workdir)],
+        allowHome: this.opts.allowHome,
       })
     } else if (useLandlock) {
       cmd = this.helper!.path

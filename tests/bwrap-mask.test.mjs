@@ -37,3 +37,24 @@ test('credentials are masked with tmpfs for directories and /dev/null for files'
     rmSync(home, { recursive: true, force: true })
   }
 })
+
+test('--no-home masks the whole home, and a workspace under /tmp survives', () => {
+  const home = mkdtempSync(join(tmpdir(), 'uh-bwrap2-'))
+  const ws = join(home, 'work')
+  mkdirSync(ws, { recursive: true })
+
+  try {
+    // allowHome:false → 整个 $HOME 用空 tmpfs 盖掉
+    const args = buildBwrapArgv({ path: 'bwrap' }, { argv: ['true'], workspace: ws, home, allowHome: false })
+    const iHome = args.lastIndexOf(home)
+    assert.ok(iHome > 0, 'home appears in the argv')
+    assert.equal(args[iHome - 1], '--tmpfs', 'home is masked with tmpfs when allowHome is false')
+
+    // 工作区在 /tmp 下时不能把 /tmp 整个 tmpfs 掉，否则工作区自己消失
+    const a2 = buildBwrapArgv({ path: 'bwrap' }, { argv: ['true'], workspace: '/tmp/uh-ws-probe', home })
+    const iTmp = a2.indexOf('/tmp')
+    assert.equal(a2[iTmp - 1], '--bind', 'workspace under /tmp keeps the real /tmp')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
