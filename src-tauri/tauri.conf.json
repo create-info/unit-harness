@@ -37,7 +37,7 @@
     "externalBin": [
       "binaries/uh"
     ],
-    "shortDescription": "The agent that proves its work",
+    "shortDescription": "Every command in a sandbox. Every run on the record.",
     "longDescription": "A local agent harness: every deliverable is executed and verified in a sandbox, and every run is replayable.",
     "category": "DeveloperTool",
     "macOS": {

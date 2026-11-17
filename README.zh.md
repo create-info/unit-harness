@@ -1,13 +1,15 @@
 # UnitHarness
 
-**会自证结果的 agent。**
+**命令进沙箱，运行留账本。**
 
-它交给你的每一份产物，都在沙箱里真跑过；每一次运行都可回放。验证不过，就不算完成。
+它不保证写对。它保证的是能查：每条命令真的在内核级沙箱里跑过，每次运行是一份追加式事件日志，
+被拦下的调用都留在里面，recipe（`uh do`）的验收断言没过会明说是哪一条。
 
-> 状态：`v0.1.0` —— Linux 用 landlock（内嵌一个小型 C helper），macOS 用 seatbelt
-> （`sandbox-exec`）。文件写入被限制在工作区，`$HOME` 不可读，TCP 可禁用。
-> Windows 还没有内核级隔离，保持 fail-closed。用 `uh sandbox check` 自己验证——
-> 它报告的是当前机器上真正生效的等级。
+> 状态：`v0.1.1` —— Linux 用 bwrap（可用时）或 landlock（内嵌一个小型 C helper），
+> macOS 用 seatbelt（`sandbox-exec`）。文件写入被限制在工作区；`$HOME` **默认可读**，
+> 只把凭据目录（`~/.ssh`、`~/.aws`、`~/.docker`、`~/.netrc` …）换成空目录，加 `--no-home`
+> 才整个盖掉。TCP 可禁用。Windows 还没有内核级隔离，保持 fail-closed。
+> 用 `uh sandbox check` 自己验证——它报告的是当前机器上真正生效的等级。
 
 ---
 
@@ -19,10 +21,10 @@ UnitHarness 把**验证**做成一等公民：
 
 | | 常见 agent | UnitHarness |
 |---|---|---|
-| 输出 | 文本 / diff | 交付物 + 断言 |
-| 成功标准 | 「看着对」 | `verification/asserted` 事件 |
-| 失败发现者 | 你 | 沙箱 |
-| 审计 | 无 | 追加式事件日志，可回放 |
+| 输出 | 文本 / diff | 交付物 + 事件日志 |
+| 成功标准 | 「看着对」 | recipe 的验收断言（`verification/asserted`） |
+| 失败发现者 | 你 | 你写的断言；沙箱只保证命令跑不出工作区 |
+| 审计 | 无 | 追加式事件日志，`uh session replay` 可回放 |
 | 花钱动作 | 静默执行 | 审批门禁 |
 
 ## 安装
@@ -61,17 +63,17 @@ uh doctor
 
 ```console
 $ uh doctor
-UnitHarness 0.1.0  (node v22.22.3)
+UnitHarness 0.1.1  (node v22.22.3)
 platform    darwin/arm64  kernel=24.6.0
 isolation   seatbelt
-enforcement seatbelt via /usr/bin/sandbox-exec; writes limited to ~/.uh/work; home unreadable
+enforcement seatbelt via /usr/bin/sandbox-exec; writes limited to ~/.uh/work (+home readable)
 ...
 model       qwen3.8-27b  @ http://127.0.0.1:1234/v1  (discovered:LM Studio)
 
 $ uh sandbox check
 PASS  write inside workspace  (expected ok, got ok)
 PASS  write outside workspace (expected deny, got deny)
-PASS  read $HOME/.gitconfig   (expected deny, got deny)
+PASS  read $HOME/.gitconfig   (expected ok, got ok)
 PASS  write to /etc           (expected deny, got deny)
 
 4/4 checks passed
@@ -84,17 +86,17 @@ PASS  write to /etc           (expected deny, got deny)
 
 ```console
 $ node dist/uh.cjs doctor
-UnitHarness 0.1.0  (node v22.22.3)
+UnitHarness 0.1.1  (node v22.22.3)
 platform    linux/arm64  kernel=6.17.0-1008-nvidia
 isolation   landlock-v7 (platform=linux/arm64, kernel=6.17.0-1008-nvidia)
-enforcement landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; home unreadable
+enforcement landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; read is NOT restricted (+home readable)
 ```
 
 而且不是"相信"，是能验证：
 
 ```console
 $ node dist/uh.cjs sandbox check
-isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; home unreadable
+isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work (+home readable)
 
 PASS  write inside workspace  (expected ok, got ok)
 PASS  write outside workspace  (expected deny, got deny)
@@ -149,7 +151,7 @@ uh run --provider anthropic "…"
 ```console
 $ uh run "在工作区创建一个 hello.txt，内容写 hi from unit-harness，然后用 ls 确认"
 workspace: /home/you/.uh/work
-isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; home unreadable
+isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work (+home readable)
 
 · turn start
 · step 1
@@ -598,7 +600,8 @@ L6 分发层     CLI / 桌面壳、签名产物
 Linux 上 landlock 实际给了什么：
 
 - 写入**只能**在工作区（默认 `~/.uh/work`）与 `~/.uh`
-- `$HOME` **不可读**，除非显式 `--allow-home`——这是挡住 `~/.ssh`、`~/.aws` 的关键
+- `$HOME` 默认可读（landlock 没有「只放行指定子目录」的能力，这一点如实写在这里）；
+  凭据目录（`~/.ssh`、`~/.aws`、`~/.docker`、`~/.netrc` …）一律屏蔽，`--no-home` 才整个盖掉
 - `--no-net` 可禁 TCP（landlock 管不了 UDP，我们如实说明，不含糊）
 - 系统路径（`/usr`、`/lib`、`/etc`、`/proc`…）需要可读，否则 shell 和运行时起不来
 
@@ -608,11 +611,12 @@ Linux 上 landlock 实际给了什么：
 `~/.pyenv/versions`、`~/.cargo/bin`，以及你实际调用的那个 venv 根）。一个
 `python3` 都起不来的沙箱不是安全，是没用——第一次读 `pyvenv.cfg` 就会失败，所有脚本
 跟着死。凭据路径（`~/.ssh`、`~/.aws`、`~/.gnupg`、`~/.cargo/credentials*`、
-`~/.netrc`、`~/.git-credentials`）仍然不可读，`uh sandbox check` 会证明这一点。
+`~/.netrc`、`~/.git-credentials`）一律屏蔽；`uh sandbox check` 报告这次运行里实际生效的等级。
 
-macOS 上保证同构：用 sbpl profile 实现 `(deny file-write*)` 后只放行工作区与 `~/.uh`，
-对 `$HOME` 加 `(deny file-read* …)`，`--no-net` 时 `(deny network*)`。
-`uh sandbox check` 在两个平台跑的是同一组四条探针——所以"保证"是同一个保证。
+macOS 上同理，用 sbpl profile 实现 `(deny file-write*)` 后只放行工作区与 `~/.uh`；
+`--no-home` 时才追加 `(deny file-read* …)`，`--no-net` 时加 `(deny network*)`。
+`uh sandbox check` 在两个平台跑的是同一组四条探针，探针 3 的期望值随 `--no-home` 变——
+它测的是这一次真正生效的东西，不是文档里的承诺。
 
 Windows 还没有内核级隔离，因此报 `path-guard` 并拒绝执行，除非显式
 `--allow-unconfined`。宁可给一个真实的"不"，也不给一个舒服的"应该可以"。
@@ -634,7 +638,7 @@ DeepSeek Harness 使用的同一个插件框架。我们以普通 npm 依赖的�
 | P1 | landlock 施加 + `sandbox check` | ✅ 完成 |
 | P1 | 事件日志（`session/*`）、断言、回放 | ✅ 完成 |
 | P1 | agent loop + `uh run`（零配置探测本地模型） | ✅ 完成 |
-| P1 | 交付物识别 + 自动断言（proves its work） | ✅ 完成 |
+| P1 | recipe 验收断言（`verification/asserted`）+ 事件回放 | ✅ 完成 |
 | P2 | macOS seatbelt / Windows 受限令牌、桌面壳 | — |
 | P2 | 桌面壳、数据包、巡检 | — |
 | P3 | 协议适配器（MCP / ACP / A2A） | — |

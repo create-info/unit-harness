@@ -2,15 +2,19 @@
 
 [![ci](https://github.com/create-info/unit-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/create-info/unit-harness/actions/workflows/ci.yml)
 
-**The agent that proves its work.**
+**Every command in a sandbox. Every run on the record.**
 
-Every deliverable it hands you has been executed and verified in a sandbox, and
-every run is replayable. If it can't be verified, it isn't done.
+It does not promise the output is correct. What it does promise is checkable: every
+command really ran inside a kernel-level sandbox, every run is an append-only event
+log, every refused call is in that log, and a failed recipe assertion says which one.
 
-> Status: `v0.1.0` — isolation is enforced on Linux (landlock, via a small C helper
-> embedded in the binary) and on macOS (seatbelt). Writes are confined to the
-> workspace, `$HOME` is unreadable, TCP can be blocked. Windows has no kernel
-> isolation yet and fails closed. Verify it yourself with `uh sandbox check`.
+> Status: `v0.1.1` — isolation is enforced on Linux (bwrap where available, otherwise
+> landlock via a small C helper embedded in the binary) and on macOS (seatbelt).
+> Writes are confined to the workspace. `$HOME` stays **readable by default**; only
+> credential directories (`~/.ssh`, `~/.aws`, `~/.docker`, `~/.netrc`, …) are
+> replaced with empty ones, and `--no-home` masks all of it. TCP can be blocked.
+> Windows has no kernel isolation yet and fails closed. Verify it yourself with
+> `uh sandbox check` — it reports what is actually in force on this machine.
 
 ---
 
@@ -23,10 +27,10 @@ UnitHarness treats **verification as a first-class citizen**:
 
 | | Typical agent | UnitHarness |
 |---|---|---|
-| Output | text / diff | artifacts + assertions |
-| Success | "looks right" | `verification/asserted` events |
-| Failure | you discover it | the sandbox discovers it |
-| Audit | none | append-only event log, replayable |
+| Output | text / diff | artifacts + event log |
+| Success | "looks right" | recipe assertions (`verification/asserted`) |
+| Failure | you discover it | the assertions you wrote; the sandbox only keeps commands inside the workspace |
+| Audit | none | append-only event log, replayable with `uh session replay` |
 | Costly actions | silent | approval-gated |
 
 ## Install
@@ -67,17 +71,17 @@ uh doctor
 
 ```console
 $ uh doctor
-UnitHarness 0.1.0  (node v22.22.3)
+UnitHarness 0.1.1  (node v22.22.3)
 platform    darwin/arm64  kernel=24.6.0
 isolation   seatbelt
-enforcement seatbelt via /usr/bin/sandbox-exec; writes limited to ~/.uh/work; home unreadable
+enforcement seatbelt via /usr/bin/sandbox-exec; writes limited to ~/.uh/work (+home readable)
 ...
 model       qwen3.8-27b  @ http://127.0.0.1:1234/v1  (discovered:LM Studio)
 
 $ uh sandbox check
 PASS  write inside workspace  (expected ok, got ok)
 PASS  write outside workspace (expected deny, got deny)
-PASS  read $HOME/.gitconfig   (expected deny, got deny)
+PASS  read $HOME/.gitconfig   (expected ok, got ok)
 PASS  write to /etc           (expected deny, got deny)
 
 4/4 checks passed
@@ -91,10 +95,10 @@ run (fail-closed).
 
 ```console
 $ node dist/uh.cjs doctor
-UnitHarness 0.1.0  (node v22.22.3)
+UnitHarness 0.1.1  (node v22.22.3)
 platform    linux/arm64  kernel=6.17.0-1008-nvidia
 isolation   landlock-v7 (platform=linux/arm64, kernel=6.17.0-1008-nvidia)
-enforcement landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; home unreadable
+enforcement landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; read is NOT restricted (+home readable)
 
   landlock   available (abi 7)
   bwrap      available — /usr/bin/bwrap
@@ -105,7 +109,7 @@ And prove it rather than trust it:
 
 ```console
 $ node dist/uh.cjs sandbox check
-isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; home unreadable
+isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work (+home readable)
 
 PASS  write inside workspace  (expected ok, got ok)
 PASS  write outside workspace  (expected deny, got deny)
@@ -169,7 +173,7 @@ test asserts the key string never appears in the event log.
 ```console
 $ uh run "在工作区创建一个 hello.txt，内容写 hi from unit-harness，然后用 ls 确认"
 workspace: /home/you/.uh/work
-isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work; home unreadable
+isolation: landlock-v7 via ~/.uh/bin/landlock-helper; writes limited to ~/.uh/work (+home readable)
 
 · turn start
 · step 1
@@ -837,7 +841,9 @@ Read the design records in [`docs/`](docs).
 What landlock actually gives you on Linux:
 
 - writes are allowed **only** inside the workspace (`~/.uh/work` by default) and `~/.uh`
-- `$HOME` is **unreadable** unless you pass `--allow-home` — this is what keeps `~/.ssh` and `~/.aws` out of reach
+- `$HOME` is **readable by default** (landlock cannot allow selected subdirectories of
+  `$HOME`, and saying otherwise would be a lie); credential directories (`~/.ssh`,
+  `~/.aws`, `~/.docker`, `~/.netrc`, …) are masked, and `--no-home` masks all of it
 - TCP can be blocked with `--no-net` (landlock cannot block UDP; we say so instead of implying otherwise)
 - read access to system paths (`/usr`, `/lib`, `/etc`, `/proc`, …) is required for shells and runtimes to work
 
@@ -848,12 +854,13 @@ If nothing is available, `exec` **fails closed**. We never silently downgrade.
 root of whatever binary you actually invoke). A sandbox where `python3` cannot
 start is not secure, it is useless — the first `pyvenv.cfg` read fails and every
 script dies. Credential paths (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.cargo/credentials*`,
-`~/.netrc`, `~/.git-credentials`) stay unreadable, and `uh sandbox check` proves it.
+`~/.netrc`, `~/.git-credentials`) are masked, and `uh sandbox check` reports the level actually in force for this run.
 
-On macOS the same guarantees hold, built from an sbpl profile: `(deny file-write*)`
-with the workspace and `~/.uh` re-allowed, `(deny file-read* …)` on `$HOME`, and
-`(deny network*)` under `--no-net`. `uh sandbox check` runs the identical four
-probes on both platforms, so the claim is the same claim.
+On macOS the profile is built the same way: `(deny file-write*)` with the workspace
+and `~/.uh` re-allowed, `(deny file-read* …)` on `$HOME` only under `--no-home`, and
+`(deny network*)` under `--no-net`. `uh sandbox check` runs the identical four probes
+on both platforms, and probe 3 expects whichever the flags actually asked for — it
+measures what is in force, not what the docs claim.
 
 Windows has no kernel isolation yet, so it reports `path-guard` and refuses to
 execute unless you pass `--allow-unconfined`. We would rather ship a true "no"

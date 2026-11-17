@@ -10,7 +10,7 @@
 
 | ID | 决策 | 关键词 | 不可逆性 |
 |---|---|---|---|
-| D1 | 定位为「验证闭环」，不做插件化内核叙事 | the agent that proves its work | 高 |
+| D1 | 定位为「可查的执行账本」，不做插件化内核叙事 | every command in a sandbox, every run on the record | 高 |
 | D2 | 全栈 Node，不用 Bun、不混用 | Node 22 LTS baseline | 高 |
 | D3 | Cordis 走 npm 依赖 + `pnpm patch` + 薄封装 | 不 vendor | 中 |
 | D4 | 插件 API 分级承诺（experimental / public） | 毕业制 | 高 |
@@ -31,7 +31,12 @@
 
 ## D1 · 定位：验证闭环
 
-**决策**：对外定位为「**the agent that proves its work**」——它交付的每一份产物都在沙箱里真跑过，每一步都可回放，每一个花钱动作都有审批证据。
+**决策**：对外定位为「**命令进沙箱，运行留账本**」（EN: every command in a sandbox,
+every run on the record）——每条命令在内核级沙箱里执行，每次运行落成可回放的事件日志，
+recipe 的验收断言结果一并入库。
+
+**不写「proves its work / 一定能 works」这类话**：断言是我们手写的几条检查，自由任务没有自动断言，
+`$HOME` 默认可读。把这三条边界写在 README 里，比多一句口号有用——上一版口号就被自己的 CI 打回来了。
 
 **背景（实测）**：
 
