@@ -21,6 +21,15 @@ case "$arch" in
   *) echo "unsupported architecture: $arch"; exit 1 ;;
 esac
 
+# 目前只发布 macOS arm64：GitHub 的 Intel mac runner（macos-13）已退役，
+# darwin-x64 不再构建。Intel Mac 上给一条明确的出路，而不是让人对着 404 猜。
+if [ "$target" = "darwin" ] && [ "$arch" = "x64" ]; then
+  echo "no prebuilt binary for Intel macOS (darwin-x64)" >&2
+  echo "build from source instead:" >&2
+  echo "  git clone https://github.com/${REPO} && cd unit-harness && npm i -g ." >&2
+  exit 1
+fi
+
 name="uh-${target}-${arch}"
 if [ "$TAG" = "latest" ]; then
   url="https://github.com/${REPO}/releases/latest/download/${name}"
