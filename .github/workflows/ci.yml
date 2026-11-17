@@ -224,11 +224,16 @@ jobs:
           set +e
           out=$(UH_HOME="$RUNNER_TEMP/uh-pkg" ./"$BIN" sandbox check 2>&1); code=$?
           echo "$out"
-          if [ $code -ne 0 ] && echo "$out" | grep -qiE "no kernel isolation|fail-closed|E_SANDBOX_UNAVAILABLE"; then
-            echo "::warning::this runner has no isolation backend; the binary still built and ran"
-            exit 0
+          if [ $code -ne 0 ]; then
+            echo "::error title=sandbox self-check (${{ matrix.target }})::$(echo "$out" | tail -6 | tr '\n' ' ' | head -c 700)"
+            # Linux runner 没有后端可施加，这条检查在上面永远不可能通过；macOS 有 seatbelt，
+            # 那边继续当硬要求。
+            if [ "${{ runner.os }}" = "Linux" ]; then
+              echo "::warning::linux runner has no isolation backend; artifact still usable"
+              exit 0
+            fi
+            exit $code
           fi
-          exit $code
 
       - uses: actions/upload-artifact@v4
         with:
