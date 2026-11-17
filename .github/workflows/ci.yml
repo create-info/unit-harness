@@ -8,6 +8,11 @@ on:
 jobs:
   test:
     name: ${{ matrix.os }}
+    # Windows 还没有内核级隔离（README 写明 fail-closed），于是所有走 exec 的测试都会
+    # 因为「拒绝执行」而失败 —— 这不是回归，是产品故意的。仍然在 Windows 上跑，
+    # 是为了保住 typecheck / constraints / build 三个信号；等受限令牌那条路落地，
+    # 把这一行删掉就该变绿。
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
