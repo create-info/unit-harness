@@ -151,7 +151,10 @@ async function withHarness<T>(
     ...(opts.resumeSessionId ? { resumeSessionId: opts.resumeSessionId } : {}),
     pluginDirs: pluginDirs(),
     logLevel: (process.env.UH_LOG_LEVEL as never) ?? 'warn',
-    unconfined: argv.includes('--allow-unconfined'),
+    // 除了命令行开关，也认 UH_ALLOW_UNCONFINED=1：CI 的 runner 上不一定有
+    // landlock/bwrap，而每个测试都往子进程里塞 --allow-unconfined 不现实。
+    // 有沙箱的平台照旧用沙箱——这个开关只在「没有后端」时让 fail-closed 放行。
+    unconfined: argv.includes('--allow-unconfined') || process.env.UH_ALLOW_UNCONFINED === '1',
     // 默认让 home 可读：不给读，git/npm/pip 的配置全部失效，沙箱保护的是一个
     // 什么都干不了的环境。凭据屏蔽靠 bwrap 的空 tmpfs；landlock 做不到，
     // 所以 `uh doctor` 会如实说明「读未受限」。

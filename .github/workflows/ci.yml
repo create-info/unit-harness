@@ -46,6 +46,11 @@ jobs:
       - name: agent loop test (mock provider)
         shell: bash
         timeout-minutes: 30
+        # GitHub 的 ubuntu runner 不一定给得到 landlock/bwrap，于是 exec 一律 fail-closed，
+        # 一整套测试都会变成「拒绝执行」。这个开关只影响「没有后端」的平台；
+        # 真正的隔离由后面的 sandbox check / fail-closed 步骤单独验证。
+        env:
+          UH_ALLOW_UNCONFINED: '1'
         run: |
           set -o pipefail
           fail=0
