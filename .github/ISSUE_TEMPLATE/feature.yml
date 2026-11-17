@@ -1,0 +1,50 @@
+name: Proposal
+description: A capability, a plugin, or a change to how verification works.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two house rules decide whether a proposal fits: commands go through
+        `ctx.exec` (never `node:child_process`), and we do not claim guarantees we
+        cannot keep. Proposals that break either are usually reshaped, not rejected.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you tried to do, and where it stopped.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+      description: Sketch the smallest version that solves it.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - sandbox / isolation
+        - verification / assertions
+        - event log / replay
+        - agent loop / providers
+        - CLI
+        - desktop UI
+        - plugin system
+        - docs
+    validations:
+      required: true
+  - type: checkboxes
+    id: claims
+    attributes:
+      label: Claims
+      options:
+        - label: This does not describe a capability manifest as a security boundary.
+        - label: If it changes isolation, I ran `uh sandbox check` on the affected platform.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

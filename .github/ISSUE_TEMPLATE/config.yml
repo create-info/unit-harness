@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security issue
+    url: https://github.com/create-info/unit-harness/security/policy
+    about: Do not open a public issue for a sandbox escape or a secret leak.
+  - name: Read the design first
+    url: https://github.com/create-info/unit-harness/tree/master/docs
+    about: The event model, verification chain and sandbox design are recorded in docs/.

@@ -638,6 +638,27 @@ DeepSeek Harness 使用的同一个插件框架。我们以普通 npm 依赖的�
 | P2 | 桌面壳、数据包、巡检 | — |
 | P3 | 协议适配器（MCP / ACP / A2A） | — |
 
+## 参与贡献
+
+项目在 P2 阶段，缺的正好是「一个人一周能做完」的活：
+
+| 想做什么 | 从哪开始 | 难度 |
+|---|---|---|
+| Windows 上的隔离（受限令牌） | 路线图 P2。Linux 的 landlock 施加在 `native/`，对外只承诺同一份 `sandbox check` 契约 | 中 |
+| 写一个插件 | `examples/plugin-*` 有能跑的样例，见 `CONTRIBUTING.md` 的 Adding a plugin | 低 |
+| 加一条自动断言 | `packages/core` 的 verification 链；`npm test` 里能看到断言怎么被记录 | 中 |
+| MCP / ACP / A2A 适配器 | 路线图 P3 | 高 |
+| 文档与复现步骤 | 任何「照 README 做失败了」的地方都算 bug | 低 |
+
+规矩只有两条：**命令必须走 `ctx.exec`**，不能直接 `node:child_process`——否则没有隔离记录，验证链就断了；
+**不承诺代码没有强制的能力**，别把插件能力清单说成安全边界。详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+本地跑起来：
+
+```bash
+npm install && npm run build && npm test
+```
+
 ## 许可
 
 Apache-2.0。见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。

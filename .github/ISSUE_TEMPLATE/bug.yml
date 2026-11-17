@@ -1,0 +1,58 @@
+name: Bug report
+description: Something broke — a run, a sandbox probe, the CLI, or the UI.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Runs are replayable, so the fastest path to a fix is
+        the run id or the event log — see the last field.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: One or two sentences. Paste the shortest command that shows it.
+      placeholder: |
+        `uh run "..."` exited 0 but no deliverable was written.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `uh --version`.
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options: [Linux, macOS, Windows, WSL]
+    validations:
+      required: true
+  - type: input
+    id: isolation
+    attributes:
+      label: Isolation level
+      description: Output of `uh sandbox check` — the level it reports, not what you hoped for.
+      placeholder: landlock-v7
+  - type: input
+    id: runid
+    attributes:
+      label: Run id or log path
+      description: |
+        The run id printed at the end of `uh run`, or the path under `~/.uh/sessions/`.
+        This is usually enough to reproduce without guessing.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: Last few `role: tool` results, not the model's reasoning.
+      render: shell

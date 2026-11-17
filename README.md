@@ -882,6 +882,27 @@ package and do not fork it. Thanks to the DeepSeek team for releasing it openly.
 | P2 | desktop shell, data packs, monitors | — |
 | P3 | protocol adapters (MCP / ACP / A2A) | — |
 
+## Contributing
+
+The project is at P2, and what is missing is mostly work a single person can finish in a week:
+
+| Want to | Start here | Size |
+|---|---|---|
+| Isolation on Windows (restricted token) | Roadmap P2. The landlock path lives in `native/`; the contract it satisfies is the same `sandbox check` | medium |
+| Write a plugin | Runnable samples in `examples/plugin-*`, see Adding a plugin in `CONTRIBUTING.md` | small |
+| Add an automatic assertion | The verification chain in `packages/core`; `npm test` shows how assertions get recorded | medium |
+| MCP / ACP / A2A adapters | Roadmap P3 | large |
+| Docs and reproduction steps | Any "I followed the README and it broke" is a bug | small |
+
+Two rules matter more than the rest: **commands go through `ctx.exec`** (never
+`node:child_process` — without it there is no isolation record and the verification
+chain breaks), and **do not claim guarantees the code cannot keep** (a plugin
+capability manifest is not a security boundary). See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+```bash
+npm install && npm run build && npm test
+```
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
