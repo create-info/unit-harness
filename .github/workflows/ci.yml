@@ -94,6 +94,10 @@ jobs:
       # 这里如实降级成 warning，而不是让整条流水线假装自己验证过沙箱。
       - name: sandbox actually blocks
         if: runner.os != 'Windows'
+        # 这个 runner 上没有可用后端（userns 被限制、无 landlock），exec 一律 fail-closed，
+        # 于是「sandbox check」的探针 1 必然被拒。它不是回归，所以不 gate；
+        # 真要证明隔离，在 macOS（seatbelt）或开发者机器上跑同一条命令。
+        continue-on-error: true
         shell: bash
         run: |
           set +e
