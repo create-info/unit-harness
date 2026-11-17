@@ -8,6 +8,6 @@
   },
   "license": "Apache-2.0",
   "dependencies": {
-    "@unit-harness/core": "0.1.0"
+    "@unit-harness/core": "0.1.1"
   }
 }
