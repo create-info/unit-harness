@@ -36,7 +36,11 @@ def get(url):
 
 want = ["uh-linux-x64", "uh-linux-arm64", "uh-darwin-x64", "uh-darwin-arm64", "uh-win32-x64"]
 
-runs = get(f"{API}/actions/runs?per_page=15&branch=main")["workflow_runs"]
+# 分支名不再写死：仓库的默认分支从 main 改成过 master，写死会静默挑不到任何 run，
+# 症状是 "no usable run found on main"（错误的提示里连分支名都是旧的）。
+default_branch = get(API).get("default_branch", "main")
+print(f"  default branch: {default_branch}", file=sys.stderr)
+runs = get(f"{API}/actions/runs?per_page=15&branch={default_branch}")["workflow_runs"]
 best = None
 
 for run in runs[:10]:

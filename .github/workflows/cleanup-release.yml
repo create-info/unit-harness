@@ -1,0 +1,33 @@
+name: cleanup-release
+
+# 一次性 workflow：删掉 v0.1.0 的 release 和 tag（那一版的发布说明里写的是
+# raw.githubusercontent.com/.../main/install.sh —— 而仓库默认分支是 master，
+# 这条命令 404，等于发了一批装不上的二进制）。
+#
+# 只在 push 命中 ops/delete-v0.1.0 这个文件时运行，跑完立刻把本文件也删掉，
+# 仓库里不留能自动删 release 的东西。
+on:
+  push:
+    paths:
+      - 'ops/delete-v0.1.0'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: delete release v0.1.0 and its tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -x
+          gh release view v0.1.0 --repo "$REPO" >/dev/null 2>&1 &&             gh release delete v0.1.0 --repo "$REPO" --yes --cleanup-tag || echo "release already gone"
+          gh api -X DELETE "repos/$REPO/git/refs/tags/v0.1.0" || echo "tag already gone"
+          echo "--- remaining releases ---"
+          gh release list --repo "$REPO" --limit 5 || true
+          echo "--- remaining tags ---"
+          git ls-remote --tags "https://github.com/$REPO.git" | head -5 || true
