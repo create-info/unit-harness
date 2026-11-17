@@ -42,9 +42,13 @@ jobs:
       # （/commits/{sha}/check-runs），这台机器上看不了 Windows/macOS 的真机日志
       - name: agent loop test (mock provider)
         shell: bash
+        # 单个用例卡住比失败更糟：Linux runner 上曾经整步挂 20 分钟没有任何输出。
+        # 给每个用例 120s 上限，超时会被报成 not ok，annotation 里就能看到是谁挂的；
+        # 整步再兜一层 20 分钟。
+        timeout-minutes: 20
         run: |
           set -o pipefail
-          if ! npm test 2>&1 | tee test.log; then
+          if ! npm test -- --test-timeout=120000 2>&1 | tee test.log; then
             echo "--- failing tests ---"
             grep -E "^not ok|^# (pass|fail)" test.log || true
             DETAIL=$(grep -A 14 "^not ok" test.log | head -80 | tr '\n' ' ' | tr -s ' ')
