@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # UnitHarness installer (Linux / macOS)
-#   curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/master/install.sh | bash
 set -euo pipefail
 
 REPO="create-info/unit-harness"

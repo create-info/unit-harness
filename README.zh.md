@@ -28,12 +28,12 @@ UnitHarness 把**验证**做成一等公民：
 
 ```bash
 # macOS / Linux —— 单个静态二进制，不需要装 Node
-curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/master/install.sh | bash
 ```
 
 ```powershell
 # Windows
-irm https://raw.githubusercontent.com/create-info/unit-harness/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/create-info/unit-harness/master/install.ps1 | iex
 ```
 
 **别在 Releases 页面手点 `.dmg` 或二进制。** 浏览器会给每个下载文件打上 quarantine

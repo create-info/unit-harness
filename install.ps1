@@ -1,5 +1,5 @@
 # UnitHarness installer (Windows)
-#   irm https://raw.githubusercontent.com/create-info/unit-harness/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/create-info/unit-harness/master/install.ps1 | iex
 $ErrorActionPreference = "Stop"
 
 $Repo = "create-info/unit-harness"

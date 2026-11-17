@@ -165,7 +165,7 @@ every run is replayable.
 
 **CLI** — single static binary, no Node required:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/master/install.sh | bash
 ```
 
 **Desktop** — download the installer for your platform. The builds are **unsigned**:

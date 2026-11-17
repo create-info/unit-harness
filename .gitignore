@@ -12,3 +12,9 @@ core.[0-9]*
 src-tauri/target/
 src-tauri/binaries/*
 .gocache/
+# 测试会在仓库根目录写这些临时文件，别让它们再被提交
+__pycache__/
+*.pyc
+/blob.bin
+/approved.txt
+/forbidden.txt

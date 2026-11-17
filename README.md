@@ -33,12 +33,12 @@ UnitHarness treats **verification as a first-class citizen**:
 
 ```bash
 # macOS / Linux — one static binary, no Node required
-curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/create-info/unit-harness/master/install.sh | bash
 ```
 
 ```powershell
 # Windows
-irm https://raw.githubusercontent.com/create-info/unit-harness/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/create-info/unit-harness/master/install.ps1 | iex
 ```
 
 **Don't click the `.dmg` / binaries on the Releases page.** Browsers stamp every
