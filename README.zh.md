@@ -4,9 +4,10 @@
 
 它交给你的每一份产物，都在沙箱里真跑过；每一次运行都可回放。验证不过，就不算完成。
 
-> 状态：`v0.1.0` —— Linux 上 landlock 隔离已生效（通过一个小型 C helper）。
-> 文件写入被限制在工作区，`$HOME` 不可读，TCP 可禁用。macOS / Windows 的施加仍未实现，
-> 这两个平台保持 fail-closed。用 `uh sandbox check` 自己验证。
+> 状态：`v0.1.0` —— Linux 用 landlock（内嵌一个小型 C helper），macOS 用 seatbelt
+> （`sandbox-exec`）。文件写入被限制在工作区，`$HOME` 不可读，TCP 可禁用。
+> Windows 还没有内核级隔离，保持 fail-closed。用 `uh sandbox check` 自己验证——
+> 它报告的是当前机器上真正生效的等级。
 
 ---
 
