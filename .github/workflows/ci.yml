@@ -212,13 +212,23 @@ jobs:
           echo "testing $BIN"
           ./"$BIN" --version
 
+      # 二进制能不能跑（smoke test）是硬要求；「隔离在这个 runner 上生效」不是 ——
+      # GitHub 的 ubuntu runner 没有 userns/landlock，探针必然被 fail-closed 拒掉。
+      # 有后端的时候仍然是硬要求，所以只在「明确报了没有内核隔离」时降级。
       - name: isolation self-check on the binary
         if: runner.os != 'Windows'
         shell: bash
         run: |
           cd dist/bin
           BIN=$(ls | grep -E '^uh-(linux|darwin)-' | head -1)
-          UH_HOME="$RUNNER_TEMP/uh-pkg" ./"$BIN" sandbox check
+          set +e
+          out=$(UH_HOME="$RUNNER_TEMP/uh-pkg" ./"$BIN" sandbox check 2>&1); code=$?
+          echo "$out"
+          if [ $code -ne 0 ] && echo "$out" | grep -qiE "no kernel isolation|fail-closed|E_SANDBOX_UNAVAILABLE"; then
+            echo "::warning::this runner has no isolation backend; the binary still built and ran"
+            exit 0
+          fi
+          exit $code
 
       - uses: actions/upload-artifact@v4
         with:
