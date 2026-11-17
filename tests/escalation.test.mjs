@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import { spawn } from 'node:child_process'
 import { mkdtempSync, mkdirSync, existsSync, rmSync, readFileSync, readdirSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const CLI = join(process.cwd(), 'dist', 'uh.cjs')
@@ -59,7 +59,9 @@ test('a sandbox refusal tells the model what it is and how to ask for an excepti
   const base = mkdtempSync(join(tmpdir(), 'uh-esc-'))
   const work = join(base, 'work')
   mkdirSync(work, { recursive: true })
-  const outside = join(base, 'pwned.txt')
+  // 「工作区之外」要用一个真正不该被写的地方：系统临时目录是允许写的（TMPDIR），
+  // 拿它当靶子会让这条测试永远为真/为假地失效。这里挑 $HOME 下的一个文件。
+  const outside = join(homedir(), `.uh-esc-pwned-${process.pid}.txt`)
 
   const server = startSequence([
     { name: 'run_command', arguments: JSON.stringify({ argv: ['sh', '-c', `touch ${outside}`] }) },
@@ -77,6 +79,7 @@ test('a sandbox refusal tells the model what it is and how to ask for an excepti
     })
 
     assert.equal(existsSync(outside), false, 'the write really was refused')
+    rmSync(outside, { force: true })
 
     // 提示语是拼在**返回给模型的 tool 消息**里的，不是事件 payload
     const fed = seen.join('\n')

@@ -88,7 +88,9 @@ test('compaction summarises early turns and keeps the transcript valid', async (
 
   try {
     const out = await new Promise((resolve) => {
-      const p = spawn(process.execPath, [CLI, 'run', 'count files', '--max-steps', '8', '--max-context', '1000'], { env })
+      // Windows 上没有内核级隔离，exec 默认 fail-closed；这些测试验的是上下文压缩，不是沙箱，
+    // 于是显式接受「无隔离」这条路（有 landlock/seatbelt 的平台仍然照旧受沙箱约束）。
+    const p = spawn(process.execPath, [CLI, 'run', 'count files', '--max-steps', '8', '--max-context', '1000', '--allow-unconfined'], { env })
       let s = ''
       p.stdout.on('data', (d) => (s += d))
       p.stderr.on('data', (d) => (s += d))

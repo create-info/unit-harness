@@ -137,7 +137,7 @@ test('our own output is claimed, a neighbour\'s is not', async () => {
   const port = server.address().port
   try {
     const code = await new Promise((resolve) => {
-      const p = spawn(process.execPath, [CLI, 'run', 'write two files', '--base-url', `http://127.0.0.1:${port}/v1`, '--model', 'mock', '--cwd', ws], {
+      const p = spawn(process.execPath, [CLI, 'run', 'write two files', '--base-url', `http://127.0.0.1:${port}/v1`, '--model', 'mock', '--cwd', ws, '--allow-unconfined'], {
         env: { ...process.env, UH_HOME: home },
       })
       p.on('close', (c) => resolve(c))

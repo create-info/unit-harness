@@ -45,11 +45,11 @@ export interface SeatbeltOptions {
 export function buildSeatbeltProfile(o: SeatbeltOptions): string {
   const home = os.homedir()
   const uhHome = path.join(home, '.uh')
-  // 只放行工作区、~/.uh 与 /tmp 这类明确的临时目录。
-  // 曾经把 /private/var/folders 整棵放进来，而 macOS 的 os.tmpdir() 就在那里，
-  // 于是「写工作区之外」其实是被允许的 —— escalation 测试在 macOS 上因此长期失败，
-  // 文档却写着「写入被限制在工作区」。宁可让临时目录写失败，也不能让承诺变成假话。
-  const writable = [o.workspace, uhHome, '/tmp', '/private/tmp']
+  // 可写：工作区、~/.uh、系统临时目录（shell 与大部分工具链要靠 TMPDIR 才跑得动），
+  // 以及几个设备节点。$HOME 的其余部分一律不可写 —— 这是对外承诺的那一条。
+  // macOS 的 os.tmpdir() 在 /private/var/folders 下，所以它必须在这里；
+  // 代价是「写工作区之外」在临时目录里不会失败，测试要挑 $HOME 这类真实位置来验。
+  const writable = [o.workspace, uhHome, '/tmp', '/private/tmp', '/private/var/folders']
   const rules: string[] = ['(version 1)', '(allow default)']
 
   // 读：挡住 $HOME（.ssh/.aws 等），但放行 workspace 与 ~/.uh
