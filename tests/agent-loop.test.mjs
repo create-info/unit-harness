@@ -67,7 +67,7 @@ test('agent loop emits the full turn/step/tool event chain', async () => {
 
   try {
     const res = await runCli(
-      ['run', 'say hello', '--base-url', `http://127.0.0.1:${port}/v1`, '--model', 'mock', '--max-steps', '3'],
+      ['run', 'say hello', '--base-url', `http://127.0.0.1:${port}/v1`, '--model', 'mock', '--max-steps', '3', '--allow-unconfined'],
       { UH_HOME: home },
     )
 
@@ -103,7 +103,7 @@ test('files created during a run are recorded and asserted', { skip: process.pla
 
   try {
     const res = await runCli(
-      ['run', 'write a deploy script', '--base-url', `http://127.0.0.1:${port}/v1`, '--model', 'mock', '--max-steps', '3'],
+      ['run', 'write a deploy script', '--base-url', `http://127.0.0.1:${port}/v1`, '--model', 'mock', '--max-steps', '3', '--allow-unconfined'],
       { UH_HOME: home },
     )
 
@@ -147,7 +147,7 @@ test('every tool call leaves a tool/output event with what the tool actually ret
 
   try {
     await runCli(
-      ['run', 'say hello', '--base-url', `http://127.0.0.1:${port}/v1`, '--model', 'mock', '--max-steps', '3'],
+      ['run', 'say hello', '--base-url', `http://127.0.0.1:${port}/v1`, '--model', 'mock', '--max-steps', '3', '--allow-unconfined'],
       { UH_HOME: home },
     )
 
