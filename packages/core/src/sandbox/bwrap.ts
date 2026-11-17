@@ -68,11 +68,13 @@ export interface BwrapOptions {
   extraReadOnly?: string[]
   /** 关闭凭据屏蔽（调试用；正常不该开） */
   unmasked?: boolean
+  /** 覆盖 $HOME（测试用；默认取 os.homedir()） */
+  home?: string
 }
 
 /** 构造 `bwrap ... -- cmd` 的参数 */
 export function buildBwrapArgv(info: BwrapInfo, o: BwrapOptions): string[] {
-  const home = os.homedir()
+  const home = o.home ?? os.homedir()
   const args: string[] = [
     '--ro-bind', '/', '/',
     '--dev', '/dev',
@@ -85,8 +87,13 @@ export function buildBwrapArgv(info: BwrapInfo, o: BwrapOptions): string[] {
       const p = path.join(home, rel)
       // 只有存在的路径才盖：给一个不存在的路径 --tmpfs 会让 bwrap 直接失败
       try {
-        fs.statSync(p)
-        args.push('--tmpfs', p)
+        const st = fs.statSync(p)
+        // --tmpfs 只能盖目录。用它盖文件（.docker/config.json、.netrc）会让 bwrap
+        // 报 "Can't mkdir …: Not a directory" 并整条命令失败 —— GitHub runner 上装了
+        // docker、$HOME/.docker/config.json 是个文件，于是所有 exec 全挂。
+        // 文件改用 /dev/null 只读绑定，效果同样是「读到一个空文件」。
+        if (st.isDirectory()) args.push('--tmpfs', p)
+        else args.push('--ro-bind', '/dev/null', p)
       } catch { /* 不存在就不管 */ }
     }
   }
