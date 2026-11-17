@@ -23,8 +23,10 @@ from pathlib import Path
 
 from PIL import Image
 
-SRC = Path("/home/yanguogx10/Applications/ai-workplace/frontend/public/icon-512.png")
-OUT = Path("/home/yanguogx10/Applications/unit-harness/src-tauri/icons")
+# 别把本地绝对路径写进仓库：默认相对仓库根，也可以命令行传
+ROOT = Path(__file__).resolve().parent.parent
+SRC = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "src-tauri" / "icons" / "icon-512.png"
+OUT = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "src-tauri" / "icons"
 OUT.mkdir(parents=True, exist_ok=True)
 
 src = Image.open(SRC).convert("RGBA")

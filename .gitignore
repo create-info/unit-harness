@@ -18,3 +18,10 @@ __pycache__/
 /blob.bin
 /approved.txt
 /forbidden.txt
+
+# 运行时目录与本地密钥：`uh` 把会话日志、缓存写在这里，绝不进仓库
+.uh/
+.env
+.env.*
+*.db
+*.sqlite
