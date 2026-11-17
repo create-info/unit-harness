@@ -70,7 +70,10 @@ jobs:
               fail=1
               echo "--- ${base} failed or timed out ---"
               grep -E '^not ok' "$log" | head -3 || true
+              # 超时被杀的进程不会写 "not ok"，所以拿不到时退回日志尾巴，
+              # 否则 annotation 是空的、等于什么都没说。
               DETAIL=$(grep -A 12 '^not ok' "$log" | head -60 | tr '\n' ' ' | tr -s ' ')
+              if [ -z "$DETAIL" ]; then DETAIL=$(tail -25 "$log" | tr '\n' ' ' | tr -s ' '); fi
               echo "::error title=test failure on ${{ runner.os }} (${base})::${DETAIL:0:700}"
             fi
             echo "::endgroup::"
