@@ -40,21 +40,32 @@ jobs:
 
       # 失败时把具体断言塞进 annotation：job log 匿名读不到，annotation 可以
       # （/commits/{sha}/check-runs），这台机器上看不了 Windows/macOS 的真机日志
+      # 一个文件一个进程跑：Linux runner 上出现过整步挂 20 分钟、没有任何输出的情况，
+      # 而 job log 匿名读不到（只有 annotation 能看）。逐文件跑 + 硬超时，挂住的文件
+      # 会以 annotation 的形式点名，而不是把整步拖死。
       - name: agent loop test (mock provider)
         shell: bash
-        # 单个用例卡住比失败更糟：Linux runner 上曾经整步挂 20 分钟没有任何输出。
-        # 给每个用例 120s 上限，超时会被报成 not ok，annotation 里就能看到是谁挂的；
-        # 整步再兜一层 20 分钟。
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: |
           set -o pipefail
-          if ! npm test -- --test-timeout=120000 2>&1 | tee test.log; then
-            echo "--- failing tests ---"
-            grep -E "^not ok|^# (pass|fail)" test.log || true
-            DETAIL=$(grep -A 14 "^not ok" test.log | head -80 | tr '\n' ' ' | tr -s ' ')
-            echo "::error title=test failure on ${{ runner.os }}::${DETAIL:0:800}"
-            exit 1
-          fi
+          fail=0
+          mkdir -p .ci
+          for f in tests/*.test.mjs; do
+            base=$(basename "$f")
+            log=".ci/${base}.log"
+            echo "::group::${base}"
+            if timeout 300 node --test --test-timeout=120000 "$f" > "$log" 2>&1; then
+              grep -E '^# (pass|fail)' "$log" || true
+            else
+              fail=1
+              echo "--- ${base} failed or timed out ---"
+              grep -E '^not ok' "$log" | head -3 || true
+              DETAIL=$(grep -A 12 '^not ok' "$log" | head -60 | tr '\n' ' ' | tr -s ' ')
+              echo "::error title=test failure on ${{ runner.os }} (${base})::${DETAIL:0:700}"
+            fi
+            echo "::endgroup::"
+          done
+          exit $fail
 
       - name: doctor
         run: node dist/uh.cjs doctor
